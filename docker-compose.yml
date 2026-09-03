@@ -1,0 +1,55 @@
+# MCP Conductor 本地开发编排。
+#
+# 后端默认以 memory 模式运行，MySQL 5.7 / Redis 作为可选基础设施随编排启动，
+# 供下一阶段实现 mysql 存储与分布式限流使用。生产数据库目标为 MySQL 5.7+。
+services:
+  mysql:
+    image: mysql:5.7
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: conductor
+      MYSQL_USER: conductor
+      MYSQL_PASSWORD: conductor
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uconductor -pconductor --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  conductor:
+    build:
+      context: .
+      args:
+        # 国内构建可改为 https://goproxy.cn,direct
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    ports:
+      - "8080:8080"
+    environment:
+      CONDUCTOR_DATABASE_DRIVER: ${CONDUCTOR_DATABASE_DRIVER:-memory}
+      CONDUCTOR_DATABASE_DSN: conductor:conductor@tcp(mysql:3306)/conductor?parseTime=true&charset=utf8mb4
+      CONDUCTOR_REDIS_ENABLED: ${CONDUCTOR_REDIS_ENABLED:-false}
+      CONDUCTOR_REDIS_ADDR: redis:6379
+      CONDUCTOR_AUTH_ENABLED: ${CONDUCTOR_AUTH_ENABLED:-false}
+      CONDUCTOR_AUTH_API_KEYS: ${CONDUCTOR_AUTH_API_KEYS:-}
+      CONDUCTOR_LOGGING_LEVEL: ${CONDUCTOR_LOGGING_LEVEL:-info}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  mysqldata:

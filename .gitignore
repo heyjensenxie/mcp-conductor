@@ -1,0 +1,13 @@
+# 本机 Agent / IDE / 临时资源 / 本地入口（精确忽略条目，来自 AI Workspace 规范）
+.local/
+BOOTSTRAP.md
+.claude/
+.codex/
+.config/opencode/
+.agents/
+
+# 标准构建产物与依赖（精确、非通配，保证仓库可提交源码而非产物）
+web/node_modules/
+web/dist/
+bin/
+coverage.out

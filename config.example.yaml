@@ -1,0 +1,41 @@
+# MCP Conductor 配置示例。
+# 复制为 config.yaml（或通过 CONDUCTOR_CONFIG 指定路径）后按需修改；
+# 环境变量 CONDUCTOR_* 优先级更高。
+
+server:
+  host: 0.0.0.0
+  port: 8080
+
+# driver 支持 memory（默认，无 MySQL 也可运行）| mysql（生产 MySQL 5.7+，下一阶段实现）
+database:
+  driver: memory
+  dsn: ""
+
+redis:
+  enabled: false
+  addr: localhost:6379
+  password: ""
+  db: 0
+
+gateway:
+  upstream_timeout: 10s
+  max_concurrency: 0 # 0 表示不限制
+
+ratelimit:
+  enabled: false
+  qps: 100
+  burst: 10
+
+auth:
+  enabled: false # 开启后所有入口请求须携带 X-Api-Key 或 Authorization: Bearer <key>
+  api_keys: []
+  # api_keys:
+  #   - "admin:dev-admin-key"   # 格式 subject:key，key 用于鉴权，subject 用于授权
+
+logging:
+  level: info # debug | info | warn | error
+  format: text
+
+observability:
+  record_body: false # 默认不记录 Tool 参数/返回值（可能含隐私）
+  sample_rate: 1.0   # 0-1 调用日志采样率

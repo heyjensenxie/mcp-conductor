@@ -1,0 +1,34 @@
+# MCP Conductor 多阶段构建：前端 → Go 二进制（内嵌前端） → 最小运行镜像。
+#
+# GOPROXY 可被构建参数覆盖，例如国内环境：
+#   docker build --build-arg GOPROXY=https://goproxy.cn,direct .
+
+# ---- 阶段 1：构建前端 ----
+FROM node:20-alpine AS web
+WORKDIR /src/web
+COPY web/package.json ./
+RUN npm install
+COPY web/ .
+RUN npm run build
+
+# ---- 阶段 2：编译 Go 后端（含内嵌前端产物） ----
+FROM golang:1.27-alpine AS builder
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=$GOPROXY CGO_ENABLED=0
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+# 用真实前端产物覆盖占位 dist。
+RUN rm -rf internal/console/dist && cp -r web/dist internal/console/dist
+RUN go build -trimpath -ldflags="-s -w" -o /out/mcp-conductor ./cmd/conductor
+
+# ---- 阶段 3：最小运行态 ----
+FROM alpine:3.20
+RUN adduser -D -u 10001 conductor
+WORKDIR /app
+COPY --from=builder /out/mcp-conductor /app/mcp-conductor
+COPY config.example.yaml /app/config.example.yaml
+USER conductor
+EXPOSE 8080
+ENTRYPOINT ["/app/mcp-conductor"]
