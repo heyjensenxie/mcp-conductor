@@ -88,3 +88,37 @@ func TestAdapter_HealthByInitialize(t *testing.T) {
 		t.Fatalf("健康探测应返回 healthy，得到 %s", status)
 	}
 }
+
+// TestAdapter_InjectsCredentialHeaders 验证 WithHeaderFor 注入的凭据头
+// 会随认识（initialize）请求发送到上游。
+func TestAdapter_InjectsCredentialHeaders(t *testing.T) {
+	var gotHeader string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Upstream-Key")
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-24","serverInfo":{"name":"mock","version":"1"}}}`, string(req.ID))))
+	}))
+	defer upstream.Close()
+
+	adapter := New().WithHeaderFor(func(_ context.Context, server model.Server) map[string]string {
+		if server.Endpoint == upstream.URL {
+			return map[string]string{"X-Upstream-Key": "k-abcd"}
+		}
+		return nil
+	})
+
+	if _, err := adapter.Discover(context.Background(), model.Server{
+		Endpoint:  upstream.URL,
+		Transport: model.TransportStreamableHTTP,
+	}); err != nil {
+		t.Fatalf("Discover 失败: %v", err)
+	}
+	if gotHeader != "k-abcd" {
+		t.Fatalf("上游应收到注入的凭据 header，得到 %q", gotHeader)
+	}
+}

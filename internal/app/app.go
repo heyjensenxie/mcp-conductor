@@ -19,6 +19,7 @@ import (
 	"github.com/xmj128/mcp-conductor/internal/gateway"
 	"github.com/xmj128/mcp-conductor/internal/health"
 	"github.com/xmj128/mcp-conductor/internal/mcpclient"
+	"github.com/xmj128/mcp-conductor/internal/model"
 	"github.com/xmj128/mcp-conductor/internal/observability"
 	"github.com/xmj128/mcp-conductor/internal/policy"
 	"github.com/xmj128/mcp-conductor/internal/ratelimit"
@@ -47,7 +48,7 @@ func Run(ctx context.Context) error {
 	}
 	defer closeStore()
 
-	adapter := mcpclient.New()
+	adapter := mcpclient.New().WithHeaderFor(credentialHeaders(store))
 
 	registrySvc := registry.NewService(store, adapter)
 	resolver := router.NewResolver(store, store)
@@ -92,11 +93,42 @@ func openStore(ctx context.Context, cfg config.Config) (storage.Store, func(), e
 	if cfg.Database.Driver != "mysql" {
 		return memory.New(), func() {}, nil
 	}
-	store, err := mysqlstore.Open(ctx, cfg.Database.DSN)
+	opts := make([]mysqlstore.Option, 0, 1)
+	if cfg.Credentials.EncryptionKey != "" {
+		opts = append(opts, mysqlstore.WithCredentialKey(cfg.Credentials.EncryptionKey))
+	}
+	store, err := mysqlstore.Open(ctx, cfg.Database.DSN, opts...)
 	if err != nil {
 		return nil, nil, err
 	}
 	return store, func() { _ = store.Close() }, nil
+}
+
+// credentialHeaders 按 Server 的已配置凭证组装上游注入 header：
+// static_token → Authorization: Bearer <value>；api_key → Header: <value>。
+// 值均来自存储解密，不落日志。
+func credentialHeaders(store storage.CredentialStore) func(context.Context, model.Server) map[string]string {
+	return func(ctx context.Context, server model.Server) map[string]string {
+		creds, err := store.ListCredentialsByServer(ctx, server.ID)
+		if err != nil {
+			return nil
+		}
+		headers := make(map[string]string)
+		for _, cred := range creds {
+			if cred.Value == "" {
+				continue
+			}
+			switch cred.Kind {
+			case model.CredentialStaticToken:
+				headers["Authorization"] = "Bearer " + cred.Value
+			case model.CredentialAPIKey:
+				if cred.Header != "" {
+					headers[cred.Header] = cred.Value
+				}
+			}
+		}
+		return headers
+	}
 }
 
 // buildLimiter 按配置组装限流器：关闭→直通；Redis 可用→分布式限流；

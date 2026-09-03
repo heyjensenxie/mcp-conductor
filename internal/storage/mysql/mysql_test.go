@@ -171,7 +171,8 @@ func TestRouteAndCredential(t *testing.T) {
 		t.Fatalf("Route.tool_names 应回读 2 项: %+v", routes[0].ToolNames)
 	}
 
-	cred := &model.Credential{ServerID: srv.ID, Name: "上游密钥", Kind: model.CredentialAPIKey, Header: "X-Upstream-Key", HasValue: true}
+	// 未配置值：仅登记元数据，HasValue=false。
+	cred := &model.Credential{ServerID: srv.ID, Name: "上游密钥", Kind: model.CredentialAPIKey, Header: "X-Upstream-Key"}
 	if err := store.CreateCredential(ctx, cred); err != nil {
 		t.Fatalf("CreateCredential: %v", err)
 	}
@@ -179,8 +180,62 @@ func TestRouteAndCredential(t *testing.T) {
 	if err != nil || len(creds) != 1 {
 		t.Fatalf("ListCredentialsByServer: %v / %d", err, len(creds))
 	}
-	if creds[0].Header != "X-Upstream-Key" || !creds[0].HasValue {
+	if creds[0].Header != "X-Upstream-Key" || creds[0].HasValue {
 		t.Fatalf("Credential 元数据回读不一致: %+v", creds[0])
+	}
+}
+
+// openTestKeyed 打开带加密密钥的 Store（用于凭据值集成测试）。
+func openTestKeyed(t *testing.T) storage.Store {
+	t.Helper()
+	dsn := os.Getenv("MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("MYSQL_TEST_DSN 未设置，跳过 MySQL 集成测试")
+	}
+	store, err := Open(context.Background(), dsn, WithCredentialKey(testCredentialKeyHex))
+	if err != nil {
+		t.Fatalf("打开 MySQL 失败: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+// TestCredentialEncryptedRoundTrip 验证凭据值加密落库并可解密回读。
+func TestCredentialEncryptedRoundTrip(t *testing.T) {
+	store := openTestKeyed(t)
+	ctx := context.Background()
+
+	srv := testServer("密钥-Server", "http://localhost:9000/mcp")
+	_ = store.CreateServer(ctx, srv)
+
+	cred := &model.Credential{ServerID: srv.ID, Name: "上游密钥", Kind: model.CredentialAPIKey, Header: "X-Upstream-Key", Value: "plain-secret"}
+	if err := store.CreateCredential(ctx, cred); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	if !cred.HasValue {
+		t.Fatal("写入非空值后 HasValue 应为 true")
+	}
+
+	creds, err := store.ListCredentialsByServer(ctx, srv.ID)
+	if err != nil || len(creds) != 1 {
+		t.Fatalf("List: %v / %d", err, len(creds))
+	}
+	if creds[0].Value != "plain-secret" || !creds[0].HasValue {
+		t.Fatalf("值应可解密回读且 HasValue 为 true: %+v", creds[0])
+	}
+}
+
+// TestCredentialCreateWithoutKeyRejectsValue 验证无密钥时拒绝落库明文。
+func TestCredentialCreateWithoutKeyRejectsValue(t *testing.T) {
+	store := openTest(t)
+	ctx := context.Background()
+
+	srv := testServer("无密钥-Server", "http://localhost:9000/mcp")
+	_ = store.CreateServer(ctx, srv)
+
+	err := store.CreateCredential(ctx, &model.Credential{ServerID: srv.ID, Name: "x", Kind: model.CredentialAPIKey, Header: "X", Value: "secret"})
+	if err == nil {
+		t.Fatal("未配置密钥时应拒绝保存非空凭据值")
 	}
 }
 

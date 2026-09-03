@@ -48,9 +48,12 @@ docker-up:
 docker-down:
 	docker compose down
 
-## 应用数据库迁移到 Compose 起的 MySQL 5.7
+## 应用全部数据库迁移到 Compose 起的 MySQL 5.7（按序执行）
 db-migrate:
-	docker compose exec -T mysql mysql -uconductor -pconductor --default-character-set=utf8mb4 conductor < migrations/0001_init_schema.sql
+	@for f in migrations/*.sql; do \
+		echo "applying $$f".; \
+		docker compose exec -T mysql mysql -uconductor -pconductor --default-character-set=utf8mb4 conductor < "$$f" || exit 1; \
+	done
 
 ## 本地一键启动后端
 dev: run

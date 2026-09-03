@@ -7,39 +7,45 @@
       </div>
       <a-menu :selected-keys="selectedKeys" mode="inline" class="menu" @click="onMenuClick">
         <a-menu-item key="dashboard">
-          <template #icon><DashboardOutlined /></template>Dashboard
+          <template #icon><DashboardOutlined /></template>{{ t('menu.dashboard') }}
         </a-menu-item>
         <a-menu-item key="servers">
-          <template #icon><CloudServerOutlined /></template>MCP Servers
+          <template #icon><CloudServerOutlined /></template>{{ t('menu.servers') }}
         </a-menu-item>
         <a-menu-item key="tools">
-          <template #icon><ToolOutlined /></template>Tools
+          <template #icon><ToolOutlined /></template>{{ t('menu.tools') }}
         </a-menu-item>
         <a-menu-item key="routes">
-          <template #icon><ShareAltOutlined /></template>Routes
+          <template #icon><ShareAltOutlined /></template>{{ t('menu.routes') }}
         </a-menu-item>
         <a-menu-item key="traffic">
-          <template #icon><FundOutlined /></template>Traffic
+          <template #icon><FundOutlined /></template>{{ t('menu.traffic') }}
         </a-menu-item>
         <a-menu-item key="access">
-          <template #icon><SafetyCertificateOutlined /></template>Access Control
+          <template #icon><SafetyCertificateOutlined /></template>{{ t('menu.access') }}
         </a-menu-item>
         <a-menu-item key="testing">
-          <template #icon><ExperimentOutlined /></template>Testing
+          <template #icon><ExperimentOutlined /></template>{{ t('menu.testing') }}
         </a-menu-item>
         <a-menu-item key="observability">
-          <template #icon><BarChartOutlined /></template>Observability
+          <template #icon><BarChartOutlined /></template>{{ t('menu.observability') }}
         </a-menu-item>
         <a-menu-item key="settings">
-          <template #icon><SettingOutlined /></template>Settings
+          <template #icon><SettingOutlined /></template>{{ t('menu.settings') }}
         </a-menu-item>
       </a-menu>
     </a-layout-sider>
 
     <a-layout>
       <a-layout-header class="header">
-        <span class="page-title">{{ route.meta.title }}</span>
-        <a-tag color="blue">v0.1.0</a-tag>
+        <span class="page-title">{{ pageTitle }}</span>
+        <a-space>
+          <a-tag color="blue">v0.1.0</a-tag>
+          <a-select :value="locale" style="width: 120px" size="small" @change="onLocaleChange">
+            <a-select-option value="zh-CN">{{ t('lang.zh') }}</a-select-option>
+            <a-select-option value="en-US">{{ t('lang.en') }}</a-select-option>
+          </a-select>
+        </a-space>
       </a-layout-header>
       <a-layout-content class="content">
         <router-view />
@@ -51,6 +57,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import {
   BarChartOutlined,
   CloudServerOutlined,
@@ -62,9 +69,11 @@ import {
   ShareAltOutlined,
   ToolOutlined,
 } from '@ant-design/icons-vue'
+import { setLocale, type AppLocale } from '@/i18n'
 
 const route = useRoute()
 const router = useRouter()
+const { t, locale } = useI18n()
 
 // 菜单高亮：按路径首段推导，使 `/servers/:id` 等子页保持所属菜单选中。
 const selectedKeys = computed(() => {
@@ -75,8 +84,14 @@ const selectedKeys = computed(() => {
   return ['dashboard']
 })
 
+const pageTitle = computed(() => t(`page.${route.meta.titleKey ?? 'dashboard'}`))
+
 function onMenuClick({ key }: { key: string }) {
   router.push(`/${key}`)
+}
+
+function onLocaleChange(locale: AppLocale) {
+  setLocale(locale)
 }
 </script>
 

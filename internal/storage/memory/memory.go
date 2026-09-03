@@ -244,7 +244,7 @@ func (s *Store) ListPolicies(_ context.Context) ([]model.Policy, error) {
 
 // ---- CredentialStore ----
 
-// CreateCredential 新增凭证元数据。
+// CreateCredential 新增凭证元数据与进程内值（memory 不落盘，重启即失）。
 func (s *Store) CreateCredential(_ context.Context, credential *model.Credential) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -255,7 +255,7 @@ func (s *Store) CreateCredential(_ context.Context, credential *model.Credential
 	return nil
 }
 
-// ListCredentialsByServer 返回指定 Server 的凭证。
+// ListCredentialsByServer 返回指定 Server 的凭证（含内部值）。
 func (s *Store) ListCredentialsByServer(_ context.Context, serverID string) ([]model.Credential, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

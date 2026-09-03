@@ -1,8 +1,9 @@
 <template>
-  <a-card :bordered="true" title="Observability">
+  <a-card :bordered="true">
+    <template #title>{{ t('page.observability') }}</template>
     <template #extra>
       <a-button size="small" @click="load">
-        <template #icon><ReloadOutlined /></template>Refresh
+        <template #icon><ReloadOutlined /></template>{{ t('observability.refresh') }}
       </a-button>
     </template>
     <a-table :data-source="metrics" :columns="columns" :loading="loading" :pagination="false" :row-key="(r: any) => r.key">
@@ -14,24 +15,27 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
+import { useI18n } from 'vue-i18n'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import { getMetrics } from '@/api'
 import type { MetricSnapshot } from '@/types'
 
+const { t } = useI18n()
 const metrics = ref<MetricSnapshot[]>([])
 const loading = ref(false)
-const columns: any[] = [
-  { title: 'Dimension', key: 'key', dataIndex: 'key' },
-  { title: 'Requests', key: 'totals', dataIndex: 'totals', width: 100 },
-  { title: 'Success', key: 'success', dataIndex: 'success', width: 100 },
-  { title: 'Errors', key: 'errors', dataIndex: 'errors', width: 100 },
-  { title: 'Success Rate', key: 'success_rate', width: 120 },
-  { title: 'P50 (ms)', key: 'p50', dataIndex: 'p50', width: 100 },
-  { title: 'P95 (ms)', key: 'p95', dataIndex: 'p95', width: 100 },
-  { title: 'P99 (ms)', key: 'p99', dataIndex: 'p99', width: 100 },
-]
+
+const columns = computed<any[]>(() => [
+  { title: t('observability.dimension'), key: 'key', dataIndex: 'key' },
+  { title: t('observability.requests'), key: 'totals', dataIndex: 'totals', width: 100 },
+  { title: t('observability.success'), key: 'success', dataIndex: 'success', width: 100 },
+  { title: t('observability.errors'), key: 'errors', dataIndex: 'errors', width: 100 },
+  { title: t('observability.successRate'), key: 'success_rate', width: 120 },
+  { title: t('observability.p50'), key: 'p50', dataIndex: 'p50', width: 100 },
+  { title: t('observability.p95'), key: 'p95', dataIndex: 'p95', width: 100 },
+  { title: t('observability.p99'), key: 'p99', dataIndex: 'p99', width: 100 },
+])
 
 onMounted(load)
 

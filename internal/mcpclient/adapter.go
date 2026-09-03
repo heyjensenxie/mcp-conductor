@@ -17,9 +17,9 @@ import (
 
 // Adapter 适配上游 MCP Server。
 type Adapter struct {
-	// headerFor 按 Server 返回调用上游时附加的 header（如注入 API Key）。
+	// headerFor 按 Server 返回调用上游时附加的 header（如注入 API Key / Token）。
 	// nil 表示不注入。
-	headerFor func(server model.Server) map[string]string
+	headerFor func(ctx context.Context, server model.Server) map[string]string
 }
 
 // New 创建适配器（无凭据注入）。
@@ -27,8 +27,8 @@ func New() *Adapter {
 	return &Adapter{}
 }
 
-// WithHeaderFor 配置按 Server 组装额外 header 的回调。
-func (a *Adapter) WithHeaderFor(fn func(model.Server) map[string]string) *Adapter {
+// WithHeaderFor 配置按 Server 组装额外 header 的回调（由应用层注入凭据）。
+func (a *Adapter) WithHeaderFor(fn func(ctx context.Context, server model.Server) map[string]string) *Adapter {
 	a.headerFor = fn
 	return a
 }
@@ -103,7 +103,7 @@ func (a *Adapter) clientFor(ctx context.Context, server model.Server) (*mcp.HTTP
 	case "", model.TransportStreamableHTTP, model.TransportSSE:
 		opts := []mcp.Option{}
 		if a.headerFor != nil {
-			for k, v := range a.headerFor(server) {
+			for k, v := range a.headerFor(ctx, server) {
 				opts = append(opts, mcp.WithHeader(k, v))
 			}
 		}

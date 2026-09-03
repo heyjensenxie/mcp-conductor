@@ -117,7 +117,8 @@ const (
 )
 
 // Credential 保存 Gateway→Upstream MCP 的凭据元数据。
-// 敏感值禁止明文返回前端、禁止写入日志；value 仅在后端协商阶段使用。
+// 敏感值（Value）仅应用内部使用：不通过 API 下发（json:"-"）、不写入日志；
+// has_value 只标记是否已配置，避免序列化暴露明文。
 type Credential struct {
 	ID       string         `json:"id"`
 	ServerID string         `json:"server_id"`
@@ -125,8 +126,10 @@ type Credential struct {
 	Kind     CredentialKind `json:"kind"`
 	// Header 是 api_key 类型时的注入 header 名。
 	Header string `json:"header,omitempty"`
-	// HasValue 仅标记 value 是否已配置，避免序列化暴露明文。
-	HasValue  bool      `json:"has_value"`
+	// HasValue 仅标记 value 是否已配置。
+	HasValue bool `json:"has_value"`
+	// Value 是敏感凭证值（上游注入用）。json:"-" 保证不随 API 下发。
+	Value     string    `json:"-"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

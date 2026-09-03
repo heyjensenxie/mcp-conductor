@@ -194,18 +194,48 @@ func (c *Control) handleListPolicies(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, RequestIDFrom(r.Context()), policies)
 }
 
-// handleCreateCredential 新增凭证元数据（MVP 仅登记 Header 提供方式）。
+// handleCreateCredential 新增凭证：接收可选 value 敏感值（值不下发 API）。
+// api_key 须提供注入 header；static_token 固定注入 Authorization: Bearer。
 func (c *Control) handleCreateCredential(w http.ResponseWriter, r *http.Request) {
-	var credential model.Credential
-	if err := decodeBody(r, &credential); err != nil {
+	var input struct {
+		Name   string `json:"name"`
+		Kind   string `json:"kind"`
+		Header string `json:"header"`
+		Value  string `json:"value"`
+	}
+	if err := decodeBody(r, &input); err != nil {
 		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
 		return
 	}
-	credential.ServerID = r.PathValue("id")
-	if err := c.store.CreateCredential(r.Context(), &credential); err != nil {
+	if input.Name == "" {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "缺少 credential.name"))
+		return
+	}
+	credential := &model.Credential{
+		ServerID: r.PathValue("id"),
+		Name:     input.Name,
+		Kind:     model.CredentialKind(input.Kind),
+		Header:   input.Header,
+		Value:    input.Value,
+	}
+	switch credential.Kind {
+	case "", model.CredentialAPIKey, model.CredentialStaticToken:
+	default:
+		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "credential.kind 仅支持 static_token / api_key"))
+		return
+	}
+	if credential.Kind != model.CredentialAPIKey {
+		credential.Kind = model.CredentialStaticToken
+	}
+	if credential.Kind == model.CredentialAPIKey && credential.Header == "" {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "api_key 类型须提供注入 header"))
+		return
+	}
+	if err := c.store.CreateCredential(r.Context(), credential); err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
+	// value 由 model.Credential.Value 的 json:"-" 保证不外发，仅返回元数据。
 	writeOK(w, RequestIDFrom(r.Context()), credential)
 }
 

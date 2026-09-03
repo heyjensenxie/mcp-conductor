@@ -284,8 +284,14 @@ func scanPolicies(rows *sql.Rows) ([]model.Policy, error) {
 
 // ---- CredentialStore ----
 
-// CreateCredential 新增凭证元数据（敏感值不在库中保存明文）。
+// CreateCredential 新增凭证：值为空时仅登记元数据；非空时加密落库
+// （AES-256-GCM，需配置 credentials.encryption_key）。
 func (s *Store) CreateCredential(ctx context.Context, credential *model.Credential) error {
+	encrypted, err := encryptValue(s.credCipher, credential.Value)
+	if err != nil {
+		return err
+	}
+	credential.HasValue = credential.Value != ""
 	if credential.ID == "" {
 		credential.ID = newID("cred")
 	}
@@ -293,10 +299,11 @@ func (s *Store) CreateCredential(ctx context.Context, credential *model.Credenti
 	credential.CreatedAt = now
 	credential.UpdatedAt = nowOr(credential.UpdatedAt)
 
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO credentials (id, server_id, name, kind, header, has_value, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`,
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO credentials (id, server_id, name, kind, header, encrypted_value, has_value, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`,
 		credential.ID, credential.ServerID, credential.Name, credential.Kind,
-		nullIfEmpty(credential.Header), credential.HasValue, fmtTimeUTC(credential.CreatedAt), fmtTimeUTC(credential.UpdatedAt),
+		nullIfEmpty(credential.Header), nullIfEmpty(encrypted), credential.HasValue,
+		fmtTimeUTC(credential.CreatedAt), fmtTimeUTC(credential.UpdatedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("insert credentials: %w", err)
@@ -304,10 +311,10 @@ func (s *Store) CreateCredential(ctx context.Context, credential *model.Credenti
 	return nil
 }
 
-// ListCredentialsByServer 返回指定 Server 的凭证元数据。
+// ListCredentialsByServer 返回指定 Server 的凭证元数据并解密值（供上游注入）。
 func (s *Store) ListCredentialsByServer(ctx context.Context, serverID string) ([]model.Credential, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, server_id, name, kind, COALESCE(header,''), has_value, created_at, updated_at
+		`SELECT id, server_id, name, kind, COALESCE(header,''), COALESCE(encrypted_value,''), has_value, created_at, updated_at
 		 FROM credentials WHERE server_id = ? ORDER BY id`, serverID)
 	if err != nil {
 		return nil, err
@@ -317,10 +324,16 @@ func (s *Store) ListCredentialsByServer(ctx context.Context, serverID string) ([
 	out := make([]model.Credential, 0)
 	for rows.Next() {
 		var cred model.Credential
+		var encrypted string
 		if err := rows.Scan(&cred.ID, &cred.ServerID, &cred.Name, &cred.Kind, &cred.Header,
-			&cred.HasValue, &cred.CreatedAt, &cred.UpdatedAt); err != nil {
+			&encrypted, &cred.HasValue, &cred.CreatedAt, &cred.UpdatedAt); err != nil {
 			return nil, err
 		}
+		value, err := decryptValue(s.credCipher, encrypted)
+		if err != nil {
+			return nil, err
+		}
+		cred.Value = value
 		out = append(out, cred)
 	}
 	return out, rows.Err()

@@ -3,10 +3,10 @@
     <div class="toolbar">
       <a-space>
         <a-button type="primary" @click="openCreate">
-          <template #icon><PlusOutlined /></template>Register Server
+          <template #icon><PlusOutlined /></template>{{ t('servers.register') }}
         </a-button>
         <a-button @click="load">
-          <template #icon><ReloadOutlined /></template>Refresh
+          <template #icon><ReloadOutlined /></template>{{ t('servers.refresh') }}
         </a-button>
       </a-space>
     </div>
@@ -21,17 +21,17 @@
             <a-tag :color="healthColor(record.health_status)" :bordered="false">{{ record.health_status }}</a-tag>
           </template>
           <template v-else-if="column.key === 'enabled'">
-            <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? 'Enabled' : 'Disabled' }}</a-tag>
+            <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? t('servers.enabled') : t('servers.disabled') }}</a-tag>
           </template>
           <template v-else-if="column.key === 'tools'">{{ toolCount[record.id] ?? 0 }}</template>
           <template v-else-if="column.key === 'actions'">
             <a-space :size="4">
-              <a-button size="small" @click="test(record)">Test</a-button>
+              <a-button size="small" @click="test(record)">{{ t('servers.test') }}</a-button>
               <a-button size="small" :danger="record.enabled" @click="toggle(record)">
-                {{ record.enabled ? 'Disable' : 'Enable' }}
+                {{ record.enabled ? t('servers.disable') : t('servers.enable') }}
               </a-button>
-              <a-popconfirm title="确认删除该 Server（含其 Tools）？" @confirm="remove(record)">
-                <a-button size="small" danger>Delete</a-button>
+              <a-popconfirm :title="t('servers.confirmDelete')" @confirm="remove(record)">
+                <a-button size="small" danger>{{ t('servers.delete') }}</a-button>
               </a-popconfirm>
             </a-space>
           </template>
@@ -39,22 +39,22 @@
       </a-table>
     </a-card>
 
-    <a-modal v-model:open="dialogVisible" title="Register MCP Server" :confirm-loading="submitting" @ok="submit" ok-text="Register" cancel-text="Cancel">
+    <a-modal v-model:open="dialogVisible" :title="t('servers.dialogTitle')" :confirm-loading="submitting" @ok="submit" :ok-text="t('servers.register')" :cancel-text="t('common.cancel')">
       <a-form :label-col="{ span: 6 }" :wrapper-col="{ span: 18 }">
-        <a-form-item label="Name" :required="true">
-          <a-input v-model:value="form.name" placeholder="如 University MCP" />
+        <a-form-item :label="t('common.name')" :required="true">
+          <a-input v-model:value="form.name" placeholder="University MCP" />
         </a-form-item>
-        <a-form-item label="Endpoint" :required="true">
-          <a-input v-model:value="form.endpoint" placeholder="如 http://localhost:9000/mcp" />
+        <a-form-item :label="t('servers.endpoint')" :required="true">
+          <a-input v-model:value="form.endpoint" :placeholder="t('servers.endpointPlaceholder')" />
         </a-form-item>
-        <a-form-item label="Transport">
+        <a-form-item :label="t('servers.transport')">
           <a-select v-model:value="form.transport">
-            <a-select-option value="https">streamable HTTP</a-select-option>
-            <a-select-option value="sse">SSE</a-select-option>
-            <a-select-option value="stdio">stdio</a-select-option>
+            <a-select-option value="https">{{ t('servers.transportStreamable') }}</a-select-option>
+            <a-select-option value="sse">{{ t('servers.transportSSE') }}</a-select-option>
+            <a-select-option value="stdio">{{ t('servers.transportStdio') }}</a-select-option>
           </a-select>
         </a-form-item>
-        <a-form-item label="Description">
+        <a-form-item :label="t('common.description')">
           <a-textarea v-model:value="form.description" :rows="2" />
         </a-form-item>
       </a-form>
@@ -63,11 +63,14 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
+import { useI18n } from 'vue-i18n'
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { createServer, deleteServer, listServers, listServerTools, testServer, toggleServer } from '@/api'
 import type { MCPServer, Transport } from '@/types'
+
+const { t } = useI18n()
 
 const servers = ref<MCPServer[]>([])
 const toolCount = ref<Record<string, number>>({})
@@ -81,15 +84,15 @@ const form = reactive<{ name: string; endpoint: string; transport: Transport; de
   description: '',
 })
 
-const columns: any[] = [
-  { title: 'Name', key: 'name', dataIndex: 'name' },
-  { title: 'Endpoint', key: 'endpoint', dataIndex: 'endpoint', ellipsis: true },
-  { title: 'Transport', key: 'transport', dataIndex: 'transport', width: 100 },
-  { title: 'Tools', key: 'tools', width: 70 },
-  { title: 'Health', key: 'health', dataIndex: 'health_status', width: 100 },
-  { title: 'Status', key: 'enabled', dataIndex: 'enabled', width: 100 },
-  { title: 'Actions', key: 'actions', width: 230 },
-]
+const columns = computed<any[]>(() => [
+  { title: t('common.name'), key: 'name', dataIndex: 'name' },
+  { title: t('servers.endpoint'), key: 'endpoint', dataIndex: 'endpoint', ellipsis: true },
+  { title: t('servers.transport'), key: 'transport', dataIndex: 'transport', width: 110 },
+  { title: t('servers.tools'), key: 'tools', width: 70 },
+  { title: t('servers.health'), key: 'health', dataIndex: 'health_status', width: 100 },
+  { title: t('common.status'), key: 'enabled', dataIndex: 'enabled', width: 100 },
+  { title: t('common.actions'), key: 'actions', width: 240 },
+])
 
 onMounted(load)
 
@@ -121,13 +124,13 @@ function openCreate() {
 
 async function submit() {
   if (!form.name || !form.endpoint) {
-    message.warning('Name 与 Endpoint 必填')
+    message.warning(t('servers.fillRequired'))
     return
   }
   submitting.value = true
   try {
     await createServer({ ...form })
-    message.success('Server 已注册，正在后台发现 Tools')
+    message.success(t('servers.registeredOk'))
     dialogVisible.value = false
     await load()
   } catch (e) {
@@ -149,17 +152,17 @@ async function toggle(row: MCPServer) {
 async function test(row: MCPServer) {
   try {
     await testServer(row.id)
-    message.success('测试连接通过，Tools 已刷新')
+    message.success(t('servers.testOk'))
     await load()
   } catch (e) {
-    message.error(`连接失败: ${e}`)
+    message.error(`${t('servers.connectFail')}: ${e}`)
   }
 }
 
 async function remove(row: MCPServer) {
   try {
     await deleteServer(row.id)
-    message.success('已删除')
+    message.success(t('servers.deletedOk'))
     await load()
   } catch (e) {
     message.error(String(e))

@@ -11,3 +11,7 @@ web/node_modules/
 web/dist/
 bin/
 coverage.out
+
+# 本地运行时配置（含可能写密钥；模板 .env.example / config.example.yaml 已提交）
+.env
+config.yaml

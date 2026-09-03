@@ -44,4 +44,4 @@
 2. 全量查询无 8.0 专属语法（可用 5.7 版 `mysqld --sql-mode=...` / EXPLAIN 复核）；
 3. 索引长度 < InnoDB 限制（utf8mb4 下 VARCHAR(255) = 1020 字节，注意除外键/联合索引长度）；
 4. 时间列、字符集、布尔列按上表约定；
-5. 敏感字段（Credential 等）不入库明文/不入 SQL 日志。
+5. Credential 值以 AES-256-GCM 密文入库（`credentials.encryption_key`，密文 hex 存 `encrypted_value` 列）；不落 SQL 明文、不下发 API、不入日志。

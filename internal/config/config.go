@@ -6,6 +6,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
@@ -23,6 +24,7 @@ type Config struct {
 	Gateway       GatewayConfig       `yaml:"gateway"`
 	RateLimit     RateLimitConfig     `yaml:"ratelimit"`
 	Auth          AuthConfig          `yaml:"auth"`
+	Credentials   CredentialsConfig   `yaml:"credentials"`
 	Logging       LoggingConfig       `yaml:"logging"`
 	Observability ObservabilityConfig `yaml:"observability"`
 }
@@ -63,6 +65,13 @@ type RateLimitConfig struct {
 	QPS int `yaml:"qps"`
 	// Burst 是令牌桶容量（允许的瞬时突发）。
 	Burst int `yaml:"burst"`
+}
+
+// CredentialsConfig 控制 Gateway→Upstream 凭证的加密存储。
+type CredentialsConfig struct {
+	// EncryptionKey 是 AES-256-GCM 的 32 字节密钥（64 位 hex）。
+	// 为空时 MySQL 存储拒绝落库明文（仅 memory 模式可在进程内承载）；生产必须配置。
+	EncryptionKey string `yaml:"encryption_key"`
 }
 
 // AuthConfig 控制 Gateway 与 Control Plane 的认证。
@@ -113,6 +122,9 @@ func Default() Config {
 		Auth: AuthConfig{
 			Enabled: false,
 			APIKeys: []string{},
+		},
+		Credentials: CredentialsConfig{
+			EncryptionKey: "",
 		},
 		Logging: LoggingConfig{
 			Level:  "info",
@@ -181,6 +193,9 @@ func applyEnvOverrides(cfg *Config) {
 		// 多个 key 以逗号分隔。
 		cfg.Auth.APIKeys = splitCSV(v)
 	}
+	if v := lookupEnv("CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY"); v != "" {
+		cfg.Credentials.EncryptionKey = v
+	}
 	if v := lookupEnv("CONDUCTOR_LOGGING_LEVEL"); v != "" {
 		cfg.Logging.Level = v
 	}
@@ -245,6 +260,12 @@ func (c Config) validate() error {
 	}
 	if c.Auth.Enabled && len(c.Auth.APIKeys) == 0 {
 		return fmt.Errorf("auth.enabled 时须配置至少一个 auth.api_keys")
+	}
+	if c.Credentials.EncryptionKey != "" {
+		key, err := hex.DecodeString(c.Credentials.EncryptionKey)
+		if err != nil || len(key) != 32 {
+			return fmt.Errorf("credentials.encryption_key 必须是 64 位 hex（AES-256 的 32 字节）")
+		}
 	}
 	return nil
 }

@@ -32,6 +32,11 @@ auth:
   # api_keys:
   #   - "admin:dev-admin-key"   # 格式 subject:key，key 用于鉴权，subject 用于授权
 
+# Gateway→上游 凭证加密：AES-256 密钥（64 位 hex）。为空时 MySQL 存储拒绝
+# 落库明文凭证值（仅 memory 模式可在进程内承载）。
+credentials:
+  encryption_key: ""
+
 logging:
   level: info # debug | info | warn | error
   format: text

@@ -38,6 +38,7 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | 健康检查（initialize 握手 + 周期巡检） | ✅ |
 | 路由解析 + Round Robin 负载均衡（健康感知） | ✅ |
 | 基础认证（静态 API Key） | ✅ 默认关闭 |
+| Gateway→上游 Credential 管理（API Key / Static Token） | ✅ 值 AES-256-GCM 加密落库；经 `json:"-"` 不下发 API、不入日志；按 Server 注入上游请求头 |
 | Tool 级权限策略（RBAC，支持通配、首条命中生效） | ✅ 默认放行 |
 | Memory（令牌桶）/ Redis 限流 | ✅ 默认关闭 |
 | Request Logging + 基础 Metrics（P50/P95/P99） | ✅ 应用层聚合 |
@@ -198,6 +199,7 @@ CONDUCTOR_AUTH_ENABLED=true CONDUCTOR_AUTH_API_KEYS="admin:dev-key" go run ./cmd
 | `gateway` | upstream_timeout / max_concurrency | `CONDUCTOR_GATEWAY_UPSTREAM_TIMEOUT_MS=10000` |
 | `ratelimit` | enabled / qps / burst | `CONDUCTOR_RATELIMIT_QPS=100` |
 | `auth` | enabled / api_keys | `CONDUCTOR_AUTH_API_KEYS="admin:dev-key"` |
+| `credentials` | encryption_key（AES-256，64 位 hex） | `CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY=<hex>` |
 | `logging` | level / format | `CONDUCTOR_LOGGING_LEVEL=info` |
 | `observability` | record_body / sample_rate | `CONDUCTOR_OBSERVABILITY_SAMPLE_RATE=1.0` |
 

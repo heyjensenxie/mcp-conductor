@@ -1,11 +1,18 @@
 <template>
-  <a-config-provider :locale="zhCN">
+  <a-config-provider :locale="antLocale">
     <router-view />
   </a-config-provider>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
+import enUS from 'ant-design-vue/es/locale/en_US'
+
+// Ant Design Vue 组件级文案随应用语言联动。
+const { locale } = useI18n()
+const antLocale = computed(() => (locale.value === 'zh-CN' ? zhCN : enUS))
 </script>
 
 <style>

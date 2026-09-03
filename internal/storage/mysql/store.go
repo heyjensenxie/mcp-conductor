@@ -25,11 +25,28 @@ import (
 
 // Store 是基于 database/sql 的 MySQL 存储实现。
 type Store struct {
-	db *sql.DB
+	db         *sql.DB
+	credCipher *credentialCipher
+}
+
+// Option 是 Store 构造选项。
+type Option func(*Store) error
+
+// WithCredentialKey 配置凭证加密密钥（64 位 hex，AES-256）。未配置时
+// MySQL 存储拒绝落库明文凭证值。
+func WithCredentialKey(keyHex string) Option {
+	return func(s *Store) error {
+		c, err := newCredentialCipher(keyHex)
+		if err != nil {
+			return err
+		}
+		s.credCipher = c
+		return nil
+	}
 }
 
 // Open 建立连接池并 Ping 验证连通性。
-func Open(ctx context.Context, dsn string) (*Store, error) {
+func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	if !strings.Contains(dsn, "parseTime=true") {
 		return nil, errors.New("DSN 必须包含 parseTime=true（时间字段需要）")
 	}
@@ -48,7 +65,14 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("连接 MySQL 失败: %w", err)
 	}
-	return &Store{db: db}, nil
+	st := &Store{db: db}
+	for _, opt := range opts {
+		if err := opt(st); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
+	return st, nil
 }
 
 // Close 释放数据库连接池。

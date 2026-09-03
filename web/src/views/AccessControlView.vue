@@ -2,7 +2,7 @@
   <div>
     <div class="toolbar">
       <a-button type="primary" @click="dialogVisible = true">
-        <template #icon><PlusOutlined /></template>New Policy
+        <template #icon><PlusOutlined /></template>{{ t('access.newPolicy') }}
       </a-button>
     </div>
 
@@ -14,20 +14,18 @@
           </a-tag>
         </template>
         <template v-else-if="column.key === 'enabled'">
-          <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? 'yes' : 'no' }}</a-tag>
+          <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? t('common.yes') : t('common.no') }}</a-tag>
         </template>
       </template>
     </a-table>
 
-    <a-modal v-model:open="dialogVisible" title="New Policy" ok-text="Create" cancel-text="Cancel" width="600px" @ok="submit">
-      <a-alert type="info" show-icon class="mb">
-        规则格式每行一条：subject|tool(支持通配*)|effect(allow/deny)。示例：agent-a|payment.*|deny
-      </a-alert>
+    <a-modal v-model:open="dialogVisible" :title="t('access.newPolicy')" :ok-text="t('access.create')" :cancel-text="t('common.cancel')" width="600px" @ok="submit">
+      <a-alert type="info" show-icon class="mb">{{ t('access.formatHint') }}</a-alert>
       <a-form :label-col="{ span: 4 }" :wrapper-col="{ span: 20 }">
-        <a-form-item label="Name" :required="true">
+        <a-form-item :label="t('access.name')" :required="true">
           <a-input v-model:value="form.name" />
         </a-form-item>
-        <a-form-item label="Rules">
+        <a-form-item :label="t('access.rules')">
           <a-textarea v-model:value="rulesText" :rows="5" placeholder="agent-a|payment.create|deny" />
         </a-form-item>
       </a-form>
@@ -36,23 +34,25 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
+import { useI18n } from 'vue-i18n'
 import { PlusOutlined } from '@ant-design/icons-vue'
 import { createPolicy, listPolicies } from '@/api'
 import type { Policy, PolicyRule } from '@/types'
 
+const { t } = useI18n()
 const policies = ref<Policy[]>([])
 const loading = ref(false)
 const dialogVisible = ref(false)
 const rulesText = ref('')
 const form = reactive({ name: '' })
 
-const columns: any[] = [
-  { title: 'Name', key: 'name', dataIndex: 'name' },
-  { title: 'Rules', key: 'rules' },
-  { title: 'Enabled', key: 'enabled', dataIndex: 'enabled', width: 100 },
-]
+const columns = computed<any[]>(() => [
+  { title: t('access.name'), key: 'name', dataIndex: 'name' },
+  { title: t('access.rules'), key: 'rules' },
+  { title: t('access.enabled'), key: 'enabled', dataIndex: 'enabled', width: 100 },
+])
 
 onMounted(load)
 
@@ -69,7 +69,7 @@ async function load() {
 
 async function submit() {
   if (!form.name) {
-    message.warning('策略名称必填')
+    message.warning(t('access.nameRequired'))
     return
   }
   const rules: PolicyRule[] = rulesText.value
@@ -82,7 +82,7 @@ async function submit() {
     })
   try {
     await createPolicy({ ...form, enabled: true, rules })
-    message.success('已创建')
+    message.success(t('access.createdOk'))
     dialogVisible.value = false
     await load()
   } catch (e) {

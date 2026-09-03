@@ -22,6 +22,11 @@ export const listServerTools = (id: string) => unwrap<Tool[]>(http.get(`/servers
 export const listServerCredentials = (id: string) =>
   unwrap<Credential[]>(http.get(`/servers/${id}/credentials`))
 
+export const createCredential = (
+  id: string,
+  payload: { name: string; kind: 'api_key' | 'static_token'; header: string; value: string },
+) => unwrap<Credential>(http.post(`/servers/${id}/credentials`, payload))
+
 // ---- Tools / Routes / Policies ----
 
 export const listTools = () => unwrap<Tool[]>(http.get('/tools'))

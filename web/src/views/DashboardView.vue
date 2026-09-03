@@ -1,8 +1,8 @@
 <template>
   <a-row :gutter="[16, 16]">
-    <a-col v-for="card in cards" :key="card.label" :xs="12" :md="8" :xl="4">
+    <a-col v-for="card in cards" :key="card.key" :xs="12" :md="8" :xl="4">
       <a-card class="stat-card" :bordered="true">
-        <div class="stat-label">{{ card.label }}</div>
+        <div class="stat-label">{{ t(`dashboard.${card.key}`) }}</div>
         <div class="stat-value">{{ card.value }}</div>
       </a-card>
     </a-col>
@@ -10,7 +10,7 @@
 
   <a-row :gutter="[16, 16]" class="row-gap">
     <a-col :span="14">
-      <a-card title="Recent Tool Calls" :bordered="true">
+      <a-card :title="t('dashboard.recentCalls')" :bordered="true">
         <a-table :data-source="logs" :columns="logColumns" :pagination="false" size="small">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'status'">
@@ -21,7 +21,7 @@
       </a-card>
     </a-col>
     <a-col :span="10">
-      <a-card title="Server Health" :bordered="true">
+      <a-card :title="t('dashboard.serverHealth')" :bordered="true">
         <a-table :data-source="servers" :columns="healthColumns" :pagination="false" size="small">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'health'">
@@ -36,45 +36,48 @@
     </a-col>
   </a-row>
 
-  <a-card title="Top Tools by Calls" :bordered="true" class="row-gap">
+  <a-card :title="t('dashboard.topTools')" :bordered="true" class="row-gap">
     <TopToolsChart :data="topTools" />
   </a-card>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { listServers, listServerTools, getLogs, getMetrics } from '@/api'
 import type { MCPServer, TrafficSample, MetricSnapshot } from '@/types'
 import TopToolsChart, { type ChartDatum } from '@/components/TopToolsChart.vue'
+
+const { t } = useI18n()
 
 const servers = ref<MCPServer[]>([])
 const logs = ref<TrafficSample[]>([])
 const metrics = ref<MetricSnapshot[]>([])
 const toolCount = ref<Record<string, number>>({})
 const cards = ref([
-  { label: 'Registered Servers', value: 0 as number | string },
-  { label: 'Healthy', value: 0 },
-  { label: 'Available Tools', value: 0 },
-  { label: 'Requests', value: 0 },
-  { label: 'Success Rate', value: '-' },
-  { label: 'P95 Latency', value: '-' },
+  { key: 'registeredServers', value: 0 as number | string },
+  { key: 'healthyServers', value: 0 },
+  { key: 'availableTools', value: 0 },
+  { key: 'requests', value: 0 },
+  { key: 'successRate', value: '-' },
+  { key: 'p95Latency', value: '-' },
 ])
 
 const topTools = ref<ChartDatum[]>([])
 
-const logColumns: any[] = [
-  { title: 'Tool', key: 'tool', dataIndex: 'tool' },
-  { title: 'Status', key: 'status', dataIndex: 'status' },
-  { title: 'Latency (ms)', key: 'latency', dataIndex: 'latency_ms' },
-  { title: 'Client', key: 'client', dataIndex: 'client' },
-  { title: 'Request ID', key: 'request_id', dataIndex: 'request_id', ellipsis: true },
-]
+const logColumns = computed<any[]>(() => [
+  { title: t('traffic.tool'), key: 'tool', dataIndex: 'tool' },
+  { title: t('traffic.status'), key: 'status', dataIndex: 'status' },
+  { title: t('traffic.latencyMs'), key: 'latency', dataIndex: 'latency_ms' },
+  { title: t('traffic.client'), key: 'client', dataIndex: 'client' },
+  { title: t('traffic.requestId'), key: 'request_id', dataIndex: 'request_id', ellipsis: true },
+])
 
-const healthColumns: any[] = [
-  { title: 'Server', key: 'name', dataIndex: 'name' },
-  { title: 'Health', key: 'health', dataIndex: 'health_status' },
-  { title: 'Tools', key: 'tools' },
-]
+const healthColumns = computed<any[]>(() => [
+  { title: t('traffic.server'), key: 'name', dataIndex: 'name' },
+  { title: t('dashboard.serverHealth'), key: 'health', dataIndex: 'health_status' },
+  { title: t('dashboard.availableTools'), key: 'tools', width: 90 },
+])
 
 onMounted(async () => {
   try {
@@ -113,7 +116,7 @@ onMounted(async () => {
       .map((m) => ({ name: m.key, value: Number(m.totals) }))
   } catch (e) {
     // 后端不可达时保留空态，避免整页报错。
-    console.error('加载 Dashboard 失败', e)
+    console.error('load dashboard failed', e)
   }
 })
 </script>
@@ -130,11 +133,6 @@ onMounted(async () => {
   font-size: 26px;
   font-weight: 600;
   margin-top: 6px;
-}
-.stat-hint {
-  color: rgba(0, 0, 0, 0.45);
-  font-size: 12px;
-  margin-top: 4px;
 }
 .row-gap {
   margin-top: 16px;
