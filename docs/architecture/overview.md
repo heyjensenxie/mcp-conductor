@@ -15,7 +15,7 @@
 │   ├── config           # config.yaml + 环境变量（CONDUCTOR_*）
 │   ├── model            # 领域模型：Server/Tool/Route/Policy/Credential/Traffic
 │   ├── errs             # 统一错误模型（code/message/request_id；错误类别枚举）
-│   ├── storage          # 存储接口 + memory 实现（mysql 5.7 预留）
+│   ├── storage          # 存储接口；memory 与 mysql 5.7 双实现（mysql 见 database.md）
 │   ├── mcp              # MCP 协议最小层：类型、JSON-RPC 传输、端点 Handler、上游 Client
 │   ├── mcpclient        # 上游 Server 适配（Discover/Call/健康 Probe）
 │   ├── registry         # Server CRUD、Tool 发现/聚合、命名空间

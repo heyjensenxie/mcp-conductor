@@ -24,7 +24,9 @@ import (
 	"github.com/xmj128/mcp-conductor/internal/ratelimit"
 	"github.com/xmj128/mcp-conductor/internal/registry"
 	"github.com/xmj128/mcp-conductor/internal/router"
+	"github.com/xmj128/mcp-conductor/internal/storage"
 	"github.com/xmj128/mcp-conductor/internal/storage/memory"
+	mysqlstore "github.com/xmj128/mcp-conductor/internal/storage/mysql"
 )
 
 // Run 启动后端并阻塞直到退出信号或服务错误。
@@ -39,7 +41,12 @@ func Run(ctx context.Context) error {
 	}
 	setupLogger(cfg.Logging)
 
-	store := memory.New()
+	store, closeStore, err := openStore(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+
 	adapter := mcpclient.New()
 
 	registrySvc := registry.NewService(store, adapter)
@@ -78,6 +85,18 @@ func Run(ctx context.Context) error {
 	go monitor.Run(ctx)
 
 	return runWithSignal(ctx, server)
+}
+
+// openStore 按配置选择存储后端：默认 memory；配置为 mysql 时连接 MySQL 5.7+。
+func openStore(ctx context.Context, cfg config.Config) (storage.Store, func(), error) {
+	if cfg.Database.Driver != "mysql" {
+		return memory.New(), func() {}, nil
+	}
+	store, err := mysqlstore.Open(ctx, cfg.Database.DSN)
+	if err != nil {
+		return nil, nil, err
+	}
+	return store, func() { _ = store.Close() }, nil
 }
 
 // buildLimiter 按配置组装限流器：关闭→直通；Redis 可用→分布式限流；

@@ -32,7 +32,7 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 
 | 能力 | 状态 |
 | --- | --- |
-| MCP Server Registry + CRUD | ✅ 内存存储（MySQL 5.7+ 驱动为下一阶段） |
+| MCP Server Registry + CRUD | ✅ MySQL 5.7+ 驱动（`internal/storage/mysql`）；默认 memory 可通过 `database.driver=mysql` 切换 |
 | 自动发现 MCP Tools + Tool Namespace | ✅ |
 | 统一 MCP Endpoint（`tools/list` 聚合、`tools/call` 路由） | ✅ streamable HTTP 无状态模式 |
 | 健康检查（initialize 握手 + 周期巡检） | ✅ |
@@ -205,7 +205,14 @@ CONDUCTOR_AUTH_ENABLED=true CONDUCTOR_AUTH_API_KEYS="admin:dev-key" go run ./cmd
 
 ### 数据库兼容目标：MySQL 5.7+
 
-生产环境为 **MySQL 5.7**，因此迁移 / DDL / SQL 必须 5.7 可运行；**禁止 MySQL 8.0 专属特性**（Window Functions、CTE、Function Index、CHECK 兜底、MySQL 8 JSON 函数/索引等），需要时走 MySQL 5.7 兼容或应用层方案。详见 [docs/architecture/database.md](docs/architecture/database.md)。本阶段默认 memory 存储；`migrations/0001_init_schema.sql` 已在真实 MySQL 5.7 上实测通过。
+生产环境为 **MySQL 5.7**，因此迁移 / DDL / SQL 必须 5.7 可运行；**禁止 MySQL 8.0 专属特性**（Window Functions、CTE、Function Index、CHECK 兜底、MySQL 8 JSON 函数/索引等），需要时走 MySQL 5.7 兼容或应用层方案。详见 [docs/architecture/database.md](docs/architecture/database.md)。`migrations/0001_init_schema.sql` 与 `internal/storage/mysql` 驱动已在真实 MySQL 5.7 上实测（含重启持久化）。
+
+```bash
+# 用 MySQL 驱动启动（先确保数据库建好并应用迁移）
+CONDUCTOR_DATABASE_DRIVER=mysql \
+CONDUCTOR_DATABASE_DSN='conductor:conductor@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' \
+  go run ./cmd/conductor
+```
 
 ## Development
 
@@ -229,8 +236,8 @@ make docker-up     # Compose 一键启动（MySQL 5.7 / Redis / Conductor）
 
 ## Roadmap
 
-- **v0.1（当前）**：最小闭环 + 运维基础（Registry / 聚合 / 路由 / 治理 / 观测 / Console / Docker）。
-- **v0.2 候选**：MySQL 5.7+ 持久化驱动（`internal/storage/mysql`）、Credential 落库与上游凭据注入、SSE/stdio 上游接入、Route/Policy 管理页完善。
+- **v0.1（当前）**：最小闭环 + 运维基础（Registry / 聚合 / 路由 / 治理 / 观测 / Console / Docker）。其中 **MySQL 5.7+ 持久化驱动已先行落地**（`internal/storage/mysql`，实测通过）。
+- **v0.2 候选**：Credential 落库与上游凭据注入、SSE/stdio 上游接入、Route/Policy 管理页完善、数据库迁移工具与 CI 接通。
 - **v0.3 候选**：Evaluation 边界（Dataset / TestCase / MCP Score 接口）、协议/Schema/性能测试、CI Quality Gate。
 - **远期**：独立 Python Evaluation Worker、AI 优化建议、Traffic Replay、单逻辑 Server 多实例负载均衡。
 

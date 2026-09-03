@@ -33,7 +33,10 @@
 ## 目录
 
 - 迁移文件：`migrations/`（`.sql`，5.7 可执行）
-- 驱动规划：`internal/storage/*` 按现有 `storage` 接口实现 `mysql` 后端，与 `memory` 平级
+- MySQL 驱动：`internal/storage/mysql`（已实现，满足 `storage.Store`；DSN 须含 `parseTime=true&loc=UTC&charset=utf8mb4`）
+- 集成测试：`MYSQL_TEST_DSN='...' go test ./internal/storage/mysql/ -v`（未设 DSN 自动跳过；须在真实 MySQL 5.7 上执行迁移后运行）
+- 应用迁移（开发环境，Compose 起的容器）：
+  `docker compose exec -T mysql mysql -uconductor -pconductor --default-character-set=utf8mb4 conductor < migrations/0001_init_schema.sql`（或 `make db-migrate`）
 
 ## 上线检查清单（涉及 SQL 的改动合入前）
 

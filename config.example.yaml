@@ -6,7 +6,7 @@ server:
   host: 0.0.0.0
   port: 8080
 
-# driver 支持 memory（默认，无 MySQL 也可运行）| mysql（生产 MySQL 5.7+，下一阶段实现）
+# driver 支持 memory（默认，无 MySQL 也可运行）| mysql（生产 MySQL 5.7+；DSN 需含 parseTime=true&loc=UTC&charset=utf8mb4）
 database:
   driver: memory
   dsn: ""

@@ -1,0 +1,367 @@
+package mysql
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+
+	"github.com/xmj128/mcp-conductor/internal/model"
+)
+
+// ---- ToolStore ----
+
+const toolColumns = `id, server_id, original_name, gateway_name, COALESCE(description,''), COALESCE(input_schema,''), COALESCE(risk_level,''), enabled, created_at, updated_at`
+
+func scanTool(scan func(dest ...any) error) (model.Tool, error) {
+	var tool model.Tool
+	var inputSchema string
+	err := scan(&tool.ID, &tool.ServerID, &tool.OriginalName, &tool.GatewayName,
+		&tool.Description, &inputSchema, &tool.RiskLevel, &tool.Enabled,
+		&tool.CreatedAt, &tool.UpdatedAt)
+	if err != nil {
+		return model.Tool{}, err
+	}
+	if err := unmarshalJSON(inputSchema, &tool.InputSchema); err != nil {
+		return model.Tool{}, fmt.Errorf("解析 tool %q input_schema 失败: %w", tool.ID, err)
+	}
+	return tool, nil
+}
+
+// UpsertTool 以 gateway_name 为业务键写入/覆盖 Tool（MySQL 5.7 的
+// INSERT ... ON DUPLICATE KEY UPDATE 保证幂等）。
+// 已存在时复用既有 id（与内存实现语义一致），并刷新其余字段。
+func (s *Store) UpsertTool(ctx context.Context, tool *model.Tool) error {
+	schema, err := marshalJSON(tool.InputSchema)
+	if err != nil {
+		return err
+	}
+	// ON DUPLICATE KEY UPDATE 不会改动主键：先查出既有 id 复用，
+	// 保证对外 tool.ID 稳定。
+	var existingID string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT id FROM tools WHERE gateway_name = ? LIMIT 1`, tool.GatewayName).Scan(&existingID); err == nil {
+		tool.ID = existingID
+	} else if tool.ID == "" {
+		tool.ID = newID("tool")
+	}
+	now := nowOr(tool.CreatedAt)
+	tool.CreatedAt = now
+	tool.UpdatedAt = nowOr(tool.UpdatedAt)
+
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO tools
+		   (id, server_id, original_name, gateway_name, description, input_schema, risk_level, enabled, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)
+		 ON DUPLICATE KEY UPDATE
+		   server_id = VALUES(server_id), original_name = VALUES(original_name),
+		   description = VALUES(description), input_schema = VALUES(input_schema),
+		   risk_level = VALUES(risk_level), enabled = VALUES(enabled), updated_at = VALUES(updated_at)`,
+		tool.ID, tool.ServerID, tool.OriginalName, tool.GatewayName,
+		nullIfEmpty(tool.Description), schema, nullIfEmpty(tool.RiskLevel),
+		tool.Enabled, fmtTimeUTC(tool.CreatedAt), fmtTimeUTC(tool.UpdatedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert tools: %w", err)
+	}
+	return nil
+}
+
+// GetTool 按 id 读取 Tool。
+func (s *Store) GetTool(ctx context.Context, id string) (*model.Tool, error) {
+	tool, err := scanTool(func(dest ...any) error {
+		return s.db.QueryRowContext(ctx,
+			"SELECT "+toolColumns+" FROM tools WHERE id = ?", id).Scan(dest...)
+	})
+	if err != nil {
+		return nil, notExistError(err, "tool", id)
+	}
+	return &tool, nil
+}
+
+// GetToolByGatewayName 按对外门面名读取 Tool。
+func (s *Store) GetToolByGatewayName(ctx context.Context, gatewayName string) (*model.Tool, error) {
+	tool, err := scanTool(func(dest ...any) error {
+		return s.db.QueryRowContext(ctx,
+			"SELECT "+toolColumns+" FROM tools WHERE gateway_name = ?", gatewayName).Scan(dest...)
+	})
+	if err != nil {
+		return nil, notExistError(err, "tool", gatewayName)
+	}
+	return &tool, nil
+}
+
+// ListTools 返回全部 Tool。
+func (s *Store) ListTools(ctx context.Context) ([]model.Tool, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+toolColumns+" FROM tools ORDER BY gateway_name")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]model.Tool, 0)
+	for rows.Next() {
+		tool, err := scanTool(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, tool)
+	}
+	return out, rows.Err()
+}
+
+// ListToolsByServer 返回指定 Server 的 Tool 列表。
+func (s *Store) ListToolsByServer(ctx context.Context, serverID string) ([]model.Tool, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+toolColumns+" FROM tools WHERE server_id = ? ORDER BY gateway_name", serverID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]model.Tool, 0)
+	for rows.Next() {
+		tool, err := scanTool(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, tool)
+	}
+	return out, rows.Err()
+}
+
+// DeleteToolsByServer 删除指定 Server 的 Tool。
+func (s *Store) DeleteToolsByServer(ctx context.Context, serverID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM tools WHERE server_id = ?`, serverID)
+	return err
+}
+
+// ---- RouteStore ----
+
+// CreateRoute 新增路由（tool_names 以 JSON 文本保存）。
+func (s *Store) CreateRoute(ctx context.Context, route *model.Route) error {
+	names, err := marshalJSON(route.ToolNames)
+	if err != nil {
+		return err
+	}
+	if route.ID == "" {
+		route.ID = newID("route")
+	}
+	now := nowOr(route.CreatedAt)
+	route.CreatedAt = now
+	route.UpdatedAt = nowOr(route.UpdatedAt)
+
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO routes (id, name, server_id, tool_names, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`,
+		route.ID, route.Name, route.ServerID, names, route.Enabled,
+		fmtTimeUTC(route.CreatedAt), fmtTimeUTC(route.UpdatedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("insert routes: %w", err)
+	}
+	return nil
+}
+
+// ListRoutes 返回全部路由。
+func (s *Store) ListRoutes(ctx context.Context) ([]model.Route, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, server_id, COALESCE(tool_names,''), enabled, created_at, updated_at FROM routes ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]model.Route, 0)
+	for rows.Next() {
+		var route model.Route
+		var names string
+		if err := rows.Scan(&route.ID, &route.Name, &route.ServerID, &names, &route.Enabled,
+			&route.CreatedAt, &route.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if err := unmarshalJSON(names, &route.ToolNames); err != nil {
+			return nil, err
+		}
+		out = append(out, route)
+	}
+	return out, rows.Err()
+}
+
+// ---- PolicyStore ----
+
+// CreatePolicy 在事务中写入策略与规范化后的规则。
+func (s *Store) CreatePolicy(ctx context.Context, policy *model.Policy) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if policy.ID == "" {
+		policy.ID = newID("pol")
+	}
+	now := nowOr(policy.CreatedAt)
+	policy.CreatedAt = now
+	policy.UpdatedAt = nowOr(policy.UpdatedAt)
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO policies (id, name, enabled, created_at, updated_at) VALUES (?,?,?,?,?)`,
+		policy.ID, policy.Name, policy.Enabled, fmtTimeUTC(policy.CreatedAt), fmtTimeUTC(policy.UpdatedAt)); err != nil {
+		return fmt.Errorf("insert policies: %w", err)
+	}
+	for _, rule := range policy.Rules {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO policy_rules (policy_id, subject, tool, effect) VALUES (?,?,?,?)`,
+			policy.ID, rule.Subject, rule.Tool, rule.Effect); err != nil {
+			return fmt.Errorf("insert policy_rules: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// GetPolicy 读取策略及其规则。
+func (s *Store) GetPolicy(ctx context.Context, id string) (*model.Policy, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT p.id, p.name, p.enabled, p.created_at, p.updated_at,
+		        COALESCE(r.subject,''), COALESCE(r.tool,''), COALESCE(r.effect,'')
+		 FROM policies p
+		 LEFT JOIN policy_rules r ON r.policy_id = p.id
+		 WHERE p.id = ? ORDER BY r.id`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	policy, err := scanPolicies(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(policy) == 0 {
+		return nil, fmt.Errorf("policy %q 不存在", id)
+	}
+	return &policy[0], nil
+}
+
+// ListPolicies 返回全部启用/停用策略（含规则，单次 JOIN 查询）。
+func (s *Store) ListPolicies(ctx context.Context) ([]model.Policy, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT p.id, p.name, p.enabled, p.created_at, p.updated_at,
+		        COALESCE(r.subject,''), COALESCE(r.tool,''), COALESCE(r.effect,'')
+		 FROM policies p
+		 LEFT JOIN policy_rules r ON r.policy_id = p.id
+		 ORDER BY p.id, r.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanPolicies(rows)
+}
+
+// scanPolicies 把「策略 LEFT JOIN 规则」的行流聚合成带规则列表的策略。
+func scanPolicies(rows *sql.Rows) ([]model.Policy, error) {
+	out := make([]model.Policy, 0)
+	index := make(map[string]int) // policyID -> out 下标
+	for rows.Next() {
+		var p model.Policy
+		var subject, tool, effect string
+		if err := rows.Scan(&p.ID, &p.Name, &p.Enabled, &p.CreatedAt, &p.UpdatedAt,
+			&subject, &tool, &effect); err != nil {
+			return nil, err
+		}
+		if i, ok := index[p.ID]; ok {
+			if subject != "" { // 有规则行才追加
+				out[i].Rules = append(out[i].Rules, model.PolicyRule{Subject: subject, Tool: tool, Effect: model.PolicyEffect(effect)})
+			}
+			continue
+		}
+		index[p.ID] = len(out)
+		if subject != "" {
+			p.Rules = []model.PolicyRule{{Subject: subject, Tool: tool, Effect: model.PolicyEffect(effect)}}
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ---- CredentialStore ----
+
+// CreateCredential 新增凭证元数据（敏感值不在库中保存明文）。
+func (s *Store) CreateCredential(ctx context.Context, credential *model.Credential) error {
+	if credential.ID == "" {
+		credential.ID = newID("cred")
+	}
+	now := nowOr(credential.CreatedAt)
+	credential.CreatedAt = now
+	credential.UpdatedAt = nowOr(credential.UpdatedAt)
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO credentials (id, server_id, name, kind, header, has_value, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`,
+		credential.ID, credential.ServerID, credential.Name, credential.Kind,
+		nullIfEmpty(credential.Header), credential.HasValue, fmtTimeUTC(credential.CreatedAt), fmtTimeUTC(credential.UpdatedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("insert credentials: %w", err)
+	}
+	return nil
+}
+
+// ListCredentialsByServer 返回指定 Server 的凭证元数据。
+func (s *Store) ListCredentialsByServer(ctx context.Context, serverID string) ([]model.Credential, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, server_id, name, kind, COALESCE(header,''), has_value, created_at, updated_at
+		 FROM credentials WHERE server_id = ? ORDER BY id`, serverID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]model.Credential, 0)
+	for rows.Next() {
+		var cred model.Credential
+		if err := rows.Scan(&cred.ID, &cred.ServerID, &cred.Name, &cred.Kind, &cred.Header,
+			&cred.HasValue, &cred.CreatedAt, &cred.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, cred)
+	}
+	return out, rows.Err()
+}
+
+// ---- TrafficStore ----
+
+// AppendTraffic 追加一条调用采样。请求/追踪标识为可选，错误文本仅在失败时写入。
+func (s *Store) AppendTraffic(ctx context.Context, sample model.TrafficSample) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO traffic_log (request_id, trace_id, server_id, tool, client, status, latency_ms, error, ts)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		sample.RequestID, nullIfEmpty(sample.TraceID), nullIfEmpty(sample.ServerID),
+		sample.Tool, nullIfEmpty(sample.Client), sample.Status, sample.LatencyMS,
+		nullIfEmpty(sample.Error), fmtTimeUTC(sample.Timestamp),
+	)
+	if err != nil {
+		return fmt.Errorf("insert traffic_log: %w", err)
+	}
+	return nil
+}
+
+// RecentTraffic 返回最近 limit 条调用采样（按写入顺序倒序）。
+func (s *Store) RecentTraffic(ctx context.Context, limit int) ([]model.TrafficSample, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT request_id, COALESCE(trace_id,''), COALESCE(server_id,''), tool, COALESCE(client,''),
+		        status, latency_ms, COALESCE(error,''), ts
+		 FROM traffic_log ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]model.TrafficSample, 0)
+	for rows.Next() {
+		var sample model.TrafficSample
+		if err := rows.Scan(&sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.Tool,
+			&sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error, &sample.Timestamp); err != nil {
+			return nil, err
+		}
+		out = append(out, sample)
+	}
+	return out, rows.Err()
+}
