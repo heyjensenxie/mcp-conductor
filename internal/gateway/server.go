@@ -24,6 +24,7 @@ type Deps struct {
 	Metrics     *observability.Metrics
 	Store       storage.Store
 	Auth        auth.Authenticator
+	AuthService *auth.Service
 	RateLimiter ratelimit.Limiter
 }
 
@@ -36,6 +37,10 @@ func NewServer(cfg config.Config, deps Deps) *http.Server {
 	mcpHandler := mcp.NewHandler(deps.MCPService)
 	mux.Handle(mcpPath, mcpHandler)
 	mux.Handle(mcpPath+"/", mcpHandler)
+
+	// 认证：登录签发 / 状态探测（免认证路径）。
+	mux.HandleFunc("POST /api/auth/login", handleLogin(deps.AuthService))
+	mux.HandleFunc("GET /api/auth/status", handleAuthStatus(deps.AuthService))
 
 	registerControlRoutes(mux, deps)
 	registerHealthRoutes(mux)

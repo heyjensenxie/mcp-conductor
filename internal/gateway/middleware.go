@@ -82,9 +82,15 @@ func (s *statusRecorder) WriteHeader(code int) {
 }
 
 // authMiddleware 校验调用凭据并写入调用主体。路径 /mcp 使用 JSON-RPC 错误格式。
+// 认证/探针端点（/api/auth/*、/healthz、/readyz）免认证，交由对应处理器。
 func authMiddleware(authenticator auth.Authenticator) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/api/auth/") ||
+				r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+				next.ServeHTTP(w, r)
+				return
+			}
 			identity, err := authenticator.Authenticate(r.Context(), extractToken(r))
 			if err != nil {
 				status := http.StatusUnauthorized

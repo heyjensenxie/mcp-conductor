@@ -9,7 +9,6 @@
 _Route. Govern. Observe. Evaluate. Improve._
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](go.mod)
-[![CI](https://github.com/xmj128/mcp-conductor/actions/workflows/ci.yml/badge.svg)](https://github.com/xmj128/mcp-conductor/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-MVP%20v0.1-yellow)](#roadmap)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)

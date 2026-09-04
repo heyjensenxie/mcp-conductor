@@ -68,7 +68,10 @@ func Run(ctx context.Context) error {
 		gateway.WithMaxConcurrency(cfg.Gateway.MaxConcurrency),
 	)
 
-	authenticator := auth.NewStaticKeys(cfg.Auth.Enabled, cfg.Auth.APIKeys)
+	authSvc, err := auth.NewService(cfg.Auth)
+	if err != nil {
+		return err
+	}
 	limiter := buildLimiter(cfg)
 
 	server := gateway.NewServer(cfg, gateway.Deps{
@@ -76,7 +79,8 @@ func Run(ctx context.Context) error {
 		MCPService:  mcpGateway,
 		Metrics:     metrics,
 		Store:       store,
-		Auth:        authenticator,
+		Auth:        authSvc,
+		AuthService: authSvc,
 		RateLimiter: limiter,
 	})
 
