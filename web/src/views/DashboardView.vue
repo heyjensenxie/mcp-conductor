@@ -1,44 +1,55 @@
 <template>
-  <a-row :gutter="[16, 16]">
-    <a-col v-for="card in cards" :key="card.key" :xs="12" :md="8" :xl="4">
-      <a-card class="stat-card" :bordered="true">
-        <div class="stat-label">{{ t(`dashboard.${card.key}`) }}</div>
-        <div class="stat-value">{{ card.value }}</div>
-      </a-card>
-    </a-col>
-  </a-row>
+  <div class="dash">
+    <!-- 统计卡：错落入场 + 悬浮抬升 -->
+    <a-row :gutter="[16, 16]">
+      <a-col v-for="(card, i) in cards" :key="card.key" :xs="12" :md="8" :xl="4" class="reveal" :style="{ animationDelay: `${i * 60}ms` }">
+        <div class="stat-card mc-panel">
+          <div class="stat-top">
+            <span class="stat-label mono">{{ t(`dashboard.${card.key}`) }}</span>
+            <span class="mc-dot" :class="`mc-dot--${card.dot}`"></span>
+          </div>
+          <div class="stat-value mono">{{ card.value }}</div>
+        </div>
+      </a-col>
+    </a-row>
 
-  <a-row :gutter="[16, 16]" class="row-gap">
-    <a-col :span="14">
-      <a-card :title="t('dashboard.recentCalls')" :bordered="true">
-        <a-table :data-source="logs" :columns="logColumns" :pagination="false" size="small">
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'status'">
-              <a-tag :color="record.status === 'success' ? 'green' : 'red'">{{ record.status }}</a-tag>
+    <a-row :gutter="[16, 16]" class="row-gap reveal" :style="{ animationDelay: '180ms' }">
+      <a-col :span="14">
+        <section class="mc-panel panel">
+          <header class="panel-head mono">{{ t('dashboard.recentCalls') }}</header>
+          <a-table :data-source="logs" :columns="logColumns" :pagination="false" size="small">
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'status'">
+                <span class="mc-dot" :class="record.status === 'success' ? 'mc-dot--ok' : 'mc-dot--bad'"></span>
+                <span class="cell-status">{{ record.status }}</span>
+              </template>
             </template>
-          </template>
-        </a-table>
-      </a-card>
-    </a-col>
-    <a-col :span="10">
-      <a-card :title="t('dashboard.serverHealth')" :bordered="true">
-        <a-table :data-source="servers" :columns="healthColumns" :pagination="false" size="small">
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'health'">
-              <a-tag :color="record.health_status === 'healthy' ? 'green' : record.health_status === 'unhealthy' ? 'red' : 'default'">
-                {{ record.health_status }}
-              </a-tag>
+          </a-table>
+        </section>
+      </a-col>
+      <a-col :span="10">
+        <section class="mc-panel panel">
+          <header class="panel-head mono">{{ t('dashboard.serverHealth') }}</header>
+          <a-table :data-source="servers" :columns="healthColumns" :pagination="false" size="small">
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'health'">
+                <span class="mc-dot" :class="dotClass(record.health_status)"></span>
+                <span class="cell-status">{{ record.health_status }}</span>
+              </template>
+              <template v-else-if="column.key === 'tools'">
+                <span class="mono">{{ toolCount[record.id] ?? 0 }}</span>
+              </template>
             </template>
-            <template v-else-if="column.key === 'tools'">{{ toolCount[record.id] ?? 0 }}</template>
-          </template>
-        </a-table>
-      </a-card>
-    </a-col>
-  </a-row>
+          </a-table>
+        </section>
+      </a-col>
+    </a-row>
 
-  <a-card :title="t('dashboard.topTools')" :bordered="true" class="row-gap">
-    <TopToolsChart :data="topTools" />
-  </a-card>
+    <section class="mc-panel panel row-gap reveal" :style="{ animationDelay: '240ms' }">
+      <header class="panel-head mono">{{ t('dashboard.topTools') }}</header>
+      <TopToolsChart :data="topTools" />
+    </section>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -55,12 +66,12 @@ const logs = ref<TrafficSample[]>([])
 const metrics = ref<MetricSnapshot[]>([])
 const toolCount = ref<Record<string, number>>({})
 const cards = ref([
-  { key: 'registeredServers', value: 0 as number | string },
-  { key: 'healthyServers', value: 0 },
-  { key: 'availableTools', value: 0 },
-  { key: 'requests', value: 0 },
-  { key: 'successRate', value: '-' },
-  { key: 'p95Latency', value: '-' },
+  { key: 'registeredServers', value: 0 as number | string, dot: 'idle' },
+  { key: 'healthyServers', value: 0, dot: 'ok' },
+  { key: 'availableTools', value: 0, dot: 'idle' },
+  { key: 'requests', value: 0, dot: 'idle' },
+  { key: 'successRate', value: '-', dot: 'ok' },
+  { key: 'p95Latency', value: '-', dot: 'warn' },
 ])
 
 const topTools = ref<ChartDatum[]>([])
@@ -78,6 +89,8 @@ const healthColumns = computed<any[]>(() => [
   { title: t('dashboard.serverHealth'), key: 'health', dataIndex: 'health_status' },
   { title: t('dashboard.availableTools'), key: 'tools', width: 90 },
 ])
+
+const dotClass = (s: string) => (s === 'healthy' ? 'mc-dot--ok' : s === 'unhealthy' ? 'mc-dot--bad' : s === 'disabled' ? 'mc-dot--idle' : 'mc-dot--warn')
 
 onMounted(async () => {
   try {
@@ -115,7 +128,6 @@ onMounted(async () => {
       .slice(0, 8)
       .map((m) => ({ name: m.key, value: Number(m.totals) }))
   } catch (e) {
-    // 后端不可达时保留空态，避免整页报错。
     console.error('load dashboard failed', e)
   }
 })
@@ -123,16 +135,67 @@ onMounted(async () => {
 
 <style scoped>
 .stat-card {
-  text-align: center;
+  position: relative;
+  padding: 14px 18px 16px;
+  overflow: hidden;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+.stat-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 34px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--mc-accent);
+}
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--mc-shadow-raise);
+}
+.stat-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
 }
 .stat-label {
-  color: rgba(0, 0, 0, 0.45);
-  font-size: 13px;
+  font-size: 11.5px;
+  letter-spacing: 0.07em;
+  color: var(--mc-ink-2);
+  text-transform: uppercase;
 }
 .stat-value {
-  font-size: 26px;
+  font-size: 30px;
   font-weight: 600;
-  margin-top: 6px;
+  line-height: 1.1;
+  color: var(--mc-ink);
+}
+
+.panel {
+  background: var(--mc-elev);
+  padding: 16px 18px;
+}
+.panel-head {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--mc-ink-2);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.panel-head::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--mc-accent);
+}
+.cell-status {
+  margin-left: 7px;
+  font-size: 12.5px;
+  color: var(--mc-ink-2);
 }
 .row-gap {
   margin-top: 16px;

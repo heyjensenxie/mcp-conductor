@@ -1,0 +1,131 @@
+/* MCP Conductor —— Operator Console 设计系统
+   方向：工程控制台。深色侧栏 + 浅色画布 + 细网格 + 等宽数字 + 单一信号蓝。
+   沉浸而不炫技，克制而具辨识度。
+*/
+:root {
+  /* 画布与墨色 */
+  --mc-bg: #eef1f6;
+  --mc-elev: #ffffff;
+  --mc-ink: #0d1520;
+  --mc-ink-2: #55606e;
+  --mc-ink-3: #8a94a3;
+  --mc-line: #dbe1ea;
+  --mc-line-soft: #e8ecf2;
+
+  /* 强调：工程信号蓝 + 语义色 */
+  --mc-accent: #1f6feb;
+  --mc-accent-strong: #0b57d0;
+  --mc-accent-soft: rgba(31, 111, 235, 0.1);
+  --mc-ok: #12a150;
+  --mc-warn: #d9822b;
+  --mc-danger: #e0453c;
+
+  /* 深色侧栏 */
+  --mc-sidebar: #0d1520;
+  --mc-sidebar-2: #111b2a;
+  --mc-sidebar-line: rgba(255, 255, 255, 0.08);
+  --mc-sidebar-text: #9aa7ba;
+  --mc-sidebar-active: rgba(31, 111, 235, 0.22);
+
+  /* 字体 */
+  --mc-mono: 'Cascadia Code', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --mc-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+
+  /* 阴影 */
+  --mc-shadow: 0 1px 2px rgba(13, 21, 32, 0.05), 0 10px 28px -16px rgba(13, 21, 32, 0.18);
+  --mc-shadow-raise: 0 2px 4px rgba(13, 21, 32, 0.06), 0 18px 40px -18px rgba(13, 21, 32, 0.28);
+}
+
+html,
+body {
+  background: var(--mc-bg) !important;
+  color: var(--mc-ink);
+}
+
+/* 精细 24px 工程网格，用于内容画布 */
+.mc-grid {
+  background-image: linear-gradient(rgba(13, 21, 32, 0.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(13, 21, 32, 0.028) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* 等宽数字（表格数值、统计卡、标识） */
+.mono {
+  font-family: var(--mc-mono) !important;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+/* 统一面板 */
+.mc-panel {
+  background: var(--mc-elev);
+  border: 1px solid var(--mc-line-soft);
+  border-radius: 10px;
+  box-shadow: var(--mc-shadow);
+}
+
+/* 入场动效：位移淡入（右→无），用于首屏错落 reveal */
+@keyframes mc-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.reveal {
+  opacity: 0;
+  animation: mc-rise 0.55s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+}
+
+/* 状态呼吸点（健康） */
+@keyframes mc-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(18, 161, 80, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(18, 161, 80, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(18, 161, 80, 0);
+  }
+}
+.mc-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.mc-dot--ok {
+  background: var(--mc-ok);
+  animation: mc-pulse 2.4s infinite;
+}
+.mc-dot--warn {
+  background: var(--mc-warn);
+}
+.mc-dot--bad {
+  background: var(--mc-danger);
+}
+.mc-dot--idle {
+  background: var(--mc-ink-3);
+}
+
+/* 细滚动条，减少视觉噪声 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(13, 21, 32, 0.16);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(13, 21, 32, 0.3);
+  background-clip: content-box;
+}
