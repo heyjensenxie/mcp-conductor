@@ -4,7 +4,13 @@
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import * as echarts from 'echarts'
+import * as echarts from 'echarts/core'
+import { BarChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+
+// 按需注册，避免整包 echarts 进入应用（大体积）。
+echarts.use([BarChart, GridComponent, TooltipComponent, CanvasRenderer])
 
 export interface ChartDatum {
   name: string
@@ -14,7 +20,7 @@ export interface ChartDatum {
 const props = defineProps<{ data: ChartDatum[] }>()
 
 const el = ref<HTMLDivElement>()
-let chart: echarts.ECharts | null = null
+let chart: ReturnType<typeof echarts.init> | null = null
 
 function render() {
   if (!chart) return
