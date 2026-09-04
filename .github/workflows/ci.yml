@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # 后端：vet + 单元测试（内存/纯逻辑，无数据库依赖）
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+      - run: go vet ./...
+      - run: go test ./...
+
+  # MySQL 5.7 集成测试：真实 5.7 上跑迁移 + storage/mysql 集成用例
+  # （MYSQL_TEST_DSN 未设置时相关用例自动跳过，此处显式设置以真正执行）
+  mysql-integration:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:5.7
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: conductor
+        ports:
+          - '3306:3306'
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+      - name: Install mysql client
+        run: sudo apt-get update -q && sudo apt-get install -y -q default-mysql-client
+      - name: Recreate conductor database (utf8mb4)
+        run: mysql -h127.0.0.1 -uroot -proot -e "DROP DATABASE IF EXISTS conductor; CREATE DATABASE conductor CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+      - name: Apply migrations (in order)
+        run: |
+          for f in migrations/*.sql; do
+            mysql -h127.0.0.1 -uroot -proot conductor < "$f"
+          done
+      - name: Run MySQL 5.7 storage integration tests
+        env:
+          MYSQL_TEST_DSN: root:root@tcp(127.0.0.1:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4
+        run: go test -v ./internal/storage/mysql/
+
+  # 前端：依赖锁安装 + 类型检查/构建
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+
+  # Docker：验证多云段镜像可构建（前端嵌入单二进制）
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t mcp-conductor .
