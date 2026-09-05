@@ -55,6 +55,12 @@
             <a-select-option value="en-US">{{ t('lang.en') }}</a-select-option>
           </a-select>
           <a-tag color="#1f6feb" class="mono">v0.1.0</a-tag>
+          <template v-if="authRequired && store.token">
+            <a-tag class="mono user-tag">{{ userTag }}</a-tag>
+            <a-popconfirm :title="t('auth.confirmLogout')" :ok-text="t('auth.logout')" :cancel-text="t('common.cancel')" @confirm="onLogout">
+              <a-button size="small">{{ t('auth.logout') }}</a-button>
+            </a-popconfirm>
+          </template>
         </a-space>
       </a-layout-header>
 
@@ -66,7 +72,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
@@ -81,10 +87,26 @@ import {
   ToolOutlined,
 } from '@ant-design/icons-vue'
 import { setLocale, type AppLocale } from '@/i18n'
+import { ensureAuthRequired, invalidateAuthState, isSessionToken } from '@/auth/session'
+import { useAppStore } from '@/stores/app'
 
 const route = useRoute()
 const router = useRouter()
 const { t, locale } = useI18n()
+const store = useAppStore()
+
+const authRequired = ref(false)
+onMounted(async () => {
+  authRequired.value = await ensureAuthRequired()
+})
+// 登录态标识：会话令牌显示 session，operator_token 直填显示 operator。
+const userTag = computed(() => (isSessionToken(store.token) ? 'session' : 'operator'))
+
+function onLogout() {
+  store.clearToken()
+  invalidateAuthState()
+  router.push('/login')
+}
 
 // 菜单高亮：按路径首段推导，使 `/servers/:id` 等子页保持所属菜单选中。
 const selectedKeys = computed(() => {

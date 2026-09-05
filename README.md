@@ -37,6 +37,7 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | 统一 MCP Endpoint（`tools/list` 聚合、`tools/call` 路由） | ✅ streamable HTTP 无状态模式 |
 | 健康检查（initialize 握手 + 周期巡检） | ✅ |
 | 路由解析 + Round Robin 负载均衡（健康感知） | ✅ |
+| Tool/Route/Policy 管理闭环 + Route 覆盖转发 | ✅ Tool 启停；Route/Policy 编辑·启停·删除；启用 Route 命中 `tool_names` 时把该工具调用目标 Server 覆盖为 route 指向的 Server（恒等即原样；目标不可调用返回 `route_error`） |
 | 认证（数据面 API Key + 控制面管理令牌） | ✅ API Key 密钥 HMAC-SHA256 哈希落库、明文仅创建时一次性下发、限于 /mcp 白名单；控制面 /api 用静态 `operator_token`（数据面凭据不可访问控制面）；默认关闭 |
 | Gateway→上游 Credential 管理（API Key / Static Token） | ✅ 值 AES-256-GCM 加密落库；经 `json:"-"` 不下发 API、不入日志；按 Server 注入上游请求头 |
 | 按 Key×Tool 白名单授权（跨 Server 聚合） | ✅ 每个 key 只可见/可调被授权工具（支持 `server.*`/`*` 通配）；每工具可配调用参数与请求头；非管理身份回退遗留策略规则 |
@@ -124,6 +125,10 @@ make build              # 构建前端并嵌入 → bin/mcp-conductor
 ./bin/mcp-conductor     # 访问 :8080 即用真实 Console
 ```
 
+> **鉴权默认开启**：首次启动会在控制台打印一次「引导管理员账号」（用户名 + 密码），Console 用它登录；建议先固化：
+> `export CONDUCTOR_AUTH_ADMIN_USERNAME=admin CONDUCTOR_AUTH_ADMIN_PASSWORD=<你的密码> CONDUCTOR_AUTH_OPERATOR_TOKEN=<程序化管理令牌> CONDUCTOR_AUTH_TOKEN_SECRET=$(openssl rand -hex 32)` 后再启动。
+> 未固化时重启会重新生成并打印新密码（旧密码随即失效）。/mcp 数据面鉴权与登录分离，使用 API Key。
+
 > 仅调试后端、不需要 UI 时可 `make build-backend`（或 `go run ./cmd/conductor`）——此时 :8080 打开的是占位 Console（提示先构建前端），并非最新界面。
 
 开发期前端热更新：另开终端 `make web-dev`（`:5173`，已代理 `/api` 与 `/mcp` 到后端），浏览器访问 `http://localhost:5173` 看最新界面。
@@ -131,22 +136,27 @@ make build              # 构建前端并嵌入 → bin/mcp-conductor
 ### 最小闭环演示（5 分钟）
 
 ```bash
+# 0. 控制面令牌：默认开启鉴权，用你固化的程序化管理令牌（未固化则取启动日志打印的管理员密码先登录换取）
+export OPERATOR=<程序化管理令牌 CONDUCTOR_AUTH_OPERATOR_TOKEN>
+
 # 1. 启动演示上游 MCP Server（提供 search/detail 两个回显工具）
 go run ./examples/mock-mcp        # :9000/mcp
 
 # 2. 注册该 Server（名称决定对外命名空间）
 curl -s -X POST http://localhost:8080/api/servers \
-  -H 'Content-Type: application/json' \
+  -H 'Content-Type: application/json' -H "X-Api-Key: $OPERATOR" \
   -d '{"name":"Mock","endpoint":"http://localhost:9000/mcp","transport":"https"}'
 
 # 3. 聚合后的工具（gateway_name = mock.search / mock.detail）
-curl -s http://localhost:8080/api/tools
+curl -s http://localhost:8080/api/tools -H "X-Api-Key: $OPERATOR"
 
 # 4. 通过统一端点调用，自动路由回上游
-curl -s -X POST http://localhost:8080/mcp -H 'Content-Type: application/json' \
+curl -s -X POST http://localhost:8080/mcp -H 'Content-Type: application/json' -H "X-Api-Key: $OPERATOR" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mock.search","arguments":{"q":"policy"}}}'
 # → {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"[search] 收到参数: map[q:policy]"}]}}
 ```
+
+浏览器访问 `http://localhost:8080` 会先进入 `/login`，用管理员账号（默认 `admin` + `admin_password`）登录（`POST /api/auth/login` 换会话）；也可在 Settings 录入程序化管理令牌。
 
 ## API Reference
 
@@ -160,15 +170,16 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 | `tools/list` | 返回全部 Server 聚合后的 Tool 列表（namespaced） |
 | `tools/call` | 按 `gateway_name` 调用，自动授权 → 路由 → 均衡 → 转发上游 |
 
-认证开启后：
-- `/mcp`（数据面）：携带**数据面 API Key**（`Authorization: Bearer <key>` 或 `X-Api-Key: <key>`），只可调该 key 白名单内的工具；
-- `/api/*`（控制面）：仅接受**管理令牌** `auth.operator_token` 或经 `POST /api/auth/login` 签发的会话令牌（同样放 `X-Api-Key`/`Bearer`）。数据面 API Key 访问 `/api` 会得到 403，也不能用来登录换取会话。
+鉴权默认开启，会话/凭据载体为 `Authorization: Bearer <token>` 或 `X-Api-Key: <token>`：
+- Console（浏览器）在 `/login` 用管理员账号（默认 `admin`，密码为 `admin_password`）登录（`POST /api/auth/login` → `mc1.` 会话令牌，默认 12h）；
+- `/api/*`（控制面）：接受**管理令牌** `auth.operator_token` 或登录会话令牌；
+- `/mcp`（数据面）：接受**数据面 API Key**（仅白名单内工具），与登录分离；管理/会话令牌调用 `/mcp` 视为 Operator 全量可见。
 
 调用失败统一以 `isError: true` 结果返回，不暴露内部细节。
 
 ### 控制面 REST `GET /api/*`
 
-统一信封：`{ "code", "message", "request_id", "data" }`。**开启认证后，以下端点均要求管理令牌 `operator_token` 或登录会话**；数据面 API Key 访问返回 403。端点一览：
+统一信封：`{ "code", "message", "request_id", "data" }`。**鉴权开启时（默认）以下端点均要求管理令牌 `operator_token` 或登录会话**；数据面 API Key 访问返回 403。端点一览：
 
 | 方法 / 路径 | 说明 |
 | --- | --- |
@@ -178,9 +189,11 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 | `DELETE /api/servers/{id}` | 删除（级联删 Tools） |
 | `POST /api/servers/{id}/test` | 测试连接并重新发现 Tools |
 | `GET /api/servers/{id}/tools` · `.../credentials` | Server 下的 Tools / 凭证 |
-| `GET/POST /api/tools` · `/api/routes` · `/api/policies` | 聚合工具 / 路由 / 策略管理 |
-| `GET /api/metrics` | 指标快照（p50/p95/p99、成功率） |
-| `GET /api/logs` | 最近调用日志（Request Log） |
+| `GET /api/tools` · `PATCH /api/tools/{id}/toggle` | 聚合工具 / 工具启停 |
+| `GET/POST /api/routes` · `PATCH /api/routes/{id}` · `PATCH /api/routes/{id}/toggle` · `DELETE /api/routes/{id}` | 路由 CRUD / 启停 / 删除 |
+| `GET/POST /api/policies` · `PATCH /api/policies/{id}` · `PATCH /api/policies/{id}/toggle` · `DELETE /api/policies/{id}` | 策略 CRUD / 启停 / 删除 |
+| `GET /api/metrics` | 指标快照（p50/p95/p99、成功率；`?scope=server` 返回按 Server 聚合） |
+| `GET /api/logs` | 最近调用日志（`?server_id=` 过滤、`?limit=` 上限 500） |
 | `GET /healthz` · `/readyz` | 存活 / 就绪探针 |
 
 ### 错误码

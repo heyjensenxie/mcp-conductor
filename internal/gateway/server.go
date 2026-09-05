@@ -87,10 +87,17 @@ func registerControlRoutes(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("DELETE /api/servers/{id}/credentials/{credId}", control.handleDeleteCredential)
 
 	mux.HandleFunc("GET /api/tools", control.handleListTools)
+	mux.HandleFunc("PATCH /api/tools/{id}/toggle", control.handleToggleTool)
 	mux.HandleFunc("GET /api/routes", control.handleListRoutes)
 	mux.HandleFunc("POST /api/routes", control.handleCreateRoute)
+	mux.HandleFunc("PATCH /api/routes/{id}", control.handleUpdateRoute)
+	mux.HandleFunc("PATCH /api/routes/{id}/toggle", control.handleToggleRoute)
+	mux.HandleFunc("DELETE /api/routes/{id}", control.handleDeleteRoute)
 	mux.HandleFunc("GET /api/policies", control.handleListPolicies)
 	mux.HandleFunc("POST /api/policies", control.handleCreatePolicy)
+	mux.HandleFunc("PATCH /api/policies/{id}", control.handleUpdatePolicy)
+	mux.HandleFunc("PATCH /api/policies/{id}/toggle", control.handleTogglePolicy)
+	mux.HandleFunc("DELETE /api/policies/{id}", control.handleDeletePolicy)
 
 	mux.HandleFunc("GET /api/keys", control.handleListKeys)
 	mux.HandleFunc("POST /api/keys", control.handleCreateKey)

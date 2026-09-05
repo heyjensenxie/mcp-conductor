@@ -193,6 +193,20 @@ func (s *Service) ListServerTools(ctx context.Context, serverID string) ([]model
 	return s.stores.ListToolsByServer(ctx, serverID)
 }
 
+// ToggleTool 启用/禁用单个工具（Tool 的其余字段由发现过程拥有，运维只翻 enabled）。
+func (s *Service) ToggleTool(ctx context.Context, id string, enabled bool) (*model.Tool, error) {
+	tool, err := s.stores.GetTool(ctx, id)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Tool 失败")
+	}
+	tool.Enabled = enabled
+	tool.UpdatedAt = time.Now().UTC()
+	if err := s.stores.SetToolEnabled(ctx, id, enabled); err != nil {
+		return nil, errs.Wrap(errs.CodeInternal, err, "更新 Tool 失败")
+	}
+	return tool, nil
+}
+
 // discoverServer 后台执行一次工具发现，失败仅记录（不阻塞写操作）。
 func (s *Service) discoverServer(ctx context.Context, serverID string) {
 	server, err := s.stores.GetServer(ctx, serverID)
@@ -211,13 +225,20 @@ func (s *Service) discover(ctx context.Context, server model.Server) error {
 	}
 	now := time.Now().UTC()
 	for _, dt := range tools {
+		gw := namespace + "." + dt.Name
+		// 保留既有启停状态：重新发现（rediscover / 注册 / test）不应清掉
+		// 运维手工禁用的工具；仅新工具默认启用。
+		enabled := true
+		if existing, err := s.stores.GetToolByGatewayName(ctx, gw); err == nil {
+			enabled = existing.Enabled
+		}
 		tool := &model.Tool{
 			ServerID:     server.ID,
 			OriginalName: dt.Name,
-			GatewayName:  namespace + "." + dt.Name,
+			GatewayName:  gw,
 			Description:  dt.Description,
 			InputSchema:  dt.InputSchema,
-			Enabled:      true,
+			Enabled:      enabled,
 			CreatedAt:    now,
 			UpdatedAt:    now,
 		}

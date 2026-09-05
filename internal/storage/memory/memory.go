@@ -118,6 +118,11 @@ func (s *Store) DeleteServer(_ context.Context, id string) error {
 			delete(s.credentials, cid)
 		}
 	}
+	for _, rid := range sortedKeys(s.routes) {
+		if s.routes[rid].ServerID == id {
+			delete(s.routes, rid)
+		}
+	}
 	return nil
 }
 
@@ -196,6 +201,23 @@ func (s *Store) DeleteToolsByServer(_ context.Context, serverID string) error {
 	return nil
 }
 
+// SetToolEnabled 切换单个工具的启用状态。
+// toolsByName 是与 tools 同源的值副本索引，必须同步写回，否则
+// GetToolByGatewayName（路由解析用）仍会读到旧 Enabled。
+func (s *Store) SetToolEnabled(_ context.Context, id string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tool, ok := s.tools[id]
+	if !ok {
+		return fmt.Errorf("tool %q 不存在", id)
+	}
+	tool.Enabled = enabled
+	tool.UpdatedAt = time.Now().UTC()
+	s.tools[id] = tool
+	s.toolsByName[tool.GatewayName] = tool
+	return nil
+}
+
 // ---- RouteStore ----
 
 // CreateRoute 新增路由。
@@ -205,7 +227,51 @@ func (s *Store) CreateRoute(_ context.Context, route *model.Route) error {
 	if route.ID == "" {
 		route.ID = s.nextID("route")
 	}
+	now := time.Now().UTC()
+	if route.CreatedAt.IsZero() {
+		route.CreatedAt = now
+	}
+	route.UpdatedAt = now
 	s.routes[route.ID] = *route
+	return nil
+}
+
+// GetRoute 按 id 读取路由。
+func (s *Store) GetRoute(_ context.Context, id string) (*model.Route, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	route, ok := s.routes[id]
+	if !ok {
+		return nil, fmt.Errorf("route %q 不存在", id)
+	}
+	return &route, nil
+}
+
+// UpdateRoute 更新路由可编辑字段并保留 CreatedAt；缺 id 报错。
+func (s *Store) UpdateRoute(_ context.Context, route *model.Route) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.routes[route.ID]
+	if !ok {
+		return fmt.Errorf("route %q 不存在", route.ID)
+	}
+	existing.Name = route.Name
+	existing.ServerID = route.ServerID
+	existing.ToolNames = route.ToolNames
+	existing.Enabled = route.Enabled
+	existing.UpdatedAt = time.Now().UTC()
+	s.routes[existing.ID] = existing
+	return nil
+}
+
+// DeleteRoute 删除路由；不存在时返回存在性错误。
+func (s *Store) DeleteRoute(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.routes[id]; !ok {
+		return fmt.Errorf("route %q 不存在", id)
+	}
+	delete(s.routes, id)
 	return nil
 }
 
@@ -229,6 +295,11 @@ func (s *Store) CreatePolicy(_ context.Context, policy *model.Policy) error {
 	if policy.ID == "" {
 		policy.ID = s.nextID("pol")
 	}
+	now := time.Now().UTC()
+	if policy.CreatedAt.IsZero() {
+		policy.CreatedAt = now
+	}
+	policy.UpdatedAt = now
 	s.policies[policy.ID] = *policy
 	return nil
 }
@@ -242,6 +313,33 @@ func (s *Store) GetPolicy(_ context.Context, id string) (*model.Policy, error) {
 		return nil, fmt.Errorf("policy %q 不存在", id)
 	}
 	return &policy, nil
+}
+
+// UpdatePolicy 更新策略可编辑字段并保留 CreatedAt；缺 id 报错。
+func (s *Store) UpdatePolicy(_ context.Context, policy *model.Policy) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.policies[policy.ID]
+	if !ok {
+		return fmt.Errorf("policy %q 不存在", policy.ID)
+	}
+	existing.Name = policy.Name
+	existing.Rules = policy.Rules
+	existing.Enabled = policy.Enabled
+	existing.UpdatedAt = time.Now().UTC()
+	s.policies[existing.ID] = existing
+	return nil
+}
+
+// DeletePolicy 删除策略；不存在时返回存在性错误。
+func (s *Store) DeletePolicy(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.policies[id]; !ok {
+		return fmt.Errorf("policy %q 不存在", id)
+	}
+	delete(s.policies, id)
+	return nil
 }
 
 // ListPolicies 返回全部策略。

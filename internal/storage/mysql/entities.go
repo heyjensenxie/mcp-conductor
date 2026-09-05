@@ -136,6 +136,27 @@ func (s *Store) DeleteToolsByServer(ctx context.Context, serverID string) error 
 	return err
 }
 
+// SetToolEnabled 切换单个工具的启用状态。
+func (s *Store) SetToolEnabled(ctx context.Context, id string, enabled bool) error {
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE tools SET enabled = ?, updated_at = ? WHERE id = ?",
+		enabled, fmtTimeUTC(time.Now().UTC()), id)
+	if err != nil {
+		return fmt.Errorf("update tools: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// 值未变化也会 0 行：回查存在性以区分"不存在"。
+		var probe string
+		if err := s.db.QueryRowContext(ctx, "SELECT id FROM tools WHERE id = ?", id).Scan(&probe); err != nil {
+			if isNoRows(err) {
+				return fmt.Errorf("tool %q 不存在", id)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
 // ---- RouteStore ----
 
 // CreateRoute 新增路由（tool_names 以 JSON 文本保存）。
@@ -185,6 +206,59 @@ func (s *Store) ListRoutes(ctx context.Context) ([]model.Route, error) {
 		out = append(out, route)
 	}
 	return out, rows.Err()
+}
+
+// GetRoute 按 id 读取单个路由。
+func (s *Store) GetRoute(ctx context.Context, id string) (*model.Route, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, name, server_id, COALESCE(tool_names,''), enabled, created_at, updated_at FROM routes WHERE id = ?`, id)
+	var route model.Route
+	var names string
+	if err := row.Scan(&route.ID, &route.Name, &route.ServerID, &names, &route.Enabled,
+		&route.CreatedAt, &route.UpdatedAt); err != nil {
+		return nil, notExistError(err, "route", id)
+	}
+	if err := unmarshalJSON(names, &route.ToolNames); err != nil {
+		return nil, fmt.Errorf("解析 route %q tool_names 失败: %w", id, err)
+	}
+	return &route, nil
+}
+
+// UpdateRoute 更新路由可编辑字段（id 不变、created_at 保留），tool_names 存 JSON。
+func (s *Store) UpdateRoute(ctx context.Context, route *model.Route) error {
+	names, err := marshalJSON(route.ToolNames)
+	if err != nil {
+		return err
+	}
+	route.UpdatedAt = nowOr(route.UpdatedAt)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE routes SET name = ?, server_id = ?, tool_names = ?, enabled = ?, updated_at = ? WHERE id = ?`,
+		route.Name, route.ServerID, names, route.Enabled, fmtTimeUTC(route.UpdatedAt), route.ID)
+	if err != nil {
+		return fmt.Errorf("update routes: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		var probe string
+		if err := s.db.QueryRowContext(ctx, "SELECT id FROM routes WHERE id = ?", route.ID).Scan(&probe); err != nil {
+			if isNoRows(err) {
+				return fmt.Errorf("route %q 不存在", route.ID)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteRoute 删除路由；不存在时返回存在性错误。
+func (s *Store) DeleteRoute(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, "DELETE FROM routes WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete routes: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("route %q 不存在", id)
+	}
+	return nil
 }
 
 // ---- PolicyStore ----
@@ -282,6 +356,55 @@ func scanPolicies(rows *sql.Rows) ([]model.Policy, error) {
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// UpdatePolicy 事务内更新策略头与规则（替换式：先清空 policy_rules 再重插）。
+func (s *Store) UpdatePolicy(ctx context.Context, policy *model.Policy) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	policy.UpdatedAt = nowOr(policy.UpdatedAt)
+	res, err := tx.ExecContext(ctx,
+		`UPDATE policies SET name = ?, enabled = ?, updated_at = ? WHERE id = ?`,
+		policy.Name, policy.Enabled, fmtTimeUTC(policy.UpdatedAt), policy.ID)
+	if err != nil {
+		return fmt.Errorf("update policies: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		var probe string
+		if err := tx.QueryRowContext(ctx, "SELECT id FROM policies WHERE id = ?", policy.ID).Scan(&probe); err != nil {
+			if isNoRows(err) {
+				return fmt.Errorf("policy %q 不存在", policy.ID)
+			}
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM policy_rules WHERE policy_id = ?", policy.ID); err != nil {
+		return fmt.Errorf("delete policy_rules: %w", err)
+	}
+	for _, rule := range policy.Rules {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO policy_rules (policy_id, subject, tool, effect) VALUES (?,?,?,?)`,
+			policy.ID, rule.Subject, rule.Tool, rule.Effect); err != nil {
+			return fmt.Errorf("insert policy_rules: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// DeletePolicy 删除策略（规则子表由外键 CASCADE 一并清除）。
+func (s *Store) DeletePolicy(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, "DELETE FROM policies WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete policies: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("policy %q 不存在", id)
+	}
+	return nil
 }
 
 // ---- CredentialStore ----

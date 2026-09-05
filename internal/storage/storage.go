@@ -27,12 +27,17 @@ type ToolStore interface {
 	ListTools(ctx context.Context) ([]model.Tool, error)
 	ListToolsByServer(ctx context.Context, serverID string) ([]model.Tool, error)
 	DeleteToolsByServer(ctx context.Context, serverID string) error
+	// SetToolEnabled 切换单个工具的启用状态（Tool 是发现产物，其余字段由 discovery 拥有）。
+	SetToolEnabled(ctx context.Context, id string, enabled bool) error
 }
 
 // RouteStore 管理路由定义。
 type RouteStore interface {
 	CreateRoute(ctx context.Context, route *model.Route) error
+	GetRoute(ctx context.Context, id string) (*model.Route, error)
 	ListRoutes(ctx context.Context) ([]model.Route, error)
+	UpdateRoute(ctx context.Context, route *model.Route) error
+	DeleteRoute(ctx context.Context, id string) error
 }
 
 // PolicyStore 管理权限策略。
@@ -40,6 +45,8 @@ type PolicyStore interface {
 	CreatePolicy(ctx context.Context, policy *model.Policy) error
 	GetPolicy(ctx context.Context, id string) (*model.Policy, error)
 	ListPolicies(ctx context.Context) ([]model.Policy, error)
+	UpdatePolicy(ctx context.Context, policy *model.Policy) error
+	DeletePolicy(ctx context.Context, id string) error
 }
 
 // CredentialStore 管理 Gateway→Upstream 凭证元数据。

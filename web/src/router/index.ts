@@ -1,10 +1,19 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import { useAppStore } from '@/stores/app'
+import { ensureAuthRequired } from '@/auth/session'
 import AppLayout from '@/layout/AppLayout.vue'
 
 // 前端使用 hash 路由，便于嵌入 Go 二进制后无需服务端回退配置。
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
+    // 登录页：独立于 AppLayout，后台默认开启鉴权时用于换取会话令牌。
+    {
+      path: '/login',
+      name: 'login',
+      component: () => import('@/views/LoginView.vue'),
+      meta: { titleKey: 'login' },
+    },
     {
       path: '/',
       component: AppLayout,
@@ -23,6 +32,16 @@ const router = createRouter({
       ],
     },
   ],
+})
+
+// 全局鉴权守卫：后台要求登录且本地无凭据时，引导到登录页。
+router.beforeEach(async (to) => {
+  if (to.path === '/login') return true
+  const authRequired = await ensureAuthRequired()
+  if (!authRequired) return true
+  const store = useAppStore()
+  if (store.token) return true
+  return { path: '/login', query: { redirect: to.fullPath } }
 })
 
 export default router

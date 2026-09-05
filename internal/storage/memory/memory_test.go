@@ -121,6 +121,139 @@ func TestRecentTrafficByServerMemory(t *testing.T) {
 	}
 }
 
+// TestToolSetEnabledMemory 验证工具启停会同步 toolsByName 索引（路由解析依赖）。
+func TestToolSetEnabledMemory(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	tool := &model.Tool{ID: "t1", ServerID: "srv-1", OriginalName: "search", GatewayName: "mock.search", Enabled: true}
+	if err := store.UpsertTool(ctx, tool); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetToolEnabled(ctx, "t1", false); err != nil {
+		t.Fatalf("SetToolEnabled: %v", err)
+	}
+	byID, _ := store.GetTool(ctx, "t1")
+	if byID.Enabled {
+		t.Fatal("GetTool 应读到禁用")
+	}
+	byName, err := store.GetToolByGatewayName(ctx, "mock.search")
+	if err != nil {
+		t.Fatalf("GetToolByGatewayName: %v", err)
+	}
+	if byName.Enabled {
+		t.Fatal("toolsByName 索引应同步为禁用")
+	}
+	// 幂等：同值再设一次不报错。
+	if err := store.SetToolEnabled(ctx, "t1", false); err != nil {
+		t.Fatalf("幂等设置失败: %v", err)
+	}
+	if err := store.SetToolEnabled(ctx, "missing", true); err == nil {
+		t.Fatal("不存在的工具应报错")
+	}
+}
+
+// TestRouteLifecycleMemory 验证路由 创建/读取/更新/删除。
+func TestRouteLifecycleMemory(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	server := &model.Server{Name: "S", Endpoint: "http://x", Enabled: true}
+	if err := store.CreateServer(ctx, server); err != nil {
+		t.Fatal(err)
+	}
+	route := &model.Route{Name: "主路由", ServerID: server.ID, ToolNames: []string{"a.search"}, Enabled: true}
+	if err := store.CreateRoute(ctx, route); err != nil {
+		t.Fatal(err)
+	}
+	if route.ID == "" || route.CreatedAt.IsZero() || route.UpdatedAt.IsZero() {
+		t.Fatalf("CreateRoute 应盖章 id/时间: %+v", route)
+	}
+	created := route.CreatedAt
+
+	got, err := store.GetRoute(ctx, route.ID)
+	if err != nil || got.Name != "主路由" {
+		t.Fatalf("GetRoute: %+v / %v", got, err)
+	}
+
+	if err := store.UpdateRoute(ctx, &model.Route{ID: route.ID, Name: "改名", ServerID: server.ID, ToolNames: []string{"b.search"}, Enabled: false}); err != nil {
+		t.Fatalf("UpdateRoute: %v", err)
+	}
+	got, _ = store.GetRoute(ctx, route.ID)
+	if got.Name != "改名" || got.Enabled || len(got.ToolNames) != 1 || got.ToolNames[0] != "b.search" {
+		t.Fatalf("更新后回读不一致: %+v", got)
+	}
+	if !got.CreatedAt.Equal(created) {
+		t.Fatal("UpdateRoute 不应改变 created_at")
+	}
+
+	if err := store.DeleteRoute(ctx, route.ID); err != nil {
+		t.Fatalf("DeleteRoute: %v", err)
+	}
+	if err := store.DeleteRoute(ctx, route.ID); err == nil {
+		t.Fatal("重复删除应报错")
+	}
+	if _, err := store.GetRoute(ctx, route.ID); err == nil {
+		t.Fatal("删除后 GetRoute 应报错")
+	}
+}
+
+// TestPolicyLifecycleMemory 验证策略 创建/更新（替换规则）/删除。
+func TestPolicyLifecycleMemory(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	policy := &model.Policy{
+		Name: "p", Enabled: true,
+		Rules: []model.PolicyRule{{Subject: "agent-a", Tool: "a.search", Effect: model.PolicyEffectAllow}},
+	}
+	if err := store.CreatePolicy(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	if policy.ID == "" || policy.CreatedAt.IsZero() {
+		t.Fatalf("CreatePolicy 应盖章: %+v", policy)
+	}
+
+	if err := store.UpdatePolicy(ctx, &model.Policy{
+		ID: policy.ID, Name: "p2", Enabled: false,
+		Rules: []model.PolicyRule{{Subject: "agent-b", Tool: "b.detail", Effect: model.PolicyEffectDeny}},
+	}); err != nil {
+		t.Fatalf("UpdatePolicy: %v", err)
+	}
+	got, err := store.GetPolicy(ctx, policy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "p2" || got.Enabled || len(got.Rules) != 1 || got.Rules[0].Effect != model.PolicyEffectDeny {
+		t.Fatalf("更新后回读不一致: %+v", got)
+	}
+
+	if err := store.DeletePolicy(ctx, policy.ID); err != nil {
+		t.Fatalf("DeletePolicy: %v", err)
+	}
+	if _, err := store.GetPolicy(ctx, policy.ID); err == nil {
+		t.Fatal("删除后 GetPolicy 应报错")
+	}
+}
+
+// TestDeleteServerCascadesRoutesMemory 验证删除 Server 会级联清理其路由。
+func TestDeleteServerCascadesRoutesMemory(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	server := &model.Server{Name: "S", Endpoint: "http://x", Enabled: true}
+	if err := store.CreateServer(ctx, server); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"r1", "r2"} {
+		if err := store.CreateRoute(ctx, &model.Route{Name: name, ServerID: server.ID, ToolNames: []string{"a.search"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.DeleteServer(ctx, server.ID); err != nil {
+		t.Fatalf("DeleteServer: %v", err)
+	}
+	if routes, _ := store.ListRoutes(ctx); len(routes) != 0 {
+		t.Fatalf("删除 Server 后路由应被级联清理，得到 %d", len(routes))
+	}
+}
+
 func TestToolUpsertKeepsID(t *testing.T) {
 	store := New()
 	ctx := context.Background()

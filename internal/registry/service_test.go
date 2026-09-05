@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/xmj128/mcp-conductor/internal/model"
 	"github.com/xmj128/mcp-conductor/internal/storage/memory"
@@ -130,4 +131,61 @@ func TestDeleteServerCascadesCredentials(t *testing.T) {
 	if _, err := store.GetServer(ctx, created.ID); err == nil {
 		t.Fatal("删除后 Server 应不存在")
 	}
+}
+
+// TestToggleToolAndRediscoverPreservesDisabled 验证工具启停与"重新发现不清掉禁用"。
+func TestToggleToolAndRediscoverPreservesDisabled(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	svc := NewService(store, &fakeDiscoverer{
+		tools: []DiscoveredTool{{Name: "search", Description: "查询"}, {Name: "detail", Description: "详情"}},
+	})
+
+	created, err := svc.CreateServer(ctx, &model.Server{Name: "Mock", Endpoint: "http://x:9000"})
+	if err != nil {
+		t.Fatalf("创建 Server 失败: %v", err)
+	}
+	// CreateServer 触发后台发现；这里等工具落库（最多 ~2s）。
+	tools := waitTools(t, svc, 2)
+	if len(tools) != 2 {
+		t.Fatalf("应发现 2 个工具，得到 %d", len(tools))
+	}
+
+	search := findTool(tools, "mock.search")
+	if _, err := svc.ToggleTool(ctx, search.ID, false); err != nil {
+		t.Fatalf("ToggleTool(禁用): %v", err)
+	}
+
+	// 重新发现不应把禁用工具改回启用。
+	if err := svc.Rediscover(ctx, created.ID); err != nil {
+		t.Fatalf("Rediscover: %v", err)
+	}
+	tools, _ = svc.ListTools(ctx)
+	if got := findTool(tools, "mock.search"); got.Enabled {
+		t.Fatal("Rediscover 后手工禁用的工具应保持禁用")
+	}
+}
+
+// waitTools 轮询等待工具数达到预期（容忍 CreateServer 的后台发现异步）。
+func waitTools(t *testing.T, svc *Service, want int) []model.Tool {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tools, err := svc.ListTools(context.Background())
+		if err == nil && len(tools) == want {
+			return tools
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	tools, _ := svc.ListTools(context.Background())
+	return tools
+}
+
+func findTool(tools []model.Tool, gateway string) *model.Tool {
+	for i := range tools {
+		if tools[i].GatewayName == gateway {
+			return &tools[i]
+		}
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/xmj128/mcp-conductor/internal/errs"
 	"github.com/xmj128/mcp-conductor/internal/model"
@@ -87,5 +88,116 @@ func TestResolver_DisabledTool(t *testing.T) {
 	r := NewResolver(store, store)
 	if _, err := r.Resolve(ctx, "course.search"); err == nil {
 		t.Fatal("禁用工具应拒绝调用")
+	}
+}
+
+// routeFixture 构造双 Server 环境：A 拥有 university.search，B/C 为潜在路由目标。
+func routeFixture(t *testing.T) (*memory.Store, *model.Server, *model.Server, *model.Server) {
+	t.Helper()
+	store := memory.New()
+	ctx := context.Background()
+	newSrv := func(name string) *model.Server {
+		s := &model.Server{Name: name, Endpoint: "http://" + name, Enabled: true, HealthStatus: model.ServerStatusHealthy}
+		if err := store.CreateServer(ctx, s); err != nil {
+			t.Fatalf("CreateServer(%s): %v", name, err)
+		}
+		return s
+	}
+	a, b, c := newSrv("univ"), newSrv("mirrorB"), newSrv("mirrorC")
+	if err := store.UpsertTool(ctx, &model.Tool{
+		ServerID: a.ID, OriginalName: "search", GatewayName: "univ.search", Enabled: true,
+	}); err != nil {
+		t.Fatalf("UpsertTool: %v", err)
+	}
+	return store, a, b, c
+}
+
+func TestResolver_RouteOverridesTargetServer(t *testing.T) {
+	store, a, b, _ := routeFixture(t)
+	ctx := context.Background()
+	if err := store.CreateRoute(ctx, &model.Route{Name: "覆盖到B", ServerID: b.ID, ToolNames: []string{"univ.search"}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewResolver(store, store).WithRoutes(store)
+	resolved, err := r.Resolve(ctx, "univ.search")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved.Server.ID != b.ID {
+		t.Fatalf("命中 Route 应覆盖到 B（%s），实际 %s", b.ID, resolved.Server.ID)
+	}
+	if resolved.Tool.ServerID != a.ID {
+		t.Fatal("Resolved.Tool 仍应保留原归属（不变 gateway_name 语义）")
+	}
+}
+
+func TestResolver_RouteIdentityIsNoOp(t *testing.T) {
+	store, a, _, _ := routeFixture(t)
+	ctx := context.Background()
+	if err := store.CreateRoute(ctx, &model.Route{Name: "恒等", ServerID: a.ID, ToolNames: []string{"univ.search"}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewResolver(store, store).WithRoutes(store)
+	resolved, err := r.Resolve(ctx, "univ.search")
+	if err != nil || resolved.Server.ID != a.ID {
+		t.Fatalf("恒等 Route 不应改变目标: %+v / %v", resolved, err)
+	}
+}
+
+func TestResolver_DisabledRouteIgnored(t *testing.T) {
+	store, a, b, _ := routeFixture(t)
+	ctx := context.Background()
+	if err := store.CreateRoute(ctx, &model.Route{Name: "停用", ServerID: b.ID, ToolNames: []string{"univ.search"}, Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewResolver(store, store).WithRoutes(store)
+	resolved, err := r.Resolve(ctx, "univ.search")
+	if err != nil || resolved.Server.ID != a.ID {
+		t.Fatalf("停用 Route 应被忽略: %+v / %v", resolved, err)
+	}
+}
+
+func TestResolver_RouteOverrideTargetUnavailable(t *testing.T) {
+	store, _, b, _ := routeFixture(t)
+	ctx := context.Background()
+	// 目标 B 已禁用。
+	got, _ := store.GetServer(ctx, b.ID)
+	got.Enabled = false
+	_ = store.UpdateServer(ctx, got)
+	if err := store.CreateRoute(ctx, &model.Route{Name: "到禁用B", ServerID: b.ID, ToolNames: []string{"univ.search"}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewResolver(store, store).WithRoutes(store)
+	if _, err := r.Resolve(ctx, "univ.search"); !errs.Is(err, errs.CodeRoute) {
+		t.Fatalf("覆盖目标不可用应 route_error，得到 %v", err)
+	}
+}
+
+func TestResolver_RouteMultiHitPicksEarliest(t *testing.T) {
+	store, _, b, c := routeFixture(t)
+	ctx := context.Background()
+	base := time.Now().UTC()
+	if err := store.CreateRoute(ctx, &model.Route{Name: "后来到C", ServerID: c.ID, ToolNames: []string{"univ.search"}, Enabled: true, CreatedAt: base.Add(2 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateRoute(ctx, &model.Route{Name: "最早到B", ServerID: b.ID, ToolNames: []string{"univ.search"}, Enabled: true, CreatedAt: base}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewResolver(store, store).WithRoutes(store)
+	resolved, err := r.Resolve(ctx, "univ.search")
+	if err != nil || resolved.Server.ID != b.ID {
+		t.Fatalf("多命中应取最早的非恒等（B），实际 %+v / %v", resolved, err)
+	}
+}
+
+func TestResolver_RouteTargetMissing(t *testing.T) {
+	store, _, _, _ := routeFixture(t)
+	ctx := context.Background()
+	if err := store.CreateRoute(ctx, &model.Route{Name: "指向幽灵", ServerID: "ghost-server", ToolNames: []string{"univ.search"}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewResolver(store, store).WithRoutes(store)
+	if _, err := r.Resolve(ctx, "univ.search"); !errs.Is(err, errs.CodeRoute) {
+		t.Fatalf("覆盖目标缺失应 route_error，得到 %v", err)
 	}
 }

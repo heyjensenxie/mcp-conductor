@@ -6,6 +6,9 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -44,6 +47,9 @@ func Run(ctx context.Context) error {
 		return err
 	}
 	setupLogger(cfg.Logging)
+	if err := ensureAuthSecrets(&cfg); err != nil {
+		return err
+	}
 
 	store, closeStore, err := openStore(ctx, cfg)
 	if err != nil {
@@ -54,7 +60,7 @@ func Run(ctx context.Context) error {
 	adapter := mcpclient.New().WithHeaderFor(credentialHeaders(store))
 
 	registrySvc := registry.NewService(store, adapter)
-	resolver := router.NewResolver(store, store)
+	resolver := router.NewResolver(store, store).WithRoutes(store)
 	policyEngine := policy.NewEngine(store)
 	authorizer := access.NewAuthorizer(policyEngine)
 	metrics := observability.NewMetrics()
@@ -107,6 +113,61 @@ func Run(ctx context.Context) error {
 	})
 
 	return runWithSignal(ctx, server)
+}
+
+// ensureAuthSecrets 在鉴权开启且未显式配置时补齐运行凭据：
+//   - token_secret / operator_token：内部所需，缺则生成（operator 作为程序化
+//     管理凭据，不打印，避免与登录账号混淆）；
+//   - admin_password：Console 登录的初始管理员密码，缺则生成并打印到 stdout
+//     一次（引导管理员账号），供首次登录使用。
+func ensureAuthSecrets(cfg *config.Config) error {
+	if !cfg.Auth.Enabled {
+		return nil
+	}
+	if cfg.Auth.OperatorToken == "" {
+		token, err := randomHex(16)
+		if err != nil {
+			return fmt.Errorf("生成 operator_token 失败: %w", err)
+		}
+		cfg.Auth.OperatorToken = token
+	}
+	if cfg.Auth.TokenSecret == "" {
+		secret, err := randomHex(32)
+		if err != nil {
+			return fmt.Errorf("生成会话签名密钥失败: %w", err)
+		}
+		cfg.Auth.TokenSecret = secret
+	}
+	if cfg.Auth.AdminUsername == "" {
+		cfg.Auth.AdminUsername = "admin"
+	}
+	if cfg.Auth.AdminPassword == "" {
+		pass, err := randomHex(12) // 24 位 hex，比常见口令更不易被猜中
+		if err != nil {
+			return fmt.Errorf("生成管理员密码失败: %w", err)
+		}
+		cfg.Auth.AdminPassword = pass
+		fmt.Fprintf(os.Stdout,
+			"\n================================================================\n"+
+				"  MCP Conductor 引导管理员账号（Console 登录）\n\n"+
+				"    用户名：%s\n    密码：  %s\n\n"+
+				"  请立即保存。推荐固化配置：\n"+
+				"    CONDUCTOR_AUTH_ADMIN_PASSWORD=%s\n"+
+				"  （或 config.yaml 的 auth.admin_password）\n"+
+				"  未固化时每次重启会重新生成，旧密码随即失效。\n"+
+				"================================================================\n",
+			cfg.Auth.AdminUsername, pass, pass)
+	}
+	return nil
+}
+
+// randomHex 生成 n 字节随机数并编码为 hex 字符串。
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // seedBootstrapKeys 把 config 中的静态 API Key（subject:key）落库为数据面

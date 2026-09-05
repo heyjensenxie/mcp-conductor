@@ -60,6 +60,7 @@ Request
 
 - **Server ≠ Instance**：模型预留未来"一个逻辑 Server 对多个实例"，当前 endpoint 单实例承载。
 - **Tool 对外名**：`gateway_name = <server_namespace>.<original_name>`（如 `university.search_policy`），从根本上规避多 Server 聚合的 Tool Name Collision。
+- **Route 覆盖转发**：启用的 Route 其 `tool_names` 命中某 gateway 工具时，解析器把该工具调用目标 Server 覆盖为 `route.server_id`（恒等即原样；目标不可调用返回 `route_error`，不回退）；`tools/list` 聚合与授权语义不变。
 - **Credential 安全**：区分 Client→Gateway 与 Gateway→Upstream；敏感值经 AES-256-GCM 加密落库、不返回前端、不入日志，调用时按 Server 解密注入上游请求头（见 database.md）。
 
 ## 4. 观测

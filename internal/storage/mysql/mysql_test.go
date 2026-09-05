@@ -283,6 +283,105 @@ func TestCredentialLifecycleMySQL(t *testing.T) {
 	}
 }
 
+// TestToolSetEnabledMySQL 验证工具启停（含索引一致性与幂等）。
+func TestToolSetEnabledMySQL(t *testing.T) {
+	store := openTest(t)
+	ctx := context.Background()
+
+	srv := testServer("工具启停", "http://localhost:9000/mcp")
+	if err := store.CreateServer(ctx, srv); err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+	tool := &model.Tool{ServerID: srv.ID, OriginalName: "search", GatewayName: "启停.search", Enabled: true}
+	if err := store.UpsertTool(ctx, tool); err != nil {
+		t.Fatalf("UpsertTool: %v", err)
+	}
+
+	if err := store.SetToolEnabled(ctx, tool.ID, false); err != nil {
+		t.Fatalf("SetToolEnabled: %v", err)
+	}
+	got, err := store.GetToolByGatewayName(ctx, tool.GatewayName)
+	if err != nil || got.Enabled {
+		t.Fatalf("禁用具应生效: %+v / %v", got, err)
+	}
+	// 幂等。
+	if err := store.SetToolEnabled(ctx, tool.ID, false); err != nil {
+		t.Fatalf("幂等设置失败: %v", err)
+	}
+	if err := store.SetToolEnabled(ctx, "missing-tool", true); err == nil {
+		t.Fatal("不存在的工具应报错")
+	}
+}
+
+// TestRouteLifecycleMySQL 验证路由 创建/读取/更新/删除。
+func TestRouteLifecycleMySQL(t *testing.T) {
+	store := openTest(t)
+	ctx := context.Background()
+
+	srv := testServer("路由生命周期", "http://localhost:9000/mcp")
+	if err := store.CreateServer(ctx, srv); err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+	route := &model.Route{Name: "主路由", ServerID: srv.ID, ToolNames: []string{"a.search"}, Enabled: true}
+	if err := store.CreateRoute(ctx, route); err != nil {
+		t.Fatalf("CreateRoute: %v", err)
+	}
+
+	got, err := store.GetRoute(ctx, route.ID)
+	if err != nil || got.Name != "主路由" || len(got.ToolNames) != 1 {
+		t.Fatalf("GetRoute: %+v / %v", got, err)
+	}
+	if err := store.UpdateRoute(ctx, &model.Route{ID: route.ID, Name: "改名", ServerID: srv.ID, ToolNames: []string{"b.search"}, Enabled: false}); err != nil {
+		t.Fatalf("UpdateRoute: %v", err)
+	}
+	got, _ = store.GetRoute(ctx, route.ID)
+	if got.Name != "改名" || got.Enabled || len(got.ToolNames) != 1 || got.ToolNames[0] != "b.search" {
+		t.Fatalf("更新后回读不一致: %+v", got)
+	}
+
+	if err := store.DeleteRoute(ctx, route.ID); err != nil {
+		t.Fatalf("DeleteRoute: %v", err)
+	}
+	if _, err := store.GetRoute(ctx, route.ID); err == nil {
+		t.Fatal("删除后 GetRoute 应报错")
+	}
+}
+
+// TestPolicyLifecycleMySQL 验证策略更新会替换规则集并删除。
+func TestPolicyLifecycleMySQL(t *testing.T) {
+	store := openTest(t)
+	ctx := context.Background()
+
+	policy := &model.Policy{
+		Name: "策略", Enabled: true,
+		Rules: []model.PolicyRule{{Subject: "agent-a", Tool: "a.search", Effect: model.PolicyEffectAllow}},
+	}
+	if err := store.CreatePolicy(ctx, policy); err != nil {
+		t.Fatalf("CreatePolicy: %v", err)
+	}
+
+	if err := store.UpdatePolicy(ctx, &model.Policy{
+		ID: policy.ID, Name: "策略2", Enabled: false,
+		Rules: []model.PolicyRule{{Subject: "agent-b", Tool: "b.detail", Effect: model.PolicyEffectDeny}},
+	}); err != nil {
+		t.Fatalf("UpdatePolicy: %v", err)
+	}
+	got, err := store.GetPolicy(ctx, policy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "策略2" || got.Enabled || len(got.Rules) != 1 || got.Rules[0].Effect != model.PolicyEffectDeny {
+		t.Fatalf("更新后回读不一致: %+v", got)
+	}
+
+	if err := store.DeletePolicy(ctx, policy.ID); err != nil {
+		t.Fatalf("DeletePolicy: %v", err)
+	}
+	if _, err := store.GetPolicy(ctx, policy.ID); err == nil {
+		t.Fatal("删除后 GetPolicy 应报错")
+	}
+}
+
 func TestPolicyRulesRoundTrip(t *testing.T) {
 	store := openTest(t)
 	ctx := context.Background()

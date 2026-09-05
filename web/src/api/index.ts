@@ -54,14 +54,35 @@ export const deleteCredential = (id: string, credId: string) =>
 
 export const listTools = () => unwrap<Tool[]>(http.get('/tools'))
 
+export const toggleTool = (id: string, enabled: boolean) =>
+  unwrap<Tool>(http.patch(`/tools/${id}/toggle`, { enabled }))
+
 export const listRoutes = () => unwrap<Route[]>(http.get('/routes'))
 
 export const createRoute = (payload: Partial<Route>) => unwrap<Route>(http.post('/routes', payload))
+
+export const updateRoute = (id: string, payload: Partial<Pick<Route, 'name' | 'server_id' | 'tool_names' | 'enabled'>>) =>
+  unwrap<Route>(http.patch(`/routes/${id}`, payload))
+
+export const toggleRoute = (id: string, enabled: boolean) =>
+  unwrap<Route>(http.patch(`/routes/${id}/toggle`, { enabled }))
+
+export const deleteRoute = (id: string) => unwrap<void>(http.delete(`/routes/${id}`))
 
 export const listPolicies = () => unwrap<Policy[]>(http.get('/policies'))
 
 export const createPolicy = (payload: Partial<Policy>) =>
   unwrap<Policy>(http.post('/policies', payload))
+
+export const updatePolicy = (
+  id: string,
+  payload: Partial<Pick<Policy, 'name' | 'rules' | 'enabled'>>,
+) => unwrap<Policy>(http.patch(`/policies/${id}`, payload))
+
+export const togglePolicy = (id: string, enabled: boolean) =>
+  unwrap<Policy>(http.patch(`/policies/${id}/toggle`, { enabled }))
+
+export const deletePolicy = (id: string) => unwrap<void>(http.delete(`/policies/${id}`))
 
 // ---- API Keys（访问控制）----
 

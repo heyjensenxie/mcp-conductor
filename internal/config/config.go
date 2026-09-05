@@ -76,15 +76,18 @@ type CredentialsConfig struct {
 
 // AuthConfig 控制 Gateway 与 Control Plane 的认证。
 type AuthConfig struct {
-	// Enabled 开启后，控制面 /api 仅接受管理令牌（operator_token 或会话），
-	// 数据面 /mcp 接受管理令牌与数据面 API Key。
+	// Enabled 开启后，控制面 /api 需登录会话或管理令牌，数据面 /mcp 接受 API Key。
 	Enabled bool `yaml:"enabled"`
 	// APIKeys 是本实例数据面引导凭据（格式 subject:key，全量授权、仅 /mcp）。
 	APIKeys []string `yaml:"api_keys"`
-	// OperatorToken 是控制面/Console 的管理凭据；auth.enabled 时必须配置。
+	// OperatorToken 是控制面程序化/API 管理令牌；为空时应用首启自动生成（不打印）。
 	OperatorToken string `yaml:"operator_token"`
-	// TokenSecret 用于签发会话令牌的 HMAC 密钥；auth.enabled 时必须配置。
+	// TokenSecret 用于签发会话令牌的 HMAC 密钥；为空时应用首启自动生成。
 	TokenSecret string `yaml:"token_secret"`
+	// AdminUsername / AdminPassword 是 Console 登录的管理员账号（账号+密码）。
+	// admin_password 为空时应用首启自动生成并在启动日志打印一次。
+	AdminUsername string `yaml:"admin_username"`
+	AdminPassword string `yaml:"admin_password"`
 	// SessionTTL 登录会话有效期（默认 12h）。
 	SessionTTL time.Duration `yaml:"session_ttl"`
 }
@@ -127,10 +130,12 @@ func Default() Config {
 			Burst:   1,
 		},
 		Auth: AuthConfig{
-			Enabled:       false,
+			Enabled:       true, // 默认开启控制台/控制面鉴权；凭据为空时应用首启自动生成并打印引导
 			APIKeys:       []string{},
 			OperatorToken: "",
 			TokenSecret:   "",
+			AdminUsername: "admin",
+			AdminPassword: "",
 			SessionTTL:    12 * time.Hour,
 		},
 		Credentials: CredentialsConfig{
@@ -213,6 +218,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := lookupEnv("CONDUCTOR_AUTH_TOKEN_SECRET"); v != "" {
 		cfg.Auth.TokenSecret = v
+	}
+	if v := lookupEnv("CONDUCTOR_AUTH_ADMIN_USERNAME"); v != "" {
+		cfg.Auth.AdminUsername = v
+	}
+	if v := lookupEnv("CONDUCTOR_AUTH_ADMIN_PASSWORD"); v != "" {
+		cfg.Auth.AdminPassword = v
 	}
 	if v := lookupEnv("CONDUCTOR_AUTH_SESSION_TTL_MINUTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -297,11 +308,13 @@ func (c Config) validate() error {
 	if c.Database.Driver == "mysql" && strings.TrimSpace(c.Database.DSN) == "" {
 		return fmt.Errorf("database.driver 为 mysql 时须提供 database.dsn")
 	}
-	if c.Auth.Enabled && strings.TrimSpace(c.Auth.OperatorToken) == "" {
-		return fmt.Errorf("auth.enabled 时须配置 auth.operator_token（控制面管理凭据）")
-	}
-	if c.Auth.Enabled && strings.TrimSpace(c.Auth.TokenSecret) == "" {
-		return fmt.Errorf("auth.enabled 时须配置 auth.token_secret（签发登录令牌用）")
+	// 鉴权开启但 operator_token/token_secret 为空时不在本层报错：应用首启会
+	// 自动生成并在 stdout 打印引导管理令牌（见 app.ensureAuthSecrets）。若用户
+	// 显式提供了 token_secret，则须为合法 hex（长度等校验在 auth.NewService）。
+	if c.Auth.Enabled && c.Auth.TokenSecret != "" {
+		if _, err := hex.DecodeString(c.Auth.TokenSecret); err != nil {
+			return fmt.Errorf("auth.token_secret 须为 hex 字符串")
+		}
 	}
 	if c.Credentials.EncryptionKey != "" {
 		key, err := hex.DecodeString(c.Credentials.EncryptionKey)

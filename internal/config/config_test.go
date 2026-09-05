@@ -19,6 +19,13 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Server.Port != 8080 || cfg.Redis.Enabled || cfg.RateLimit.Enabled {
 		t.Fatalf("默认值异常: %+v", cfg)
 	}
+	if !cfg.Auth.Enabled {
+		t.Fatal("默认应开启鉴权（控制台登录 / 控制面保护）")
+	}
+	// 鉴权开启但未配置凭据不应报错：由应用首启自动生成引导令牌。
+	if cfg.Auth.OperatorToken != "" || cfg.Auth.TokenSecret != "" {
+		t.Fatalf("默认不应携带凭据: %+v", cfg.Auth)
+	}
 }
 
 // TestLoadEnvOverridesNewKeys 验证 config.yaml 有但此前缺 env 覆盖的项现在生效。

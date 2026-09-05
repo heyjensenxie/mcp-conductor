@@ -181,18 +181,128 @@ func (c *Control) handleListServerTools(w http.ResponseWriter, r *http.Request) 
 	writeOK(w, RequestIDFrom(r.Context()), tools)
 }
 
-// handleCreateRoute 新增路由定义。
+// handleToggleTool 启用/禁用单个工具（其余字段由发现过程拥有）。
+func (c *Control) handleToggleTool(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decodeBody(r, &body); err != nil || body.Enabled == nil {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "缺少 enabled 字段"))
+		return
+	}
+	tool, err := c.registry.ToggleTool(r.Context(), r.PathValue("id"), *body.Enabled)
+	if err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), tool)
+}
+
+// routeInput 是创建路由的显式 DTO（防客户端伪造 id/时间戳）。
+type routeInput struct {
+	Name      string   `json:"name"`
+	ServerID  string   `json:"server_id"`
+	ToolNames []string `json:"tool_names"`
+	Enabled   *bool    `json:"enabled"`
+}
+
+// handleCreateRoute 新增路由定义（引用 Server 与 gateway 工具均须存在）。
 func (c *Control) handleCreateRoute(w http.ResponseWriter, r *http.Request) {
-	var route model.Route
-	if err := decodeBody(r, &route); err != nil {
+	var in routeInput
+	if err := decodeBody(r, &in); err != nil {
 		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
 		return
 	}
-	if err := c.store.CreateRoute(r.Context(), &route); err != nil {
+	enabled := true
+	if in.Enabled != nil {
+		enabled = *in.Enabled
+	}
+	now := time.Now().UTC()
+	route := &model.Route{Name: in.Name, ServerID: in.ServerID, ToolNames: in.ToolNames, Enabled: enabled, CreatedAt: now, UpdatedAt: now}
+	if err := c.validateRoute(r.Context(), route); err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	if err := c.store.CreateRoute(r.Context(), route); err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeEnvelope(w, http.StatusCreated, "ok", "success", RequestIDFrom(r.Context()), route)
+}
+
+// handleUpdateRoute 更新路由可编辑字段（按路径 id；name/server_id/tool_names/enabled 空值不改）。
+func (c *Control) handleUpdateRoute(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	route, err := c.store.GetRoute(r.Context(), id)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusNotFound, errs.Wrap(errs.CodeNotFound, err, "route %q 不存在", id))
+		return
+	}
+	var patch struct {
+		Name      *string   `json:"name"`
+		ServerID  *string   `json:"server_id"`
+		ToolNames *[]string `json:"tool_names"`
+		Enabled   *bool     `json:"enabled"`
+	}
+	if err := decodeBody(r, &patch); err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
+		return
+	}
+	if patch.Name != nil {
+		route.Name = *patch.Name
+	}
+	if patch.ServerID != nil {
+		route.ServerID = *patch.ServerID
+	}
+	if patch.ToolNames != nil {
+		route.ToolNames = *patch.ToolNames
+	}
+	if patch.Enabled != nil {
+		route.Enabled = *patch.Enabled
+	}
+	route.UpdatedAt = time.Now().UTC()
+	if err := c.validateRoute(r.Context(), route); err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	if err := c.store.UpdateRoute(r.Context(), route); err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
 	writeOK(w, RequestIDFrom(r.Context()), route)
+}
+
+// handleToggleRoute 启用/禁用路由。
+func (c *Control) handleToggleRoute(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decodeBody(r, &body); err != nil || body.Enabled == nil {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "缺少 enabled 字段"))
+		return
+	}
+	id := r.PathValue("id")
+	route, err := c.store.GetRoute(r.Context(), id)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusNotFound, errs.Wrap(errs.CodeNotFound, err, "route %q 不存在", id))
+		return
+	}
+	route.Enabled = *body.Enabled
+	route.UpdatedAt = time.Now().UTC()
+	if err := c.store.UpdateRoute(r.Context(), route); err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), route)
+}
+
+// handleDeleteRoute 删除路由。
+func (c *Control) handleDeleteRoute(w http.ResponseWriter, r *http.Request) {
+	if err := c.store.DeleteRoute(r.Context(), r.PathValue("id")); err != nil {
+		writeGatewayError(w, r, http.StatusNotFound, errs.Wrap(errs.CodeNotFound, err, "route %q 不存在", r.PathValue("id")))
+		return
+	}
+	writeEnvelope(w, http.StatusNoContent, "ok", "success", RequestIDFrom(r.Context()), nil)
 }
 
 // handleListRoutes 列出全部路由。
@@ -205,18 +315,106 @@ func (c *Control) handleListRoutes(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, RequestIDFrom(r.Context()), routes)
 }
 
-// handleCreatePolicy 新增权限策略。
+// policyInput 是创建策略的显式 DTO。
+type policyInput struct {
+	Name    string             `json:"name"`
+	Rules   []model.PolicyRule `json:"rules"`
+	Enabled *bool              `json:"enabled"`
+}
+
+// handleCreatePolicy 新增权限策略（rules 非空、逐条合法）。
 func (c *Control) handleCreatePolicy(w http.ResponseWriter, r *http.Request) {
-	var policy model.Policy
-	if err := decodeBody(r, &policy); err != nil {
+	var in policyInput
+	if err := decodeBody(r, &in); err != nil {
 		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
 		return
 	}
-	if err := c.store.CreatePolicy(r.Context(), &policy); err != nil {
+	enabled := true
+	if in.Enabled != nil {
+		enabled = *in.Enabled
+	}
+	now := time.Now().UTC()
+	policy := &model.Policy{Name: in.Name, Rules: in.Rules, Enabled: enabled, CreatedAt: now, UpdatedAt: now}
+	if err := validatePolicy(policy); err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	if err := c.store.CreatePolicy(r.Context(), policy); err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeEnvelope(w, http.StatusCreated, "ok", "success", RequestIDFrom(r.Context()), policy)
+}
+
+// handleUpdatePolicy 更新策略（name/rules/enabled 空值不改）。
+func (c *Control) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	policy, err := c.store.GetPolicy(r.Context(), id)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusNotFound, errs.Wrap(errs.CodeNotFound, err, "policy %q 不存在", id))
+		return
+	}
+	var patch struct {
+		Name    *string             `json:"name"`
+		Rules   *[]model.PolicyRule `json:"rules"`
+		Enabled *bool               `json:"enabled"`
+	}
+	if err := decodeBody(r, &patch); err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
+		return
+	}
+	if patch.Name != nil {
+		policy.Name = *patch.Name
+	}
+	if patch.Rules != nil {
+		policy.Rules = *patch.Rules
+	}
+	if patch.Enabled != nil {
+		policy.Enabled = *patch.Enabled
+	}
+	policy.UpdatedAt = time.Now().UTC()
+	if err := validatePolicy(policy); err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	if err := c.store.UpdatePolicy(r.Context(), policy); err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
 	writeOK(w, RequestIDFrom(r.Context()), policy)
+}
+
+// handleTogglePolicy 启用/禁用策略。
+func (c *Control) handleTogglePolicy(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decodeBody(r, &body); err != nil || body.Enabled == nil {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "缺少 enabled 字段"))
+		return
+	}
+	id := r.PathValue("id")
+	policy, err := c.store.GetPolicy(r.Context(), id)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusNotFound, errs.Wrap(errs.CodeNotFound, err, "policy %q 不存在", id))
+		return
+	}
+	policy.Enabled = *body.Enabled
+	policy.UpdatedAt = time.Now().UTC()
+	if err := c.store.UpdatePolicy(r.Context(), policy); err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), policy)
+}
+
+// handleDeletePolicy 删除策略。
+func (c *Control) handleDeletePolicy(w http.ResponseWriter, r *http.Request) {
+	if err := c.store.DeletePolicy(r.Context(), r.PathValue("id")); err != nil {
+		writeGatewayError(w, r, http.StatusNotFound, errs.Wrap(errs.CodeNotFound, err, "policy %q 不存在", r.PathValue("id")))
+		return
+	}
+	writeEnvelope(w, http.StatusNoContent, "ok", "success", RequestIDFrom(r.Context()), nil)
 }
 
 // handleListPolicies 列出全部策略。
@@ -227,6 +425,44 @@ func (c *Control) handleListPolicies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, RequestIDFrom(r.Context()), policies)
+}
+
+// validateRoute 校验路由引用完整性：name 非空、目标 Server 存在、tool_names 逐项已注册。
+func (c *Control) validateRoute(ctx context.Context, route *model.Route) error {
+	if strings.TrimSpace(route.Name) == "" {
+		return errs.New(errs.CodeInvalidArgument, "route.name 不能为空")
+	}
+	if strings.TrimSpace(route.ServerID) == "" {
+		return errs.New(errs.CodeInvalidArgument, "route.server_id 不能为空")
+	}
+	if _, err := c.store.GetServer(ctx, route.ServerID); err != nil {
+		return errs.Wrap(errs.CodeNotFound, err, "server %q 不存在", route.ServerID)
+	}
+	for _, name := range route.ToolNames {
+		if _, err := c.store.GetToolByGatewayName(ctx, name); err != nil {
+			return errs.Wrap(errs.CodeNotFound, err, "工具 %q 未注册", name)
+		}
+	}
+	return nil
+}
+
+// validatePolicy 校验策略定义：name 非空、rules 非空、每条规则字段合法。
+func validatePolicy(policy *model.Policy) error {
+	if strings.TrimSpace(policy.Name) == "" {
+		return errs.New(errs.CodeInvalidArgument, "policy.name 不能为空")
+	}
+	if len(policy.Rules) == 0 {
+		return errs.New(errs.CodeInvalidArgument, "policy.rules 不能为空")
+	}
+	for _, rule := range policy.Rules {
+		if strings.TrimSpace(rule.Subject) == "" || strings.TrimSpace(rule.Tool) == "" {
+			return errs.New(errs.CodeInvalidArgument, "policy 规则须包含 subject 与 tool")
+		}
+		if rule.Effect != model.PolicyEffectAllow && rule.Effect != model.PolicyEffectDeny {
+			return errs.New(errs.CodeInvalidArgument, "policy rule effect 仅支持 allow/deny")
+		}
+	}
+	return nil
 }
 
 // handleCreateCredential 新增凭证：接收可选 value 敏感值（值不下发 API）。

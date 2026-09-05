@@ -50,7 +50,7 @@
       <!-- ==================== 遗留策略规则 ==================== -->
       <a-tab-pane :key="'policies'" :tab="t('access.tabPolicies')">
         <div class="toolbar">
-          <a-button type="primary" @click="policyDialogVisible = true">
+          <a-button type="primary" @click="openPolicyDialog()">
             <template #icon><PlusOutlined /></template>{{ t('access.newPolicy') }}
           </a-button>
         </div>
@@ -62,7 +62,15 @@
               </a-tag>
             </template>
             <template v-else-if="column.key === 'enabled'">
-              <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? t('common.yes') : t('common.no') }}</a-tag>
+              <a-switch :checked="record.enabled" @change="(checked: boolean) => togglePolicyRow(record, checked)" />
+            </template>
+            <template v-else-if="column.key === 'actions'">
+              <a-space :size="4">
+                <a-button size="small" @click="openPolicyDialog(record)">{{ t('common.edit') }}</a-button>
+                <a-popconfirm :title="t('access.policyConfirmDelete')" @confirm="removePolicy(record)">
+                  <a-button size="small" danger>{{ t('common.delete') }}</a-button>
+                </a-popconfirm>
+              </a-space>
             </template>
           </template>
         </a-table>
@@ -192,8 +200,8 @@
       </div>
     </a-modal>
 
-    <!-- 遗留策略弹窗 -->
-    <a-modal v-model:open="policyDialogVisible" :title="t('access.newPolicy')" :ok-text="t('access.create')" :cancel-text="t('common.cancel')" width="600px" @ok="submitPolicy">
+    <!-- 遗留策略弹窗（创建/编辑共用） -->
+    <a-modal v-model:open="policyDialogVisible" :title="editingPolicyId ? t('access.policyEditTitle') : t('access.newPolicy')" :ok-text="editingPolicyId ? t('common.save') : t('access.create')" :cancel-text="t('common.cancel')" width="600px" @ok="submitPolicy">
       <a-alert type="info" show-icon class="mb">{{ t('access.formatHint') }}</a-alert>
       <a-form :label-col="{ span: 4 }" :wrapper-col="{ span: 20 }">
         <a-form-item :label="t('access.name')" :required="true">
@@ -213,7 +221,8 @@ import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { CopyOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import {
-  createKey, createPolicy, deleteKey, getAuthStatus, listKeys, listPolicies, listServers, listTools, updateKey,
+  createKey, createPolicy, deleteKey, deletePolicy, getAuthStatus, listKeys, listPolicies, listServers, listTools,
+  togglePolicy, updateKey, updatePolicy,
 } from '@/api'
 import type { AccessKey, MCPServer, Policy, PolicyRule, Tool, ToolGrant } from '@/types'
 
@@ -422,13 +431,15 @@ async function saveEdit() {
 const policies = ref<Policy[]>([])
 const policiesLoading = ref(false)
 const policyDialogVisible = ref(false)
+const editingPolicyId = ref('')
 const policyForm = reactive({ name: '' })
 const rulesText = ref('')
 
 const policyColumns = computed<any[]>(() => [
   { title: t('access.name'), key: 'name', dataIndex: 'name' },
   { title: t('access.rules'), key: 'rules' },
-  { title: t('access.enabled'), key: 'enabled', dataIndex: 'enabled', width: 100 },
+  { title: t('access.enabled'), key: 'enabled', dataIndex: 'enabled', width: 90 },
+  { title: t('common.actions'), key: 'actions', width: 170 },
 ])
 
 async function loadPolicies() {
@@ -442,12 +453,9 @@ async function loadPolicies() {
   }
 }
 
-async function submitPolicy() {
-  if (!policyForm.name) {
-    message.warning(t('access.nameRequired'))
-    return
-  }
-  const rules: PolicyRule[] = rulesText.value
+// parseRulesText 把多行 "subject|tool|effect" 文本解析为规则列表。
+function parseRulesText(): PolicyRule[] {
+  return rulesText.value
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
@@ -455,11 +463,51 @@ async function submitPolicy() {
       const [subject, tool, effect] = line.split('|').map((s) => s.trim())
       return { subject, tool, effect: (effect === 'deny' ? 'deny' : 'allow') as PolicyRule['effect'] }
     })
+}
+
+// openPolicyDialog 新建或编辑策略（record 缺省为新建）。
+function openPolicyDialog(record?: Policy) {
+  editingPolicyId.value = record?.id ?? ''
+  policyForm.name = record?.name ?? ''
+  rulesText.value = record ? record.rules.map((r) => `${r.subject}|${r.tool}|${r.effect}`).join('\n') : ''
+  policyDialogVisible.value = true
+}
+
+async function submitPolicy() {
+  if (!policyForm.name) {
+    message.warning(t('access.nameRequired'))
+    return
+  }
+  const rules = parseRulesText()
   try {
-    await createPolicy({ ...policyForm, enabled: true, rules })
-    message.success(t('access.createdOk'))
+    if (editingPolicyId.value) {
+      await updatePolicy(editingPolicyId.value, { name: policyForm.name, rules })
+      message.success(t('access.policyUpdatedOk'))
+    } else {
+      await createPolicy({ name: policyForm.name, enabled: true, rules })
+      message.success(t('access.createdOk'))
+    }
     policyDialogVisible.value = false
     rulesText.value = ''
+    await loadPolicies()
+  } catch (e) {
+    message.error(String(e))
+  }
+}
+
+async function togglePolicyRow(record: Policy, enabled: boolean) {
+  try {
+    await togglePolicy(record.id, enabled)
+    await loadPolicies()
+  } catch (e) {
+    message.error(String(e))
+  }
+}
+
+async function removePolicy(record: Policy) {
+  try {
+    await deletePolicy(record.id)
+    message.success(t('access.policyDeletedOk'))
     await loadPolicies()
   } catch (e) {
     message.error(String(e))

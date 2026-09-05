@@ -1,12 +1,14 @@
 // Package auth 负责入口认证与登录会话。
 //
 // 凭据维度：
-//   - 管理令牌（auth.operator_token）：Console/控制面唯一凭据。认证通过后身份
-//     Operator=true，可访问 /api 控制面；也可登录换取会话令牌。
+//   - 管理员账号（auth.admin_username / auth.admin_password）：Console 登录用
+//     账号+密码换取会话；密码未配置时由应用首启生成并打印。
+//   - 管理令牌（auth.operator_token）：控制面程序化/API 管理凭据，认证后身份
+//     Operator=true，可访问 /api 控制面；也可作为登录密码（兼容）。
 //   - API Key（AccessKey 领域实体），密钥以 HMAC-SHA256 哈希落库，明文仅在
 //     创建时返回一次；仅用于数据面 /mcp 调用（按 key×工具白名单授权），
 //     不能访问 /api 控制面，也不能用来登录。
-//   - 登录会话令牌（HMAC 签名，含过期时间），由 operator token 登录签发。
+//   - 登录会话令牌（HMAC 签名，含过期时间），由管理员账号/operator token 登录签发。
 //
 // 会话令牌无状态（服务端不存会话），重启/过期即失效；登出由客户端丢弃令牌完成。
 package auth
@@ -72,13 +74,19 @@ type Service struct {
 	enabled       bool
 	keys          KeyStore
 	secret        []byte // token_secret：签发会话 + 计算 API Key 哈希
-	operatorToken []byte // operator_token：控制面管理凭据
+	operatorToken []byte // operator_token：控制面程序化管理凭据
+	adminUsername string // Console 管理员账号（默认 admin）
+	adminPassword []byte // Console 管理员密码（首启未配置时由应用生成并打印）
 	ttl           time.Duration
 }
 
 // NewService 由配置与 key 存储构建认证服务。
 func NewService(cfg config.AuthConfig, keys KeyStore) (*Service, error) {
 	var secret, operatorToken []byte
+	adminUser := strings.TrimSpace(cfg.AdminUsername)
+	if adminUser == "" {
+		adminUser = "admin"
+	}
 	if cfg.Enabled {
 		if strings.TrimSpace(cfg.TokenSecret) == "" {
 			return nil, errors.New("auth.enabled 时须配置 auth.token_secret")
@@ -102,6 +110,8 @@ func NewService(cfg config.AuthConfig, keys KeyStore) (*Service, error) {
 		keys:          keys,
 		secret:        secret,
 		operatorToken: operatorToken,
+		adminUsername: adminUser,
+		adminPassword: []byte(cfg.AdminPassword),
 		ttl:           ttl,
 	}, nil
 }
@@ -129,11 +139,10 @@ func KeyHash(tokenSecretHex, token string) (string, error) {
 // operatorSubject 是 operator token 认证后与会话的统一主体标识。
 const operatorSubject = "operator"
 
-// Login 校验管理令牌并签发会话令牌。
-// password 必须与 auth.operator_token 常量时间相等；API Key 明文不能用于登录
-// （避免把数据面凭据升级为控制面/全量工具会话）。
-func (s *Service) Login(ctx context.Context, _ string, password string) (*Session, error) {
-	ident, err := s.login(ctx, password)
+// Login 校验管理员账号（或 operator token 作密码）并签发会话令牌。
+// API Key 明文不能用于登录（避免把数据面凭据升级为控制面/全量工具会话）。
+func (s *Service) Login(ctx context.Context, username string, password string) (*Session, error) {
+	ident, err := s.login(ctx, username, password)
 	if err != nil {
 		return nil, err
 	}
@@ -150,14 +159,18 @@ func (s *Service) Login(ctx context.Context, _ string, password string) (*Sessio
 }
 
 // login 校验登录凭据并返回调用主体；认证关闭时匿名放行（视为 Operator）。
-func (s *Service) login(ctx context.Context, password string) (*Identity, error) {
+// 优先接受 operator token（程序化/兼容，username 任意），其次为管理员账号密码。
+func (s *Service) login(ctx context.Context, username, password string) (*Identity, error) {
 	if !s.enabled {
 		return &Identity{Subject: "anonymous", Operator: true}, nil
 	}
-	if len(s.operatorToken) == 0 || !hmac.Equal([]byte(password), s.operatorToken) {
-		return nil, errs.New(errs.CodeAuthentication, "管理令牌错误")
+	if len(s.operatorToken) > 0 && hmac.Equal([]byte(password), s.operatorToken) {
+		return &Identity{Subject: operatorSubject, Operator: true}, nil
 	}
-	return &Identity{Subject: operatorSubject, Operator: true}, nil
+	if username == s.adminUsername && len(s.adminPassword) > 0 && hmac.Equal([]byte(password), s.adminPassword) {
+		return &Identity{Subject: s.adminUsername, Operator: true}, nil
+	}
+	return nil, errs.New(errs.CodeAuthentication, "用户名或密码错误")
 }
 
 // Authenticate 依次接受：会话令牌 → 管理令牌 → API Key；认证关闭时匿名放行
