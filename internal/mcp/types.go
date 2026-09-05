@@ -7,12 +7,43 @@ package mcp
 
 import "encoding/json"
 
-// SupportedProtocolVersions 是网关声明支持并愿意协商的协议版本。
-// 保持保守：选择生态兼容性最好的稳定版本。
-var SupportedProtocolVersions = []string{"2025-11-24", "2025-06-18", "2025-03-26"}
+// SupportedProtocolVersions 是网关声明支持并愿意协商的协议版本（升序）。
+// 只列出真正实现其 wire 语义的版本（Legacy：initialize 握手时代）。
+// 官方 2026-07-28 及以后为无状态 Modern 时代（无 initialize、server/discover、
+// MRTR 等架构级差异），本网关尚未实现，因此不得列入、也不得回显。
+var SupportedProtocolVersions = []string{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-24", "2025-11-25"}
 
-// DefaultProtocolVersion 是协商失败时的兜底版本。
-const DefaultProtocolVersion = "2025-11-24"
+// DefaultProtocolVersion 是网关作为客户端（连上游 MCP Server）时请求的首选版本。
+const DefaultProtocolVersion = "2025-11-25"
+
+// pickProtocolVersion 协商 MCP 协议版本（能力白名单，不做未知版本回显）。
+//
+// 规则：
+//   - 客户端请求精确命中已实现版本 → 原样应答；
+//   - 客户端请求为空 → 应答我们最新的版本；
+//   - 客户端请求未知但晚于某个已实现版本 → 应答“已实现且不高于请求”的最高版本
+//     （向下协商，只在我们真正实现的集合内选）；
+//   - 其余（早于最早实现版本）→ 应答最早支持版本。
+//
+// 绝不回显集合外的未知版本：声明某版本 = 真正实现了该版本的 wire 语义；
+// 2026-07-28 及以后的 Modern 客户端需要独立协议适配，而非追加版本字符串。
+func pickProtocolVersion(requested string) string {
+	if requested == "" {
+		return SupportedProtocolVersions[len(SupportedProtocolVersions)-1]
+	}
+	// 从新到旧：精确命中直接回；请求比 v 新但不在集合内时，v 即“已实现且不高于请求”的最高版。
+	for i := len(SupportedProtocolVersions) - 1; i >= 0; i-- {
+		v := SupportedProtocolVersions[i]
+		if requested == v {
+			return v
+		}
+		if requested > v {
+			return v
+		}
+	}
+	// 请求早于我们最早实现的版本。
+	return SupportedProtocolVersions[0]
+}
 
 // JSON-RPC 2.0 标准错误码。
 const (

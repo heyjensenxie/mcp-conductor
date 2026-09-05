@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -52,6 +53,31 @@ func TestHandler_Initialize(t *testing.T) {
 	result := resp["result"].(map[string]any)
 	if result["protocolVersion"] != "2025-11-24" {
 		t.Fatalf("协议版本协商错误: %v", result["protocolVersion"])
+	}
+}
+
+// TestHandler_Initialize_ProtocolNegotiation 覆盖向下协商：旧客户端（2024-11-05）
+// 不得被回一个 2025-11-24（否则客户端报 "Server's protocol version is not supported"）。
+func TestHandler_Initialize_ProtocolNegotiation(t *testing.T) {
+	handler := NewHandler(fakeService{})
+	cases := []struct{ req, want string }{
+		{"2025-11-25", "2025-11-25"}, // Cherry Studio 2.0.9 请求的新修订版
+		{"2025-11-24", "2025-11-24"},
+		{"2025-06-18", "2025-06-18"},
+		{"2025-03-26", "2025-03-26"},
+		{"2024-11-05", "2024-11-05"},
+		{"2026-03-01", "2025-11-25"}, // 未实现/未验证的未来版本：只回我们实现的最高版，不回显
+	}
+	for _, c := range cases {
+		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":%q,"clientInfo":{"name":"t","version":"1"},"capabilities":{}}}`, c.req)
+		resp := decodeResp(t, doPost(t, handler, body))
+		if resp["error"] != nil {
+			t.Fatalf("请求 %s 不应报错: %v", c.req, resp["error"])
+		}
+		got := resp["result"].(map[string]any)["protocolVersion"]
+		if got != c.want {
+			t.Fatalf("请求 %s 应协商到 %s，得到 %v", c.req, c.want, got)
+		}
 	}
 }
 

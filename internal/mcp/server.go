@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 )
 
@@ -89,10 +90,13 @@ func (h *Handler) handleInitialize(params json.RawMessage) (any, *RPCError) {
 			return nil, &RPCError{Code: codeInvalidParams, Message: "initialize 参数无效"}
 		}
 	}
-	version := DefaultProtocolVersion
-	if contains(SupportedProtocolVersions, p.ProtocolVersion) {
-		version = p.ProtocolVersion
-	}
+	version := pickProtocolVersion(p.ProtocolVersion)
+	// 记录客户端握手信息，便于排查协议版本/客户端兼容问题。
+	slog.Info("mcp_initialize",
+		"client", p.ClientInfo.Name,
+		"client_version", p.ClientInfo.Version,
+		"requested", p.ProtocolVersion,
+		"negotiated", version)
 	return InitializeResult{
 		ProtocolVersion: version,
 		Capabilities:    Capabilities{Tools: &ToolCapabilities{}},
@@ -142,13 +146,4 @@ func (h *Handler) writeResponse(w http.ResponseWriter, id *json.RawMessage, resu
 		Result:  result,
 		Error:   rpcErr,
 	})
-}
-
-func contains(list []string, v string) bool {
-	for _, s := range list {
-		if s == v {
-			return true
-		}
-	}
-	return false
 }
