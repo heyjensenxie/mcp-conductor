@@ -1,5 +1,5 @@
 import http, { unwrap } from './http'
-import type { AccessKey, Credential, MCPServer, MetricSnapshot, Policy, Route, Session, Tool, ToolGrant, TrafficSample } from '@/types'
+import type { AccessKey, Credential, MCPServer, MetricSnapshot, Route, Session, Tool, ToolGrant, TrafficSample, TrendPoint } from '@/types'
 
 // ---- Auth（免认证端点）----
 
@@ -50,12 +50,18 @@ export const updateCredential = (
 export const deleteCredential = (id: string, credId: string) =>
   unwrap<void>(http.delete(`/servers/${id}/credentials/${credId}`))
 
-// ---- Tools / Routes / Policies ----
+// ---- Tools / Routes ----
 
 export const listTools = () => unwrap<Tool[]>(http.get('/tools'))
 
 export const toggleTool = (id: string, enabled: boolean) =>
   unwrap<Tool>(http.patch(`/tools/${id}/toggle`, { enabled }))
+
+export const updateTool = (id: string, payload: Partial<Pick<Tool, 'gateway_name' | 'description' | 'input_schema'>> & {
+  reset_name?: boolean
+  reset_description?: boolean
+  reset_input_schema?: boolean
+}) => unwrap<Tool>(http.patch(`/tools/${id}`, payload))
 
 export const listRoutes = () => unwrap<Route[]>(http.get('/routes'))
 
@@ -68,21 +74,6 @@ export const toggleRoute = (id: string, enabled: boolean) =>
   unwrap<Route>(http.patch(`/routes/${id}/toggle`, { enabled }))
 
 export const deleteRoute = (id: string) => unwrap<void>(http.delete(`/routes/${id}`))
-
-export const listPolicies = () => unwrap<Policy[]>(http.get('/policies'))
-
-export const createPolicy = (payload: Partial<Policy>) =>
-  unwrap<Policy>(http.post('/policies', payload))
-
-export const updatePolicy = (
-  id: string,
-  payload: Partial<Pick<Policy, 'name' | 'rules' | 'enabled'>>,
-) => unwrap<Policy>(http.patch(`/policies/${id}`, payload))
-
-export const togglePolicy = (id: string, enabled: boolean) =>
-  unwrap<Policy>(http.patch(`/policies/${id}/toggle`, { enabled }))
-
-export const deletePolicy = (id: string) => unwrap<void>(http.delete(`/policies/${id}`))
 
 // ---- API Keys（访问控制）----
 
@@ -98,6 +89,10 @@ export const updateKey = (
   payload: Partial<Pick<AccessKey, 'name' | 'enabled' | 'qps' | 'burst' | 'grants'>>,
 ) => unwrap<AccessKey>(http.patch(`/keys/${id}`, payload))
 
+// rotateKey 重置 API Key 明文密钥：新密钥仅在本响应返回一次（与创建同契约）。
+export const rotateKey = (id: string) =>
+  unwrap<AccessKey & { secret?: string }>(http.post(`/keys/${id}/rotate`))
+
 export const deleteKey = (id: string) => unwrap<void>(http.delete(`/keys/${id}`))
 
 // ---- Metrics / Logs ----
@@ -108,6 +103,10 @@ export const getMetrics = (scope?: 'tool' | 'server') =>
   unwrap<MetricSnapshot[]>(http.get('/metrics', { params: scope ? { scope } : undefined }))
 
 export const getServerMetrics = () => unwrap<MetricSnapshot[]>(http.get('/metrics', { params: { scope: 'server' } }))
+
+// getMetricsTrend 读取真时序趋势（近 N 分钟，按分钟桶）。
+export const getMetricsTrend = (scope: 'tool' | 'server' = 'tool', minutes = 30) =>
+  unwrap<{ series: TrendPoint[] }>(http.get('/metrics/trend', { params: { scope, minutes } }))
 
 // getLogs 读取最近调用日志；可选按 server 过滤与条数限制。
 export const getLogs = (opts?: { server_id?: string; limit?: number }) =>

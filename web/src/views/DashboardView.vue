@@ -61,8 +61,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { listServers, listServerTools, getLogs, getMetrics } from '@/api'
-import type { MCPServer, TrafficSample, MetricSnapshot } from '@/types'
+import { listServers, listServerTools, getLogs, getMetrics, getMetricsTrend } from '@/api'
+import type { MCPServer, TrafficSample, MetricSnapshot, TrendPoint } from '@/types'
 import TopToolsChart, { type ChartDatum } from '@/components/TopToolsChart.vue'
 import TrafficTrend from '@/components/TrafficTrend.vue'
 
@@ -70,8 +70,8 @@ const { t } = useI18n()
 
 const servers = ref<MCPServer[]>([])
 const logs = ref<TrafficSample[]>([])
-const trendLogs = ref<TrafficSample[]>([]) // 供流量趋势按分钟聚合（最多 500 条）
 const metrics = ref<MetricSnapshot[]>([])
+const trendData = ref<TrendPoint[]>([]) // 真时序（工具维，近 30 分钟）
 const toolCount = ref<Record<string, number>>({})
 const cards = ref([
   { key: 'registeredServers', value: 0 as number | string, dot: 'idle' },
@@ -84,22 +84,18 @@ const cards = ref([
 
 const topTools = ref<ChartDatum[]>([])
 
-// trendSeries 把最近调用日志按分钟聚合为折线图数据（按时间升序）。
+// fmtMin 把分钟级 UTC Unix 转为本地 HH:MM 标签。
+function fmtMin(ts: number): string {
+  return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+// trendSeries 由后端真时序生成折线数据（调用量与成功率，按分钟）。
 const trendSeries = computed(() => {
-  const buckets = new Map<string, { total: number; ok: number }>()
-  for (const l of trendLogs.value) {
-    const minute = (l.timestamp || '').slice(0, 16) // 'YYYY-MM-DDTHH:MM'
-    if (!minute) continue
-    const b = buckets.get(minute) ?? { total: 0, ok: 0 }
-    b.total++
-    if (l.status === 'success') b.ok++
-    buckets.set(minute, b)
-  }
-  const times = [...buckets.keys()].sort()
+  const categories = trendData.value.map((p) => fmtMin(p.ts))
   return {
-    categories: times,
-    totals: times.map((k) => buckets.get(k)!.total),
-    rates: times.map((k) => Math.round((buckets.get(k)!.ok / buckets.get(k)!.total) * 100)),
+    categories,
+    totals: trendData.value.map((p) => p.totals),
+    rates: trendData.value.map((p) => (p.totals ? Math.round(((p.totals - p.errors) / p.totals) * 100) : 0)),
   }
 })
 
@@ -121,11 +117,16 @@ const dotClass = (s: string) => (s === 'healthy' ? 'mc-dot--ok' : s === 'unhealt
 
 onMounted(async () => {
   try {
-    const [serverList, logList, metricList] = await Promise.all([listServers(), getLogs({ limit: 500 }), getMetrics()])
+    const [serverList, logList, metricList, trendRes] = await Promise.all([
+      listServers(),
+      getLogs({ limit: 500 }),
+      getMetrics(),
+      getMetricsTrend('tool', 30),
+    ])
     servers.value = serverList
     logs.value = logList.slice(0, 100)
-    trendLogs.value = logList
     metrics.value = metricList
+    trendData.value = trendRes.series
 
     let toolTotal = 0
     for (const s of serverList) {

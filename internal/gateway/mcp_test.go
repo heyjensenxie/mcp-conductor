@@ -13,7 +13,6 @@ import (
 	"github.com/xmj128/mcp-conductor/internal/errs"
 	"github.com/xmj128/mcp-conductor/internal/model"
 	"github.com/xmj128/mcp-conductor/internal/observability"
-	"github.com/xmj128/mcp-conductor/internal/policy"
 	"github.com/xmj128/mcp-conductor/internal/registry"
 	"github.com/xmj128/mcp-conductor/internal/router"
 	"github.com/xmj128/mcp-conductor/internal/storage/memory"
@@ -67,7 +66,7 @@ func seedGatewayFull(t *testing.T, caller registry.ToolCaller) (*MCPGateway, *me
 		caller = &fakeCaller{}
 	}
 	metrics := observability.NewMetrics()
-	authz := access.NewAuthorizer(policy.NewEngine(store))
+	authz := access.NewAuthorizer()
 	g := NewMCPGateway(
 		store, router.NewResolver(store, store), balancer.NewRoundRobin(),
 		caller, authz, metrics,
@@ -197,7 +196,7 @@ func TestCallTool_upstreamError_recordsOnceAndMasksBody(t *testing.T) {
 	// 模拟 adapter：正文进 Err，对外 Message 为固定短语（与真实 IsError 路径一致）。
 	caller := &errCaller{err: errs.Wrap(errs.CodeUpstream, errors.New("secret-echo-body"), "上游工具执行失败")}
 	g, store, metrics := seedGatewayFull(t, caller)
-	ctx := WithIdentity(context.Background(), &auth.Identity{Subject: "anon"})
+	ctx := WithIdentity(context.Background(), &auth.Identity{Subject: "anon", Operator: true})
 
 	res, err := g.CallTool(ctx, "mock.search", map[string]any{})
 	if err != nil {
@@ -237,7 +236,7 @@ func TestCallTool_upstreamError_recordsOnceAndMasksBody(t *testing.T) {
 // 且调用日志不写 Error。
 func TestCallTool_success_recordsOnce(t *testing.T) {
 	g, store, metrics := seedGatewayFull(t, nil)
-	ctx := WithIdentity(context.Background(), &auth.Identity{Subject: "anon"})
+	ctx := WithIdentity(context.Background(), &auth.Identity{Subject: "anon", Operator: true})
 
 	if _, err := g.CallTool(ctx, "mock.search", map[string]any{}); err != nil {
 		t.Fatalf("CallTool: %v", err)

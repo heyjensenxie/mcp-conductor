@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -97,5 +98,64 @@ func TestKeySecretReturnedOnlyOnCreate(t *testing.T) {
 		if strings.Contains(s, `"secret"`) || strings.Contains(s, "key_hash") {
 			t.Fatalf("任何回读响应都不得携带 secret/key_hash 字段: %s", s)
 		}
+	}
+}
+
+// TestKeySecretRotateReturnsOnce 锁定"轮换密钥"契约：新明文仅本响应下发一次，
+// 旧哈希立即失效、新哈希可命中，后续 get 不再携带新明文。
+func TestKeySecretRotateReturnsOnce(t *testing.T) {
+	store := memory.New()
+	ctrl := NewControl(nil, store, nil, func(token string) (string, error) { return "hash-" + token, nil })
+
+	rec := httptest.NewRecorder()
+	ctrl.handleCreateKey(rec, httptest.NewRequest(http.MethodPost, "/api/keys", strings.NewReader(`{"name":"Partner A","subject":"partner-a"}`)))
+	created := decodeEnvelope(t, rec)
+	var createdKey struct {
+		ID     string `json:"id"`
+		Secret string `json:"secret"`
+	}
+	if err := json.Unmarshal(created.Data, &createdKey); err != nil {
+		t.Fatalf("解析创建响应失败: %v", err)
+	}
+	oldSecret := createdKey.Secret
+
+	rotReq := httptest.NewRequest(http.MethodPost, "/api/keys/"+createdKey.ID+"/rotate", nil)
+	rotReq.SetPathValue("id", createdKey.ID)
+	rec = httptest.NewRecorder()
+	ctrl.handleRotateKeySecret(rec, rotReq)
+	rotated := decodeEnvelope(t, rec)
+	var rotatedKey struct {
+		ID      string `json:"id"`
+		Subject string `json:"subject"`
+		Secret  string `json:"secret"`
+	}
+	if err := json.Unmarshal(rotated.Data, &rotatedKey); err != nil {
+		t.Fatalf("解析轮换响应失败: %v", err)
+	}
+	if rotatedKey.ID != createdKey.ID || rotatedKey.Subject != "partner-a" {
+		t.Fatalf("轮换应返回同一 key 的元数据: %+v", rotatedKey)
+	}
+	if rotatedKey.Secret == "" || rotatedKey.Secret == oldSecret {
+		t.Fatalf("轮换必须下发新的明文 secret: old=%q new=%q", oldSecret, rotatedKey.Secret)
+	}
+	newSecret := rotatedKey.Secret
+
+	// 旧密钥哈希立即失效，新哈希可命中。
+	ctx := context.Background()
+	if _, err := store.GetAccessKeyByKeyHash(ctx, "hash-"+oldSecret); err == nil {
+		t.Fatal("旧密钥哈希在轮换后应失效")
+	}
+	if got, err := store.GetAccessKeyByKeyHash(ctx, "hash-"+newSecret); err != nil || got.ID != createdKey.ID {
+		t.Fatalf("新密钥哈希应能定位到同一 key: %v / %+v", err, got)
+	}
+
+	// 后续 get 不得回读新的明文 secret。
+	getReq := httptest.NewRequest(http.MethodGet, "/api/keys/"+createdKey.ID, nil)
+	getReq.SetPathValue("id", createdKey.ID)
+	rec = httptest.NewRecorder()
+	ctrl.handleGetKey(rec, getReq)
+	getRaw := decodeEnvelope(t, rec)
+	if strings.Contains(string(getRaw.Data), newSecret) {
+		t.Fatalf("轮换后 get 不得回读明文 secret: %s", getRaw.Data)
 	}
 }

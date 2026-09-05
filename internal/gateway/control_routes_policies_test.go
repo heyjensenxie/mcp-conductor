@@ -125,64 +125,6 @@ func TestRouteCRUDLifecycle(t *testing.T) {
 	}
 }
 
-func TestPolicyCRUDLifecycle(t *testing.T) {
-	_, ctrl, _ := rpFixture(t)
-
-	// 空 rules → 400。
-	rec := httptest.NewRecorder()
-	ctrl.handleCreatePolicy(rec, httptest.NewRequest(http.MethodPost, "/api/policies",
-		strings.NewReader(`{"name":"p","rules":[]}`)))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("空 rules 应 400，状态 %d", rec.Code)
-	}
-
-	// 创建。
-	rec = httptest.NewRecorder()
-	ctrl.handleCreatePolicy(rec, httptest.NewRequest(http.MethodPost, "/api/policies",
-		strings.NewReader(`{"name":"策略","rules":[{"subject":"agent-a","tool":"a.search","effect":"allow"}]}`)))
-	e := decodeEnvelope(t, rec)
-	var created struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(e.Data, &created); err != nil || created.ID == "" {
-		t.Fatalf("创建策略失败: %v / %s", err, e.Data)
-	}
-
-	// 更新规则为 deny 并停用。
-	rec = httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPatch, "/api/policies/"+created.ID,
-		strings.NewReader(`{"name":"策略2","rules":[{"subject":"agent-b","tool":"a.detail","effect":"deny"}],"enabled":false}`))
-	req.SetPathValue("id", created.ID)
-	ctrl.handleUpdatePolicy(rec, req)
-	_ = decodeEnvelope(t, rec)
-
-	// 启停恢复。
-	rec = httptest.NewRecorder()
-	tg := httptest.NewRequest(http.MethodPatch, "/api/policies/"+created.ID+"/toggle", strings.NewReader(`{"enabled":true}`))
-	tg.SetPathValue("id", created.ID)
-	ctrl.handleTogglePolicy(rec, tg)
-	_ = decodeEnvelope(t, rec)
-
-	// 列表校验。
-	rec = httptest.NewRecorder()
-	ctrl.handleListPolicies(rec, httptest.NewRequest(http.MethodGet, "/api/policies", nil))
-	var list []model.Policy
-	if err := json.Unmarshal(decodeEnvelope(t, rec).Data, &list); err != nil || len(list) != 1 ||
-		list[0].Name != "策略2" || !list[0].Enabled || list[0].Rules[0].Effect != model.PolicyEffectDeny {
-		t.Fatalf("策略列表异常: %v / %+v", err, list)
-	}
-
-	// 删除。
-	rec = httptest.NewRecorder()
-	del := httptest.NewRequest(http.MethodDelete, "/api/policies/"+created.ID, nil)
-	del.SetPathValue("id", created.ID)
-	ctrl.handleDeletePolicy(rec, del)
-	_ = decodeEnvelope(t, rec)
-	if policies, _ := ctrl.store.ListPolicies(context.Background()); len(policies) != 0 {
-		t.Fatalf("删除后应无策略，得到 %d", len(policies))
-	}
-}
-
 func TestToggleToolViaControl(t *testing.T) {
 	store, ctrl, _ := rpFixture(t)
 	rec := httptest.NewRecorder()

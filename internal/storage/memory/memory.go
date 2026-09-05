@@ -23,7 +23,6 @@ type Store struct {
 	tools       map[string]model.Tool
 	toolsByName map[string]model.Tool // gateway_name -> tool
 	routes      map[string]model.Route
-	policies    map[string]model.Policy
 	credentials map[string]model.Credential
 	keys        map[string]model.AccessKey
 	keysByHash  map[string]model.AccessKey // key_hash -> key
@@ -40,7 +39,6 @@ func New() *Store {
 		tools:       make(map[string]model.Tool),
 		toolsByName: make(map[string]model.Tool),
 		routes:      make(map[string]model.Route),
-		policies:    make(map[string]model.Policy),
 		credentials: make(map[string]model.Credential),
 		keys:        make(map[string]model.AccessKey),
 		keysByHash:  make(map[string]model.AccessKey),
@@ -132,14 +130,45 @@ func (s *Store) DeleteServer(_ context.Context, id string) error {
 func (s *Store) UpsertTool(_ context.Context, tool *model.Tool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if existing, ok := s.toolsByName[tool.GatewayName]; ok {
+	var existing model.Tool
+	var found bool
+	for _, candidate := range s.tools {
+		if candidate.ServerID == tool.ServerID && candidate.OriginalName == tool.OriginalName {
+			existing, found = candidate, true
+			break
+		}
+	}
+	if found {
 		tool.ID = existing.ID
+		tool.CreatedAt = existing.CreatedAt
+		if existing.NameOverridden {
+			tool.GatewayName, tool.NameOverridden = existing.GatewayName, true
+		}
+		if existing.DescriptionOverridden {
+			tool.Description, tool.DescriptionOverridden = existing.Description, true
+		}
+		if existing.InputSchemaOverridden {
+			tool.InputSchema, tool.InputSchemaOverridden = existing.InputSchema, true
+		}
+		delete(s.toolsByName, existing.GatewayName)
 	} else if tool.ID == "" {
 		tool.ID = s.nextID("tool")
 	}
 	s.tools[tool.ID] = *tool
 	s.toolsByName[tool.GatewayName] = *tool
 	return nil
+}
+
+func (s *Store) GetToolBySource(_ context.Context, serverID string, originalName string) (*model.Tool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, tool := range s.tools {
+		if tool.ServerID == serverID && tool.OriginalName == originalName {
+			copy := tool
+			return &copy, nil
+		}
+	}
+	return nil, fmt.Errorf("tool %q/%q 不存在", serverID, originalName)
 }
 
 // GetTool 按 id 读取 Tool。
@@ -218,6 +247,22 @@ func (s *Store) SetToolEnabled(_ context.Context, id string, enabled bool) error
 	return nil
 }
 
+func (s *Store) UpdateTool(_ context.Context, tool *model.Tool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.tools[tool.ID]
+	if !ok {
+		return fmt.Errorf("tool %q 不存在", tool.ID)
+	}
+	if other, ok := s.toolsByName[tool.GatewayName]; ok && other.ID != tool.ID {
+		return fmt.Errorf("tool gateway_name %q 已存在", tool.GatewayName)
+	}
+	delete(s.toolsByName, existing.GatewayName)
+	s.tools[tool.ID] = *tool
+	s.toolsByName[tool.GatewayName] = *tool
+	return nil
+}
+
 // ---- RouteStore ----
 
 // CreateRoute 新增路由。
@@ -286,74 +331,6 @@ func (s *Store) ListRoutes(_ context.Context) ([]model.Route, error) {
 	return out, nil
 }
 
-// ---- PolicyStore ----
-
-// CreatePolicy 新增策略。
-func (s *Store) CreatePolicy(_ context.Context, policy *model.Policy) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if policy.ID == "" {
-		policy.ID = s.nextID("pol")
-	}
-	now := time.Now().UTC()
-	if policy.CreatedAt.IsZero() {
-		policy.CreatedAt = now
-	}
-	policy.UpdatedAt = now
-	s.policies[policy.ID] = *policy
-	return nil
-}
-
-// GetPolicy 按 id 读取策略。
-func (s *Store) GetPolicy(_ context.Context, id string) (*model.Policy, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	policy, ok := s.policies[id]
-	if !ok {
-		return nil, fmt.Errorf("policy %q 不存在", id)
-	}
-	return &policy, nil
-}
-
-// UpdatePolicy 更新策略可编辑字段并保留 CreatedAt；缺 id 报错。
-func (s *Store) UpdatePolicy(_ context.Context, policy *model.Policy) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	existing, ok := s.policies[policy.ID]
-	if !ok {
-		return fmt.Errorf("policy %q 不存在", policy.ID)
-	}
-	existing.Name = policy.Name
-	existing.Rules = policy.Rules
-	existing.Enabled = policy.Enabled
-	existing.UpdatedAt = time.Now().UTC()
-	s.policies[existing.ID] = existing
-	return nil
-}
-
-// DeletePolicy 删除策略；不存在时返回存在性错误。
-func (s *Store) DeletePolicy(_ context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.policies[id]; !ok {
-		return fmt.Errorf("policy %q 不存在", id)
-	}
-	delete(s.policies, id)
-	return nil
-}
-
-// ListPolicies 返回全部策略。
-func (s *Store) ListPolicies(_ context.Context) ([]model.Policy, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]model.Policy, 0, len(s.policies))
-	for _, policy := range s.policies {
-		out = append(out, policy)
-	}
-	return out, nil
-}
-
-// ---- CredentialStore ----
 
 // CreateCredential 新增凭证元数据与进程内值（memory 不落盘，重启即失）。
 func (s *Store) CreateCredential(_ context.Context, credential *model.Credential) error {

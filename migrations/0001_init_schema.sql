@@ -55,26 +55,6 @@ CREATE TABLE IF NOT EXISTS routes (
   CONSTRAINT fk_routes_server FOREIGN KEY (server_id) REFERENCES servers (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 权限策略（规则归一化到独立表，便于按 subject/tool 建索引）
-CREATE TABLE IF NOT EXISTS policies (
-  id         VARCHAR(64)  NOT NULL,
-  name       VARCHAR(128) NOT NULL,
-  enabled    TINYINT(1)   NOT NULL DEFAULT 1,
-  created_at DATETIME(3)  NOT NULL,
-  updated_at DATETIME(3)  NOT NULL,
-  PRIMARY KEY (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS policy_rules (
-  id        BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  policy_id VARCHAR(64)     NOT NULL,
-  subject   VARCHAR(255)    NOT NULL COMMENT '主体；* 表示任意',
-  tool      VARCHAR(255)    NOT NULL COMMENT '支持前缀通配如 university.*',
-  effect    VARCHAR(8)      NOT NULL COMMENT 'allow | deny',
-  PRIMARY KEY (id),
-  KEY idx_policy_rules_policy (policy_id),
-  CONSTRAINT fk_policy_rules_policy FOREIGN KEY (policy_id) REFERENCES policies (id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Gateway→Upstream 凭证元数据（敏感值不在库中存明文，只标记是否配置）
 CREATE TABLE IF NOT EXISTS credentials (

@@ -33,8 +33,9 @@ type Authorizer interface {
 
 // MCPGateway 实现 mcp.ToolService，作为统一 MCP 端点的后端。
 //
-// 职责边界：鉴权/限流由 HTTP 中间件完成；本服务负责授权（Policy）、
-// 路由解析、负载均衡、上游调用与调用观测（Metrics + Audit）。
+// 职责边界：鉴权/限流由 HTTP 中间件完成；本服务负责授权（managed key
+// 白名单 / Operator 放行）、路由解析、负载均衡、上游调用与调用观测
+// （Metrics + Audit）。
 type MCPGateway struct {
 	tools           ToolLister
 	resolver        router.Resolver
@@ -122,7 +123,7 @@ func (g *MCPGateway) CallTool(ctx context.Context, name string, arguments map[st
 	start := time.Now()
 	identity := IdentityFrom(ctx)
 
-	// 1. 授权（managed key 白名单 / 非管理回退 Policy）
+	// 1. 授权（managed key 白名单 / Operator 放行）
 	if err := g.authorizer.Authorize(ctx, identity, name); err != nil {
 		return g.fail(name, start, err)
 	}

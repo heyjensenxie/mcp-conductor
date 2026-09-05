@@ -6,6 +6,8 @@ package registry
 
 import (
 	"context"
+	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -43,7 +45,11 @@ type Stores interface {
 	storage.ServerStore
 	storage.ToolStore
 	storage.CredentialStore
+	storage.RouteStore
+	storage.AccessKeyStore
 }
+
+var gatewayToolNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$`)
 
 // Service 是控制面对 Server/Tool 的服务门面。
 type Service struct {
@@ -207,6 +213,108 @@ func (s *Service) ToggleTool(ctx context.Context, id string, enabled bool) (*mod
 	return tool, nil
 }
 
+// UpdateToolPatch 描述控制台可覆盖的工具门面字段。Reset* 会恢复最近一次
+// 上游发现值，并重新允许后续发现刷新该字段。
+type UpdateToolPatch struct {
+	GatewayName      *string         `json:"gateway_name,omitempty"`
+	Description      *string         `json:"description,omitempty"`
+	InputSchema      *map[string]any `json:"input_schema,omitempty"`
+	ResetName        bool            `json:"reset_name,omitempty"`
+	ResetDescription bool            `json:"reset_description,omitempty"`
+	ResetInputSchema bool            `json:"reset_input_schema,omitempty"`
+}
+
+// UpdateTool 更新对外工具名称、描述和参数 Schema。对外名变化时同步精确的
+// Key grant 与 Route 引用；通配规则保持不变。
+func (s *Service) UpdateTool(ctx context.Context, id string, patch UpdateToolPatch) (*model.Tool, error) {
+	tool, err := s.stores.GetTool(ctx, id)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Tool 失败")
+	}
+	oldName := tool.GatewayName
+	canonicalName := namespaceForServerTool(tool.ServerID, tool.OriginalName, s.stores, ctx)
+	if patch.ResetName {
+		tool.GatewayName, tool.NameOverridden = canonicalName, false
+	} else if patch.GatewayName != nil {
+		name := strings.TrimSpace(*patch.GatewayName)
+		if !gatewayToolNamePattern.MatchString(name) {
+			return nil, errs.New(errs.CodeInvalidArgument, "gateway_name 仅支持字母、数字、点、下划线和连字符，且不能以符号开头")
+		}
+		if other, lookupErr := s.stores.GetToolByGatewayName(ctx, name); lookupErr == nil && other.ID != tool.ID {
+			return nil, errs.New(errs.CodeInvalidArgument, "gateway_name %q 已被其他工具使用", name)
+		}
+		tool.GatewayName, tool.NameOverridden = name, name != canonicalName
+	}
+	if patch.ResetDescription {
+		tool.Description, tool.DescriptionOverridden = tool.SourceDescription, false
+	} else if patch.Description != nil {
+		tool.Description = *patch.Description
+		tool.DescriptionOverridden = tool.Description != tool.SourceDescription
+	}
+	if patch.ResetInputSchema {
+		tool.InputSchema, tool.InputSchemaOverridden = tool.SourceInputSchema, false
+	} else if patch.InputSchema != nil {
+		tool.InputSchema = *patch.InputSchema
+		tool.InputSchemaOverridden = !reflect.DeepEqual(tool.InputSchema, tool.SourceInputSchema)
+	}
+	tool.UpdatedAt = time.Now().UTC()
+	if err := s.stores.UpdateTool(ctx, tool); err != nil {
+		return nil, errs.Wrap(errs.CodeInternal, err, "更新 Tool 失败")
+	}
+	if oldName != tool.GatewayName {
+		if err := s.renameReferences(ctx, oldName, tool.GatewayName); err != nil {
+			return nil, err
+		}
+	}
+	return tool, nil
+}
+
+func namespaceForServerTool(serverID, originalName string, stores Stores, ctx context.Context) string {
+	server, err := stores.GetServer(ctx, serverID)
+	if err != nil {
+		return originalName
+	}
+	return namespaceFor(server.Name) + "." + originalName
+}
+
+func (s *Service) renameReferences(ctx context.Context, oldName, newName string) error {
+	keys, err := s.stores.ListAccessKeys(ctx)
+	if err != nil {
+		return errs.Wrap(errs.CodeInternal, err, "读取 API Key 引用失败")
+	}
+	for i := range keys {
+		changed := false
+		for j := range keys[i].Grants {
+			if keys[i].Grants[j].GatewayName == oldName {
+				keys[i].Grants[j].GatewayName, changed = newName, true
+			}
+		}
+		if changed {
+			if err := s.stores.UpdateAccessKey(ctx, &keys[i]); err != nil {
+				return errs.Wrap(errs.CodeInternal, err, "同步 API Key 工具引用失败")
+			}
+		}
+	}
+	routes, err := s.stores.ListRoutes(ctx)
+	if err != nil {
+		return errs.Wrap(errs.CodeInternal, err, "读取 Route 引用失败")
+	}
+	for i := range routes {
+		changed := false
+		for j := range routes[i].ToolNames {
+			if routes[i].ToolNames[j] == oldName {
+				routes[i].ToolNames[j], changed = newName, true
+			}
+		}
+		if changed {
+			if err := s.stores.UpdateRoute(ctx, &routes[i]); err != nil {
+				return errs.Wrap(errs.CodeInternal, err, "同步 Route 工具引用失败")
+			}
+		}
+	}
+	return nil
+}
+
 // discoverServer 后台执行一次工具发现，失败仅记录（不阻塞写操作）。
 func (s *Service) discoverServer(ctx context.Context, serverID string) {
 	server, err := s.stores.GetServer(ctx, serverID)
@@ -229,18 +337,20 @@ func (s *Service) discover(ctx context.Context, server model.Server) error {
 		// 保留既有启停状态：重新发现（rediscover / 注册 / test）不应清掉
 		// 运维手工禁用的工具；仅新工具默认启用。
 		enabled := true
-		if existing, err := s.stores.GetToolByGatewayName(ctx, gw); err == nil {
+		if existing, err := s.stores.GetToolBySource(ctx, server.ID, dt.Name); err == nil {
 			enabled = existing.Enabled
 		}
 		tool := &model.Tool{
-			ServerID:     server.ID,
-			OriginalName: dt.Name,
-			GatewayName:  gw,
-			Description:  dt.Description,
-			InputSchema:  dt.InputSchema,
-			Enabled:      enabled,
-			CreatedAt:    now,
-			UpdatedAt:    now,
+			ServerID:          server.ID,
+			OriginalName:      dt.Name,
+			GatewayName:       gw,
+			Description:       dt.Description,
+			InputSchema:       dt.InputSchema,
+			SourceDescription: dt.Description,
+			SourceInputSchema: dt.InputSchema,
+			Enabled:           enabled,
+			CreatedAt:         now,
+			UpdatedAt:         now,
 		}
 		if err := s.stores.UpsertTool(ctx, tool); err != nil {
 			return errs.Wrap(errs.CodeInternal, err, "保存工具 %q 失败", dt.Name)

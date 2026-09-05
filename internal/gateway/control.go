@@ -181,6 +181,22 @@ func (c *Control) handleListServerTools(w http.ResponseWriter, r *http.Request) 
 	writeOK(w, RequestIDFrom(r.Context()), tools)
 }
 
+// handleUpdateTool 维护平台对外的工具名称、描述和输入 Schema；源定义仍由
+// discovery 保存，可通过 reset_* 字段恢复。
+func (c *Control) handleUpdateTool(w http.ResponseWriter, r *http.Request) {
+	var patch registry.UpdateToolPatch
+	if err := decodeBody(r, &patch); err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
+		return
+	}
+	tool, err := c.registry.UpdateTool(r.Context(), r.PathValue("id"), patch)
+	if err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), tool)
+}
+
 // handleToggleTool 启用/禁用单个工具（其余字段由发现过程拥有）。
 func (c *Control) handleToggleTool(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -315,118 +331,6 @@ func (c *Control) handleListRoutes(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, RequestIDFrom(r.Context()), routes)
 }
 
-// policyInput 是创建策略的显式 DTO。
-type policyInput struct {
-	Name    string             `json:"name"`
-	Rules   []model.PolicyRule `json:"rules"`
-	Enabled *bool              `json:"enabled"`
-}
-
-// handleCreatePolicy 新增权限策略（rules 非空、逐条合法）。
-func (c *Control) handleCreatePolicy(w http.ResponseWriter, r *http.Request) {
-	var in policyInput
-	if err := decodeBody(r, &in); err != nil {
-		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
-		return
-	}
-	enabled := true
-	if in.Enabled != nil {
-		enabled = *in.Enabled
-	}
-	now := time.Now().UTC()
-	policy := &model.Policy{Name: in.Name, Rules: in.Rules, Enabled: enabled, CreatedAt: now, UpdatedAt: now}
-	if err := validatePolicy(policy); err != nil {
-		writeGatewayError(w, r, http.StatusBadRequest, err)
-		return
-	}
-	if err := c.store.CreatePolicy(r.Context(), policy); err != nil {
-		writeGatewayError(w, r, statusForError(err), err)
-		return
-	}
-	writeEnvelope(w, http.StatusCreated, "ok", "success", RequestIDFrom(r.Context()), policy)
-}
-
-// handleUpdatePolicy 更新策略（name/rules/enabled 空值不改）。
-func (c *Control) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	policy, err := c.store.GetPolicy(r.Context(), id)
-	if err != nil {
-		writeGatewayError(w, r, http.StatusNotFound, errs.Wrap(errs.CodeNotFound, err, "policy %q 不存在", id))
-		return
-	}
-	var patch struct {
-		Name    *string             `json:"name"`
-		Rules   *[]model.PolicyRule `json:"rules"`
-		Enabled *bool               `json:"enabled"`
-	}
-	if err := decodeBody(r, &patch); err != nil {
-		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
-		return
-	}
-	if patch.Name != nil {
-		policy.Name = *patch.Name
-	}
-	if patch.Rules != nil {
-		policy.Rules = *patch.Rules
-	}
-	if patch.Enabled != nil {
-		policy.Enabled = *patch.Enabled
-	}
-	policy.UpdatedAt = time.Now().UTC()
-	if err := validatePolicy(policy); err != nil {
-		writeGatewayError(w, r, http.StatusBadRequest, err)
-		return
-	}
-	if err := c.store.UpdatePolicy(r.Context(), policy); err != nil {
-		writeGatewayError(w, r, statusForError(err), err)
-		return
-	}
-	writeOK(w, RequestIDFrom(r.Context()), policy)
-}
-
-// handleTogglePolicy 启用/禁用策略。
-func (c *Control) handleTogglePolicy(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Enabled *bool `json:"enabled"`
-	}
-	if err := decodeBody(r, &body); err != nil || body.Enabled == nil {
-		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "缺少 enabled 字段"))
-		return
-	}
-	id := r.PathValue("id")
-	policy, err := c.store.GetPolicy(r.Context(), id)
-	if err != nil {
-		writeGatewayError(w, r, http.StatusNotFound, errs.Wrap(errs.CodeNotFound, err, "policy %q 不存在", id))
-		return
-	}
-	policy.Enabled = *body.Enabled
-	policy.UpdatedAt = time.Now().UTC()
-	if err := c.store.UpdatePolicy(r.Context(), policy); err != nil {
-		writeGatewayError(w, r, statusForError(err), err)
-		return
-	}
-	writeOK(w, RequestIDFrom(r.Context()), policy)
-}
-
-// handleDeletePolicy 删除策略。
-func (c *Control) handleDeletePolicy(w http.ResponseWriter, r *http.Request) {
-	if err := c.store.DeletePolicy(r.Context(), r.PathValue("id")); err != nil {
-		writeGatewayError(w, r, http.StatusNotFound, errs.Wrap(errs.CodeNotFound, err, "policy %q 不存在", r.PathValue("id")))
-		return
-	}
-	writeEnvelope(w, http.StatusNoContent, "ok", "success", RequestIDFrom(r.Context()), nil)
-}
-
-// handleListPolicies 列出全部策略。
-func (c *Control) handleListPolicies(w http.ResponseWriter, r *http.Request) {
-	policies, err := c.store.ListPolicies(r.Context())
-	if err != nil {
-		writeGatewayError(w, r, statusForError(err), err)
-		return
-	}
-	writeOK(w, RequestIDFrom(r.Context()), policies)
-}
-
 // validateRoute 校验路由引用完整性：name 非空、目标 Server 存在、tool_names 逐项已注册。
 func (c *Control) validateRoute(ctx context.Context, route *model.Route) error {
 	if strings.TrimSpace(route.Name) == "" {
@@ -441,25 +345,6 @@ func (c *Control) validateRoute(ctx context.Context, route *model.Route) error {
 	for _, name := range route.ToolNames {
 		if _, err := c.store.GetToolByGatewayName(ctx, name); err != nil {
 			return errs.Wrap(errs.CodeNotFound, err, "工具 %q 未注册", name)
-		}
-	}
-	return nil
-}
-
-// validatePolicy 校验策略定义：name 非空、rules 非空、每条规则字段合法。
-func validatePolicy(policy *model.Policy) error {
-	if strings.TrimSpace(policy.Name) == "" {
-		return errs.New(errs.CodeInvalidArgument, "policy.name 不能为空")
-	}
-	if len(policy.Rules) == 0 {
-		return errs.New(errs.CodeInvalidArgument, "policy.rules 不能为空")
-	}
-	for _, rule := range policy.Rules {
-		if strings.TrimSpace(rule.Subject) == "" || strings.TrimSpace(rule.Tool) == "" {
-			return errs.New(errs.CodeInvalidArgument, "policy 规则须包含 subject 与 tool")
-		}
-		if rule.Effect != model.PolicyEffectAllow && rule.Effect != model.PolicyEffectDeny {
-			return errs.New(errs.CodeInvalidArgument, "policy rule effect 仅支持 allow/deny")
 		}
 	}
 	return nil
@@ -747,6 +632,32 @@ func (c *Control) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusNoContent, "ok", "success", RequestIDFrom(r.Context()), nil)
 }
 
+// handleRotateKeySecret 轮换 API Key 密钥：重新随机生成明文密钥并在本响应
+// 返回一次（与创建同契约），落库仅存新哈希，旧密钥即刻失效。
+// 名称/启用/配额/白名单等其余配置保持不变；沿用既有 Get→Update 全量写回，
+// 不引入部分更新语义。明文仍不入库、不随后续任何接口回读。
+func (c *Control) handleRotateKeySecret(w http.ResponseWriter, r *http.Request) {
+	key, err := c.store.GetAccessKey(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	secret := randomHex(32)
+	keyHash, err := c.keyHash(secret)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusInternalServerError, errs.Wrap(errs.CodeInternal, err, "生成密钥哈希失败"))
+		return
+	}
+	key.KeyHash = keyHash
+	key.UpdatedAt = time.Now().UTC()
+	if err := c.store.UpdateAccessKey(r.Context(), key); err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeEnvelope(w, http.StatusOK, "ok", "success", RequestIDFrom(r.Context()),
+		createKeyResponse{AccessKey: *key, Secret: secret})
+}
+
 // randomHex 生成 n 字节随机十六进制字符串（如密钥明文）。
 func randomHex(n int) string {
 	buf := make([]byte, n)
@@ -768,6 +679,32 @@ func (c *Control) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeOK(w, RequestIDFrom(r.Context()), out)
+}
+
+// handleMetricsTrend 返回近 minutes 分钟的调用时序（真时序，进程内分钟桶）。
+// scope=tool（缺省）为工具维聚合；scope=server 为按 Server 聚合。
+func (c *Control) handleMetricsTrend(w http.ResponseWriter, r *http.Request) {
+	scope := r.URL.Query().Get("scope")
+	if scope == "" {
+		scope = "tool"
+	}
+	if scope != "tool" && scope != "server" {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "scope 仅支持 tool / server"))
+		return
+	}
+	minutes := 30
+	if s := r.URL.Query().Get("minutes"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 120 {
+			minutes = n
+		}
+	}
+	var series []observability.TrendPoint
+	if scope == "server" {
+		series = c.metrics.TrendServer(minutes)
+	} else {
+		series = c.metrics.TrendTool(minutes)
+	}
+	writeOK(w, RequestIDFrom(r.Context()), map[string]any{"series": series})
 }
 
 // handleLogs 返回最近的调用日志；支持 ?server_id= 过滤与 ?limit=（默认 100，

@@ -2,7 +2,6 @@
 
 export type ServerStatus = 'unknown' | 'healthy' | 'unhealthy' | 'disabled'
 export type Transport = 'stdio' | 'https' | 'sse'
-export type PolicyEffect = 'allow' | 'deny'
 
 export interface MCPServer {
   id: string
@@ -24,6 +23,11 @@ export interface Tool {
   gateway_name: string
   description?: string
   input_schema?: Record<string, unknown>
+  source_description?: string
+  source_input_schema?: Record<string, unknown>
+  name_overridden: boolean
+  description_overridden: boolean
+  input_schema_overridden: boolean
   risk_level?: string
   enabled: boolean
   created_at: string
@@ -35,21 +39,6 @@ export interface Route {
   name: string
   server_id: string
   tool_names?: string[]
-  enabled: boolean
-  created_at: string
-  updated_at: string
-}
-
-export interface PolicyRule {
-  subject: string
-  tool: string
-  effect: PolicyEffect
-}
-
-export interface Policy {
-  id: string
-  name: string
-  rules: PolicyRule[]
   enabled: boolean
   created_at: string
   updated_at: string
@@ -107,6 +96,13 @@ export interface MetricSnapshot {
   p50: number
   p95: number
   p99: number
+}
+
+// 真时序趋势点（分钟级，来自 /api/metrics/trend）。
+export interface TrendPoint {
+  ts: number
+  totals: number
+  errors: number
 }
 
 // 管理登录会话（POST /api/auth/login 响应，明文 token 仅下发一次）。

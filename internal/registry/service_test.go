@@ -166,6 +166,80 @@ func TestToggleToolAndRediscoverPreservesDisabled(t *testing.T) {
 	}
 }
 
+// TestUpdateToolMetadataSurvivesRediscovery verifies that operator-facing
+// metadata remains stable while the latest upstream definition is retained
+// as the reset baseline.
+func TestUpdateToolMetadataSurvivesRediscovery(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	discoverer := &fakeDiscoverer{tools: []DiscoveredTool{{
+		Name: "search", Description: "upstream v1", InputSchema: map[string]any{"type": "object"},
+	}}}
+	svc := NewService(store, discoverer)
+	server, err := svc.CreateServer(ctx, &model.Server{Name: "Mock", Endpoint: "http://x:9000"})
+	if err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+	tool := findTool(waitTools(t, svc, 1), "mock.search")
+	name, description := "catalog.find", "面向 Agent 的商品检索"
+	schema := map[string]any{"type": "object", "properties": map[string]any{"keyword": map[string]any{"type": "string", "description": "检索词"}}}
+	updated, err := svc.UpdateTool(ctx, tool.ID, UpdateToolPatch{GatewayName: &name, Description: &description, InputSchema: &schema})
+	if err != nil {
+		t.Fatalf("UpdateTool: %v", err)
+	}
+	if updated.GatewayName != name || !updated.NameOverridden || !updated.DescriptionOverridden || !updated.InputSchemaOverridden {
+		t.Fatalf("override flags or values missing: %+v", updated)
+	}
+
+	discoverer.tools[0].Description = "upstream v2"
+	discoverer.tools[0].InputSchema = map[string]any{"type": "object", "required": []any{"q"}}
+	if err := svc.Rediscover(ctx, server.ID); err != nil {
+		t.Fatalf("Rediscover: %v", err)
+	}
+	got, err := store.GetTool(ctx, tool.ID)
+	if err != nil {
+		t.Fatalf("GetTool: %v", err)
+	}
+	if got.GatewayName != name || got.Description != description {
+		t.Fatalf("rediscovery overwrote customized metadata: %+v", got)
+	}
+	if got.SourceDescription != "upstream v2" {
+		t.Fatalf("latest source metadata not retained: %+v", got)
+	}
+}
+
+func TestRenameToolUpdatesExactReferences(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	svc := NewService(store, &fakeDiscoverer{tools: []DiscoveredTool{{Name: "search"}}})
+	server, err := svc.CreateServer(ctx, &model.Server{Name: "Mock", Endpoint: "http://x:9000"})
+	if err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+	tool := findTool(waitTools(t, svc, 1), "mock.search")
+	key := &model.AccessKey{Name: "client", Subject: "client", Enabled: true, KeyHash: "hash", Grants: []model.ToolGrant{{GatewayName: "mock.search"}, {GatewayName: "mock.*"}}}
+	if err := store.CreateAccessKey(ctx, key); err != nil {
+		t.Fatalf("CreateAccessKey: %v", err)
+	}
+	route := &model.Route{Name: "route", ServerID: server.ID, ToolNames: []string{"mock.search"}, Enabled: true}
+	if err := store.CreateRoute(ctx, route); err != nil {
+		t.Fatalf("CreateRoute: %v", err)
+	}
+
+	newName := "catalog.find"
+	if _, err := svc.UpdateTool(ctx, tool.ID, UpdateToolPatch{GatewayName: &newName}); err != nil {
+		t.Fatalf("UpdateTool: %v", err)
+	}
+	gotKey, _ := store.GetAccessKey(ctx, key.ID)
+	if gotKey.Grants[0].GatewayName != newName || gotKey.Grants[1].GatewayName != "mock.*" {
+		t.Fatalf("grant references not migrated correctly: %+v", gotKey.Grants)
+	}
+	gotRoutes, _ := store.ListRoutes(ctx)
+	if gotRoutes[0].ToolNames[0] != newName {
+		t.Fatalf("route reference not migrated: %+v", gotRoutes[0].ToolNames)
+	}
+}
+
 // waitTools 轮询等待工具数达到预期（容忍 CreateServer 的后台发现异步）。
 func waitTools(t *testing.T, svc *Service, want int) []model.Tool {
 	t.Helper()

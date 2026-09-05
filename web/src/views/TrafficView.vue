@@ -7,6 +7,11 @@
       </a-button>
     </template>
 
+    <div v-if="trendHasData" class="trend-block">
+      <div class="trend-head mono">{{ t('traffic.trendTitle') }}</div>
+      <TrafficTrend :categories="trendSeries.categories" :totals="trendSeries.totals" :rates="trendSeries.rates" />
+    </div>
+
     <div class="filters">
       <a-space wrap :size="8">
         <a-select v-model:value="serverId" :placeholder="t('traffic.filterServer')" style="width: 260px" allow-clear @change="load">
@@ -43,14 +48,27 @@ import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { ReloadOutlined } from '@ant-design/icons-vue'
-import { getLogs, listServers } from '@/api'
-import type { MCPServer, TrafficSample } from '@/types'
+import { getLogs, getMetricsTrend, listServers } from '@/api'
+import type { MCPServer, TrafficSample, TrendPoint } from '@/types'
+import TrafficTrend from '@/components/TrafficTrend.vue'
 
 const { t } = useI18n()
 const logs = ref<TrafficSample[]>([])
 const servers = ref<MCPServer[]>([])
 const serverId = ref('')
 const statusFilter = ref<'all' | 'success' | 'error'>('all')
+const trendData = ref<TrendPoint[]>([])
+
+function fmtMin(ts: number): string {
+  return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+const trendSeries = computed(() => ({
+  categories: trendData.value.map((p) => fmtMin(p.ts)),
+  totals: trendData.value.map((p) => p.totals),
+  rates: trendData.value.map((p) => (p.totals ? Math.round(((p.totals - p.errors) / p.totals) * 100) : 0)),
+}))
+const trendHasData = computed(() => trendData.value.some((p) => p.totals > 0))
 
 // 状态过滤在前端执行（数据为最近 500 条）。
 const filtered = computed(() => {
@@ -81,7 +99,12 @@ onMounted(async () => {
 
 async function load() {
   try {
-    logs.value = await getLogs({ server_id: serverId.value || undefined, limit: 500 })
+    const [logList, trendRes] = await Promise.all([
+      getLogs({ server_id: serverId.value || undefined, limit: 500 }),
+      getMetricsTrend('tool', 30),
+    ])
+    logs.value = logList
+    trendData.value = trendRes.series
   } catch (e) {
     message.error(String(e))
   }
@@ -99,5 +122,14 @@ async function load() {
 .err-cell {
   color: #cf1322;
   font-size: 12px;
+}
+.trend-block {
+  margin-bottom: 12px;
+}
+.trend-head {
+  font-size: 12px;
+  color: var(--mc-ink-2);
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
 }
 </style>

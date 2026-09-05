@@ -25,7 +25,7 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 
 - **Aggregation** — 一个统一 MCP Endpoint（`/mcp`）聚合多个上游 MCP Server；自动发现 Tools，并以 **Server 命名空间**（如 `university.search_policy`）从根上解决 Tool Name Collision。
 - **Gateway** — 协议校验 → 认证 → 授权 → 限流 → 路由 → 负载均衡 → 上游调用 → 观测的中间件管线，每个阶段职责单一。
-- **Governance** — 领域模型优先：Server / Tool / Route / Policy / Credential / Traffic，配以 Control Plane API（`/api/*`）。
+- **Governance** — 领域模型优先：Server / Tool / Route / AccessKey / Credential / Traffic，配以 Control Plane API（`/api/*`）。
 - **Observability** — 每次 `tools/call` 记录 `request_id / trace_id / server / tool / status / latency / timestamp`，按采样率落库并输出结构化日志；默认不记录敏感参数/返回值。
 
 ## Features (v0.1)
@@ -34,16 +34,17 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | --- | --- |
 | MCP Server Registry + CRUD | ✅ MySQL 5.7+ 驱动（`internal/storage/mysql`）；默认 memory 可通过 `database.driver=mysql` 切换 |
 | 自动发现 MCP Tools + Tool Namespace | ✅ |
+| 平台工具目录与元数据覆盖 | ✅ 可重命名对外 Tool，维护描述与入参 JSON Schema；重新发现保留人工覆盖并支持恢复上游定义 |
 | 统一 MCP Endpoint（`tools/list` 聚合、`tools/call` 路由） | ✅ streamable HTTP 无状态模式 |
 | 健康检查（initialize 握手 + 周期巡检） | ✅ |
 | 路由解析 + Round Robin 负载均衡（健康感知） | ✅ |
-| Tool/Route/Policy 管理闭环 + Route 覆盖转发 | ✅ Tool 启停；Route/Policy 编辑·启停·删除；启用 Route 命中 `tool_names` 时把该工具调用目标 Server 覆盖为 route 指向的 Server（恒等即原样；目标不可调用返回 `route_error`） |
+| Tool/Route 管理闭环 + Route 覆盖转发 | ✅ Tool 启停；Route 编辑·启停·删除；启用 Route 命中 `tool_names` 时把该工具调用目标 Server 覆盖为 route 指向的 Server（恒等即原样；目标不可调用返回 `route_error`） |
 | 鉴权（默认开启） | ✅ Console 用管理员账号（`admin`/`admin_password`）登录换会话；/api 接受会话或 `operator_token`；/mcp 数据面用 API Key（HMAC 哈希落库、按 key×工具白名单），与登录分离 |
 | Gateway→上游 Credential 管理（API Key / Static Token） | ✅ 值 AES-256-GCM 加密落库；经 `json:"-"` 不下发 API、不入日志；按 Server 注入上游请求头 |
-| 按 Key×Tool 白名单授权（跨 Server 聚合） | ✅ 每个 key 只可见/可调被授权工具（支持 `server.*`/`*` 通配）；每工具可配调用参数与请求头；非管理身份回退遗留策略规则 |
+| 按 Key×Tool 白名单授权（跨 Server 聚合） | ✅ 每个 key 只可见/可调被授权工具（支持 `server.*`/`*` 通配）；每工具可配调用参数与请求头 |
 | Memory（令牌桶）/ Redis 限流，支持按 Key 独立配额 | ✅ 默认关闭 |
 | Request Logging + 基础 Metrics（P50/P95/P99） | ✅ 应用层聚合；`?scope=server` 按 Server 聚合 |
-| Traffic 调用筛选 + Observability 双维度 | ✅ 日志按 Server/状态筛选（近 500 条）；指标按 Tool/Server 查看 |
+| Traffic 调用筛选 + Observability 双维度 | ✅ 日志按 Server/状态筛选（近 500 条）；指标按 Tool/Server 查看；趋势为真时序分钟桶（近 30 分钟折线） |
 | Vue3 Console（Ant Design Vue + ECharts） | ✅ 构建后嵌入二进制 |
 | MCP Manual Test（Console 内联） | ✅ |
 | Docker / Docker Compose / Makefile | ✅ |
@@ -63,11 +64,11 @@ MCP Client / AI Agent
 └──────────────────────────────┬────────────────────────────────────────┘
                                ▼
                        Upstream MCP Servers
-  +  Control Plane: /api/*（Registry / Tool / Route / Policy / Credential / 观测）
+  +  Control Plane: /api/*（Registry / Tool / Route / AccessKey / Credential / 观测）
 ```
 
 - **Monorepo + 模块化单体**：单一 Go Backend + 独立 Vue3 Console（`npm run build` 后经 `go:embed` 内嵌进二进制，`./mcp-conductor` 即可访问）。
-- **领域模型优先**：`Server / Tool / Route / Policy / Credential / Traffic`（`Evaluation / Dataset / TestCase / Version` 预留边界）。
+- **领域模型优先**：`Server / Tool / Route / AccessKey / Credential / Traffic`（`Evaluation / Dataset / TestCase / Version` 预留边界）。
 - **接口优先但克制**：核心模块面向 interface（`storage` / `ratelimit` / `balancer` / `router`）；无 Redis 也能以 memory 模式启动。
 
 ```
@@ -84,7 +85,7 @@ internal/
   router            # 工具名 → (Server, 实例) 解析
   balancer          # 负载均衡（RoundRobin，健康感知）
   ratelimit         # memory 令牌桶 / redis 固定窗口
-  auth · policy     # 认证（控制面 operator token / 数据面 API Key）· Tool 级 RBAC
+  auth             # 认证（控制面 operator token / 数据面 API Key）
   health            # 周期健康巡检
   observability     # 指标聚合 + 调用日志（采样 / 不记敏感体）
   console           # go:embed 前端 dist
@@ -191,9 +192,10 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 | `POST /api/servers/{id}/test` | 测试连接并重新发现 Tools |
 | `GET /api/servers/{id}/tools` · `.../credentials` | Server 下的 Tools / 凭证 |
 | `GET /api/tools` · `PATCH /api/tools/{id}/toggle` | 聚合工具 / 工具启停 |
+| `PATCH /api/tools/{id}` | 更新工具对外名称、描述、入参 Schema；支持 `reset_name/reset_description/reset_input_schema` 恢复上游定义 |
 | `GET/POST /api/routes` · `PATCH /api/routes/{id}` · `PATCH /api/routes/{id}/toggle` · `DELETE /api/routes/{id}` | 路由 CRUD / 启停 / 删除 |
-| `GET/POST /api/policies` · `PATCH /api/policies/{id}` · `PATCH /api/policies/{id}/toggle` · `DELETE /api/policies/{id}` | 策略 CRUD / 启停 / 删除 |
 | `GET /api/metrics` | 指标快照（p50/p95/p99、成功率；`?scope=server` 返回按 Server 聚合） |
+| `GET /api/metrics/trend` | 近 N 分钟真时序（分钟桶，`?scope=tool\|server&minutes=30`） |
 | `GET /api/logs` | 最近调用日志（`?server_id=` 过滤、`?limit=` 上限 500） |
 | `POST /api/auth/login` | 管理员账号登录（`admin` + 密码）换 `mc1.` 会话 |
 | `GET /api/auth/status` | 鉴权是否开启（`auth_required`） |
@@ -256,7 +258,7 @@ make docker-up     # Compose 仅启动应用（数据库/Redis 用宿主机实�
 make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATABASE_DSN）
 ```
 
-- **后端约定**：统一错误模型与结构化日志（不打印 Credential、Token 与完整敏感 MCP payload）；核心模块测试优先（Router / Balancer / Rate Limiter / Policy / Tool Namespace）。
+- **后端约定**：统一错误模型与结构化日志（不打印 Credential、Token 与完整敏感 MCP payload）；核心模块测试优先（Router / Balancer / Rate Limiter / Tool Namespace）。
 - **前端约定**：基础设施管理平台风格（现代、克制、高信息密度），Ant Design Vue + ECharts + Pinia，Payload 不可达时保持空态。
 - **测试**：`go test ./...` 覆盖 16 个包（含 Tool Name Collision 回归、真实 JSON-RPC 握手链路、防指标重复计数与调用日志脱敏）。
 
@@ -267,7 +269,7 @@ make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATA
 ## Roadmap
 
 - **v0.1（当前）**：最小闭环 + 运维基础（Registry / 聚合 / 路由 / 治理 / 观测 / Console / Docker）。其中 **MySQL 5.7+ 持久化驱动已先行落地**（`internal/storage/mysql`，实测通过）。
-- **v0.2 候选**：SSE/stdio 上游接入、Route/Policy 管理页完善、Server 多实例负载均衡真正生效、观测时间序列（Traffic Replay）、CI 接通（GitHub Actions 目前有意移除，需要时再加）。注：Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）已随 v0.1 落地。
+- **v0.2 候选**：SSE/stdio 上游接入、Route 管理页完善、Server 多实例负载均衡真正生效、观测时间序列（Traffic Replay）、CI 接通（GitHub Actions 目前有意移除，需要时再加）。注：Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）已随 v0.1 落地。
 - **v0.3 候选**：Evaluation 边界（Dataset / TestCase / MCP Score 接口）、协议/Schema/性能测试、CI Quality Gate。
 - **远期**：独立 Python Evaluation Worker、AI 优化建议、Traffic Replay、单逻辑 Server 多实例负载均衡。
 

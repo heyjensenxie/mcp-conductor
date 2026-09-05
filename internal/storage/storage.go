@@ -24,11 +24,14 @@ type ToolStore interface {
 	UpsertTool(ctx context.Context, tool *model.Tool) error
 	GetTool(ctx context.Context, id string) (*model.Tool, error)
 	GetToolByGatewayName(ctx context.Context, gatewayName string) (*model.Tool, error)
+	GetToolBySource(ctx context.Context, serverID string, originalName string) (*model.Tool, error)
 	ListTools(ctx context.Context) ([]model.Tool, error)
 	ListToolsByServer(ctx context.Context, serverID string) ([]model.Tool, error)
 	DeleteToolsByServer(ctx context.Context, serverID string) error
 	// SetToolEnabled 切换单个工具的启用状态（Tool 是发现产物，其余字段由 discovery 拥有）。
 	SetToolEnabled(ctx context.Context, id string, enabled bool) error
+	// UpdateTool 更新人工维护的对外元数据；发现流程仍通过 UpsertTool 写入源定义。
+	UpdateTool(ctx context.Context, tool *model.Tool) error
 }
 
 // RouteStore 管理路由定义。
@@ -38,15 +41,6 @@ type RouteStore interface {
 	ListRoutes(ctx context.Context) ([]model.Route, error)
 	UpdateRoute(ctx context.Context, route *model.Route) error
 	DeleteRoute(ctx context.Context, id string) error
-}
-
-// PolicyStore 管理权限策略。
-type PolicyStore interface {
-	CreatePolicy(ctx context.Context, policy *model.Policy) error
-	GetPolicy(ctx context.Context, id string) (*model.Policy, error)
-	ListPolicies(ctx context.Context) ([]model.Policy, error)
-	UpdatePolicy(ctx context.Context, policy *model.Policy) error
-	DeletePolicy(ctx context.Context, id string) error
 }
 
 // CredentialStore 管理 Gateway→Upstream 凭证元数据。
@@ -84,7 +78,6 @@ type Store interface {
 	ServerStore
 	ToolStore
 	RouteStore
-	PolicyStore
 	CredentialStore
 	AccessKeyStore
 	TrafficStore

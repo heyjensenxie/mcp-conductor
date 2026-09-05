@@ -118,7 +118,7 @@ const selectedKeys = computed(() => {
 })
 
 const pageTitle = computed(() => t(`page.${route.meta.titleKey ?? 'dashboard'}`))
-const crumb = computed(() => (route.name === 'server-detail' ? t('page.servers') : ''))
+const crumb = computed(() => route.name === 'server-detail' ? t('page.servers') : route.name === 'access-key-detail' ? t('page.access') : '')
 
 function onMenuClick({ key }: { key: string }) {
   router.push(`/${key}`)

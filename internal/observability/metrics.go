@@ -7,6 +7,7 @@ package observability
 import (
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,10 +15,22 @@ import (
 // metricsCap 每个维度保留的最大延迟样本数，防止无限增长。
 const metricsCap = 4096
 
+// trendKeepMinutes 指标趋势保留的分钟窗口（分钟桶，重启即清）。
+const trendKeepMinutes = 120
+
+// minuteSec 一分钟的秒数。
+const minuteSec = 60
+
 // ServerDimPrefix 是 metrics 中按 Server 聚合的维度前缀（供 Servers 列表
 // 展示每个 Server 的 Requests / P95）。默认 /metrics 不返回此类行，避免
 // 污染工具维语义；需 ?scope=server 时才单独返回。
 const ServerDimPrefix = "server:"
+
+// trendBucket 是单个分钟桶的调用计数。
+type trendBucket struct {
+	total int64
+	err   int64
+}
 
 // metricRow 是单个维度（工具/Server 等）的聚合指标。
 type metricRow struct {
@@ -25,6 +38,9 @@ type metricRow struct {
 	Success int64
 	Errors  int64
 	latency []float64 // 单位 ms，达到上限后仅保留最新
+
+	// buckets 是按分钟（UTC Unix）计数的调用时序，供趋势端点读取。
+	buckets map[int64]*trendBucket
 }
 
 // Metrics 是并发安全的进程内指标聚合器。
@@ -61,6 +77,79 @@ func (m *Metrics) Record(key string, ok bool, latency time.Duration) {
 	if len(row.latency) > metricsCap {
 		row.latency = row.latency[len(row.latency)-metricsCap:]
 	}
+
+	// 分钟级时序桶（UTC），并修剪超出保留窗口的旧桶。
+	now := time.Now().UTC()
+	minute := now.Truncate(time.Minute).Unix()
+	if row.buckets == nil {
+		row.buckets = make(map[int64]*trendBucket)
+	}
+	b := row.buckets[minute]
+	if b == nil {
+		b = &trendBucket{}
+		row.buckets[minute] = b
+	}
+	b.total++
+	if !ok {
+		b.err++
+	}
+	cutoff := minute - (trendKeepMinutes - 1)
+	for t := range row.buckets {
+		if t < cutoff {
+			delete(row.buckets, t)
+		}
+	}
+}
+
+// TrendPoint 是某个分钟窗口的趋势采样（真时序，按分钟聚合调用量与失败数）。
+type TrendPoint struct {
+	TS     int64 `json:"ts"`     // 分钟级 UTC Unix
+	Totals int64 `json:"totals"` // 该分钟调用量
+	Errors int64 `json:"errors"` // 该分钟失败数
+}
+
+// TrendTool 返回工具维度（非 server: 前缀）近 minutes 分钟的聚合时序。
+func (m *Metrics) TrendTool(minutes int) []TrendPoint {
+	return m.trendScope(time.Now().UTC(), minutes, func(key string) bool {
+		return !strings.HasPrefix(key, ServerDimPrefix)
+	})
+}
+
+// TrendServer 返回按 Server 聚合（server: 前缀）近 minutes 分钟的时序。
+func (m *Metrics) TrendServer(minutes int) []TrendPoint {
+	return m.trendScope(time.Now().UTC(), minutes, func(key string) bool {
+		return strings.HasPrefix(key, ServerDimPrefix)
+	})
+}
+
+// trendScope 汇总命中维度的分钟桶为连续时序（缺数据补 0），窗口按 now 对齐。
+func (m *Metrics) trendScope(now time.Time, minutes int, match func(key string) bool) []TrendPoint {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if minutes <= 0 {
+		minutes = trendKeepMinutes
+	}
+	if minutes > trendKeepMinutes {
+		minutes = trendKeepMinutes
+	}
+	start := now.Truncate(time.Minute).Unix() - int64(minutes-1)*minuteSec
+	points := make([]TrendPoint, minutes)
+	for i := range points {
+		points[i].TS = start + int64(i)*minuteSec
+	}
+	for key, row := range m.rows {
+		if !match(key) {
+			continue
+		}
+		for i := range points {
+			if b, ok := row.buckets[points[i].TS]; ok {
+				points[i].Totals += b.total
+				points[i].Errors += b.err
+			}
+		}
+	}
+	return points
 }
 
 // Snapshot 是某个维度当前指标的稳定快照。

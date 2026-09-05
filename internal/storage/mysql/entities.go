@@ -12,19 +12,24 @@ import (
 
 // ---- ToolStore ----
 
-const toolColumns = `id, server_id, original_name, gateway_name, COALESCE(description,''), COALESCE(input_schema,''), COALESCE(risk_level,''), enabled, created_at, updated_at`
+const toolColumns = `id, server_id, original_name, gateway_name, COALESCE(description,''), COALESCE(input_schema,''), COALESCE(source_description,''), COALESCE(source_input_schema,''), name_overridden, description_overridden, input_schema_overridden, COALESCE(risk_level,''), enabled, created_at, updated_at`
 
 func scanTool(scan func(dest ...any) error) (model.Tool, error) {
 	var tool model.Tool
-	var inputSchema string
+	var inputSchema, sourceInputSchema string
 	err := scan(&tool.ID, &tool.ServerID, &tool.OriginalName, &tool.GatewayName,
-		&tool.Description, &inputSchema, &tool.RiskLevel, &tool.Enabled,
+		&tool.Description, &inputSchema, &tool.SourceDescription, &sourceInputSchema,
+		&tool.NameOverridden, &tool.DescriptionOverridden, &tool.InputSchemaOverridden,
+		&tool.RiskLevel, &tool.Enabled,
 		&tool.CreatedAt, &tool.UpdatedAt)
 	if err != nil {
 		return model.Tool{}, err
 	}
 	if err := unmarshalJSON(inputSchema, &tool.InputSchema); err != nil {
 		return model.Tool{}, fmt.Errorf("解析 tool %q input_schema 失败: %w", tool.ID, err)
+	}
+	if err := unmarshalJSON(sourceInputSchema, &tool.SourceInputSchema); err != nil {
+		return model.Tool{}, fmt.Errorf("解析 tool %q source_input_schema 失败: %w", tool.ID, err)
 	}
 	return tool, nil
 }
@@ -39,10 +44,21 @@ func (s *Store) UpsertTool(ctx context.Context, tool *model.Tool) error {
 	}
 	// ON DUPLICATE KEY UPDATE 不会改动主键：先查出既有 id 复用，
 	// 保证对外 tool.ID 稳定。
-	var existingID string
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT id FROM tools WHERE gateway_name = ? LIMIT 1`, tool.GatewayName).Scan(&existingID); err == nil {
-		tool.ID = existingID
+	if existing, lookupErr := s.GetToolBySource(ctx, tool.ServerID, tool.OriginalName); lookupErr == nil {
+		tool.ID, tool.CreatedAt = existing.ID, existing.CreatedAt
+		if existing.NameOverridden {
+			tool.GatewayName, tool.NameOverridden = existing.GatewayName, true
+		}
+		if existing.DescriptionOverridden {
+			tool.Description, tool.DescriptionOverridden = existing.Description, true
+		}
+		if existing.InputSchemaOverridden {
+			tool.InputSchema, tool.InputSchemaOverridden = existing.InputSchema, true
+			schema, err = marshalJSON(tool.InputSchema)
+			if err != nil {
+				return err
+			}
+		}
 	} else if tool.ID == "" {
 		tool.ID = newID("tool")
 	}
@@ -50,22 +66,39 @@ func (s *Store) UpsertTool(ctx context.Context, tool *model.Tool) error {
 	tool.CreatedAt = now
 	tool.UpdatedAt = nowOr(tool.UpdatedAt)
 
+	sourceSchema, err := marshalJSON(tool.SourceInputSchema)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO tools
-		   (id, server_id, original_name, gateway_name, description, input_schema, risk_level, enabled, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)
+		   (id, server_id, original_name, gateway_name, description, input_schema, source_description, source_input_schema, name_overridden, description_overridden, input_schema_overridden, risk_level, enabled, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON DUPLICATE KEY UPDATE
-		   server_id = VALUES(server_id), original_name = VALUES(original_name),
-		   description = VALUES(description), input_schema = VALUES(input_schema),
-		   risk_level = VALUES(risk_level), enabled = VALUES(enabled), updated_at = VALUES(updated_at)`,
+		   gateway_name = VALUES(gateway_name), description = VALUES(description), input_schema = VALUES(input_schema),
+		   source_description = VALUES(source_description), source_input_schema = VALUES(source_input_schema),
+		   name_overridden = VALUES(name_overridden), description_overridden = VALUES(description_overridden),
+		   input_schema_overridden = VALUES(input_schema_overridden), risk_level = VALUES(risk_level),
+		   enabled = VALUES(enabled), updated_at = VALUES(updated_at)`,
 		tool.ID, tool.ServerID, tool.OriginalName, tool.GatewayName,
-		nullIfEmpty(tool.Description), schema, nullIfEmpty(tool.RiskLevel),
+		nullIfEmpty(tool.Description), schema, nullIfEmpty(tool.SourceDescription), sourceSchema,
+		tool.NameOverridden, tool.DescriptionOverridden, tool.InputSchemaOverridden, nullIfEmpty(tool.RiskLevel),
 		tool.Enabled, fmtTimeUTC(tool.CreatedAt), fmtTimeUTC(tool.UpdatedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert tools: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) GetToolBySource(ctx context.Context, serverID string, originalName string) (*model.Tool, error) {
+	tool, err := scanTool(func(dest ...any) error {
+		return s.db.QueryRowContext(ctx, "SELECT "+toolColumns+" FROM tools WHERE server_id = ? AND original_name = ? LIMIT 1", serverID, originalName).Scan(dest...)
+	})
+	if err != nil {
+		return nil, notExistError(err, "tool", serverID+"/"+originalName)
+	}
+	return &tool, nil
 }
 
 // GetTool 按 id 读取 Tool。
@@ -151,6 +184,25 @@ func (s *Store) SetToolEnabled(ctx context.Context, id string, enabled bool) err
 			if isNoRows(err) {
 				return fmt.Errorf("tool %q 不存在", id)
 			}
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) UpdateTool(ctx context.Context, tool *model.Tool) error {
+	schema, err := marshalJSON(tool.InputSchema)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE tools SET gateway_name=?, description=?, input_schema=?, name_overridden=?, description_overridden=?, input_schema_overridden=?, updated_at=? WHERE id=?`,
+		tool.GatewayName, nullIfEmpty(tool.Description), schema, tool.NameOverridden,
+		tool.DescriptionOverridden, tool.InputSchemaOverridden, fmtTimeUTC(tool.UpdatedAt), tool.ID)
+	if err != nil {
+		return fmt.Errorf("update tools: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		if _, err := s.GetTool(ctx, tool.ID); err != nil {
 			return err
 		}
 	}
@@ -261,153 +313,6 @@ func (s *Store) DeleteRoute(ctx context.Context, id string) error {
 	return nil
 }
 
-// ---- PolicyStore ----
-
-// CreatePolicy 在事务中写入策略与规范化后的规则。
-func (s *Store) CreatePolicy(ctx context.Context, policy *model.Policy) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if policy.ID == "" {
-		policy.ID = newID("pol")
-	}
-	now := nowOr(policy.CreatedAt)
-	policy.CreatedAt = now
-	policy.UpdatedAt = nowOr(policy.UpdatedAt)
-
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO policies (id, name, enabled, created_at, updated_at) VALUES (?,?,?,?,?)`,
-		policy.ID, policy.Name, policy.Enabled, fmtTimeUTC(policy.CreatedAt), fmtTimeUTC(policy.UpdatedAt)); err != nil {
-		return fmt.Errorf("insert policies: %w", err)
-	}
-	for _, rule := range policy.Rules {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO policy_rules (policy_id, subject, tool, effect) VALUES (?,?,?,?)`,
-			policy.ID, rule.Subject, rule.Tool, rule.Effect); err != nil {
-			return fmt.Errorf("insert policy_rules: %w", err)
-		}
-	}
-	return tx.Commit()
-}
-
-// GetPolicy 读取策略及其规则。
-func (s *Store) GetPolicy(ctx context.Context, id string) (*model.Policy, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT p.id, p.name, p.enabled, p.created_at, p.updated_at,
-		        COALESCE(r.subject,''), COALESCE(r.tool,''), COALESCE(r.effect,'')
-		 FROM policies p
-		 LEFT JOIN policy_rules r ON r.policy_id = p.id
-		 WHERE p.id = ? ORDER BY r.id`, id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	policy, err := scanPolicies(rows)
-	if err != nil {
-		return nil, err
-	}
-	if len(policy) == 0 {
-		return nil, fmt.Errorf("policy %q 不存在", id)
-	}
-	return &policy[0], nil
-}
-
-// ListPolicies 返回全部启用/停用策略（含规则，单次 JOIN 查询）。
-func (s *Store) ListPolicies(ctx context.Context) ([]model.Policy, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT p.id, p.name, p.enabled, p.created_at, p.updated_at,
-		        COALESCE(r.subject,''), COALESCE(r.tool,''), COALESCE(r.effect,'')
-		 FROM policies p
-		 LEFT JOIN policy_rules r ON r.policy_id = p.id
-		 ORDER BY p.id, r.id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	return scanPolicies(rows)
-}
-
-// scanPolicies 把「策略 LEFT JOIN 规则」的行流聚合成带规则列表的策略。
-func scanPolicies(rows *sql.Rows) ([]model.Policy, error) {
-	out := make([]model.Policy, 0)
-	index := make(map[string]int) // policyID -> out 下标
-	for rows.Next() {
-		var p model.Policy
-		var subject, tool, effect string
-		if err := rows.Scan(&p.ID, &p.Name, &p.Enabled, &p.CreatedAt, &p.UpdatedAt,
-			&subject, &tool, &effect); err != nil {
-			return nil, err
-		}
-		if i, ok := index[p.ID]; ok {
-			if subject != "" { // 有规则行才追加
-				out[i].Rules = append(out[i].Rules, model.PolicyRule{Subject: subject, Tool: tool, Effect: model.PolicyEffect(effect)})
-			}
-			continue
-		}
-		index[p.ID] = len(out)
-		if subject != "" {
-			p.Rules = []model.PolicyRule{{Subject: subject, Tool: tool, Effect: model.PolicyEffect(effect)}}
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
-}
-
-// UpdatePolicy 事务内更新策略头与规则（替换式：先清空 policy_rules 再重插）。
-func (s *Store) UpdatePolicy(ctx context.Context, policy *model.Policy) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	policy.UpdatedAt = nowOr(policy.UpdatedAt)
-	res, err := tx.ExecContext(ctx,
-		`UPDATE policies SET name = ?, enabled = ?, updated_at = ? WHERE id = ?`,
-		policy.Name, policy.Enabled, fmtTimeUTC(policy.UpdatedAt), policy.ID)
-	if err != nil {
-		return fmt.Errorf("update policies: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		var probe string
-		if err := tx.QueryRowContext(ctx, "SELECT id FROM policies WHERE id = ?", policy.ID).Scan(&probe); err != nil {
-			if isNoRows(err) {
-				return fmt.Errorf("policy %q 不存在", policy.ID)
-			}
-			return err
-		}
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM policy_rules WHERE policy_id = ?", policy.ID); err != nil {
-		return fmt.Errorf("delete policy_rules: %w", err)
-	}
-	for _, rule := range policy.Rules {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO policy_rules (policy_id, subject, tool, effect) VALUES (?,?,?,?)`,
-			policy.ID, rule.Subject, rule.Tool, rule.Effect); err != nil {
-			return fmt.Errorf("insert policy_rules: %w", err)
-		}
-	}
-	return tx.Commit()
-}
-
-// DeletePolicy 删除策略（规则子表由外键 CASCADE 一并清除）。
-func (s *Store) DeletePolicy(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, "DELETE FROM policies WHERE id = ?", id)
-	if err != nil {
-		return fmt.Errorf("delete policies: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("policy %q 不存在", id)
-	}
-	return nil
-}
-
-// ---- CredentialStore ----
 
 // CreateCredential 新增凭证：值为空时仅登记元数据；非空时加密落库
 // （AES-256-GCM，需配置 credentials.encryption_key）。

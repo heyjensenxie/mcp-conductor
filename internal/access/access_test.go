@@ -9,24 +9,11 @@ import (
 	"github.com/xmj128/mcp-conductor/internal/model"
 )
 
-// fakeLegacy 是可控的遗留授权器：allowSet 内放行，其余返回授权错误；
-// 模拟 policy.Engine 的默认放行/deny 行为。
-type fakeLegacy struct {
-	allowSet map[string]bool
-}
-
-func (f *fakeLegacy) Authorize(_ context.Context, subject, tool string) error {
-	if f.allowSet[tool] {
-		return nil
-	}
-	return errs.New(errs.CodeAuthorization, "legacy deny %s -> %s", subject, tool)
-}
-
 func managedKey(grants ...model.ToolGrant) *auth.Identity {
 	return &auth.Identity{Subject: "partner-a", Key: &model.AccessKey{Subject: "partner-a", Grants: grants}}
 }
 
-func anonymous(id *auth.Identity) *auth.Identity {
+func keyless(id *auth.Identity) *auth.Identity {
 	if id == nil {
 		return &auth.Identity{Subject: "anonymous"}
 	}
@@ -35,7 +22,7 @@ func anonymous(id *auth.Identity) *auth.Identity {
 
 func TestAuthorizer_ManagedKeyWhitelist(t *testing.T) {
 	ctx := context.Background()
-	authz := NewAuthorizer(&fakeLegacy{allowSet: map[string]bool{"svc1.b": true}})
+	authz := NewAuthorizer()
 
 	key := managedKey(
 		model.ToolGrant{GatewayName: "svc1.a"},
@@ -49,15 +36,14 @@ func TestAuthorizer_ManagedKeyWhitelist(t *testing.T) {
 	if err := authz.Authorize(ctx, key, "svc1.b"); !errs.Is(err, errs.CodeAuthorization) {
 		t.Fatalf("未授权工具应拒绝，得到 %v", err)
 	}
-	// legacy 即使放行 svc1.b 也不应对 managed key 生效。
 }
 
 func TestAuthorizer_ManagedKeyWildcard(t *testing.T) {
 	ctx := context.Background()
-	authz := NewAuthorizer(&fakeLegacy{})
+	authz := NewAuthorizer()
 
 	key := managedKey(model.ToolGrant{GatewayName: "university.*"})
-	if err := authz.Authorize(ctx, key, "university.search_policy"); err != nil {
+	if err := authz.Authorize(ctx, key, "university.search"); err != nil {
 		t.Fatalf("前缀通配应命中: %v", err)
 	}
 	if err := authz.Authorize(ctx, key, "billing.create"); !errs.Is(err, errs.CodeAuthorization) {
@@ -70,16 +56,20 @@ func TestAuthorizer_ManagedKeyWildcard(t *testing.T) {
 	}
 }
 
-func TestAuthorizer_LegacyFallback(t *testing.T) {
+func TestAuthorizer_OperatorAllowed(t *testing.T) {
 	ctx := context.Background()
-	legacy := &fakeLegacy{allowSet: map[string]bool{"svc1.a": true}}
-	authz := NewAuthorizer(legacy)
-
-	if err := authz.Authorize(ctx, anonymous(nil), "svc1.a"); err != nil {
-		t.Fatalf("非管理身份按遗留规则放行: %v", err)
+	authz := NewAuthorizer()
+	operator := &auth.Identity{Subject: "operator", Operator: true}
+	if err := authz.Authorize(ctx, operator, "any.tool"); err != nil {
+		t.Fatalf("Operator 应放行任意工具: %v", err)
 	}
-	if err := authz.Authorize(ctx, anonymous(nil), "svc1.b"); !errs.Is(err, errs.CodeAuthorization) {
-		t.Fatalf("非管理身份 hit legacy deny 应拒绝，得到 %v", err)
+}
+
+func TestAuthorizer_UnmanagedNonOperatorDenied(t *testing.T) {
+	ctx := context.Background()
+	authz := NewAuthorizer()
+	if err := authz.Authorize(ctx, keyless(nil), "svc1.a"); !errs.Is(err, errs.CodeAuthorization) {
+		t.Fatalf("无 Key 且非 Operator 的主体应拒绝，得到 %v", err)
 	}
 }
 
@@ -104,11 +94,11 @@ func TestFilterTools_ManagedKeyOnlyGranted(t *testing.T) {
 	}
 }
 
-func TestFilterTools_LegacyAllVisible(t *testing.T) {
+func TestFilterTools_KeylessAllVisible(t *testing.T) {
 	tools := []model.Tool{{GatewayName: "svc1.a"}, {GatewayName: "svc1.b"}}
-	got := FilterTools(anonymous(nil), tools)
+	got := FilterTools(keyless(nil), tools)
 	if len(got) != 2 {
-		t.Fatalf("非管理身份应见全部工具，得到 %d", len(got))
+		t.Fatalf("无 Key 主体应见全部工具，得到 %d", len(got))
 	}
 }
 

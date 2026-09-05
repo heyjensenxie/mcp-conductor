@@ -4,7 +4,7 @@
 
 ## 1. 总体形态
 
-- **Monorepo + 模块化单体 + 单一 Go Backend**：一个二进制同时承载 Gateway Runtime、Control Plane API、Registry、Auth、Policy、Rate Limit、Observability 与基础测试能力。
+- **Monorepo + 模块化单体 + 单一 Go Backend**：一个二进制同时承载 Gateway Runtime、Control Plane API、Registry、Auth、Rate Limit、Observability 与基础测试能力。
 - **前端独立 Vue3 Console**：构建产物内嵌进 Go 二进制（`internal/console` 的 `go:embed`），`/mcp`、`/api` 之外的路径由 SPA 兜底。
 - **接口驱动、允许无外部依赖启动**：存储/限流等抽象为 interface，`memory` 实现为默认；MySQL 5.7+ / Redis 为可选扩展。生产数据库为 **MySQL 5.7+**，所有 SQL 必须保持 5.7 兼容（见 [database.md](database.md)）。
 
@@ -13,7 +13,7 @@
 ├── internal/
 │   ├── app              # 组件装配（依赖注入）与生命周期
 │   ├── config           # config.yaml + 环境变量（CONDUCTOR_*）
-│   ├── model            # 领域模型：Server/Tool/Route/Policy/Credential/Traffic
+│   ├── model            # 领域模型：Server/Tool/Route/AccessKey/Credential/Traffic
 │   ├── errs             # 统一错误模型（code/message/request_id；错误类别枚举）
 │   ├── storage          # 存储接口；memory 与 mysql 5.7 双实现（mysql 见 database.md）
 │   ├── mcp              # MCP 协议最小层：类型、JSON-RPC 传输、端点 Handler、上游 Client
@@ -23,8 +23,7 @@
 │   ├── balancer         # 负载均衡接口 + RoundRobin（健康感知）
 │   ├── ratelimit        # Limiter 接口 + memory(令牌桶)/redis(固定窗口)
 │   ├── auth             # 认证：控制面 operator_token/登录会话、数据面 API Key
-│   ├── access           # 按 key×tool 白名单授权 + 调用配置（managed key 模式）
-│   ├── policy           # 遗留 RBAC 裁定（支持通配、首条匹配生效）
+│   ├── access           # 按 key×tool 白名单授权 + 调用配置（managed key 模式；Operator 放行）
 │   ├── health           # 周期健康巡检 + 注册/启用即时探活
 │   ├── observability    # 指标聚合(P50/P95/P99) + 调用日志(采样/不记敏感体)
 │   ├── console          # 内嵌前端 dist
@@ -50,7 +49,7 @@ Request
 `tools/call` 在 Gateway 服务层完成：
 
 ```
-授权(Policy) → 路由解析(Router) → 负载均衡(Balancer) → 并发上限
+授权（key×tool 白名单 / Operator 放行）→ 路由解析(Router) → 负载均衡(Balancer) → 并发上限
 → 上游调用(Adapter, 带超时) → 指标+调用日志(无论成败)
 ```
 

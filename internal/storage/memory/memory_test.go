@@ -196,43 +196,6 @@ func TestRouteLifecycleMemory(t *testing.T) {
 	}
 }
 
-// TestPolicyLifecycleMemory 验证策略 创建/更新（替换规则）/删除。
-func TestPolicyLifecycleMemory(t *testing.T) {
-	store := New()
-	ctx := context.Background()
-	policy := &model.Policy{
-		Name: "p", Enabled: true,
-		Rules: []model.PolicyRule{{Subject: "agent-a", Tool: "a.search", Effect: model.PolicyEffectAllow}},
-	}
-	if err := store.CreatePolicy(ctx, policy); err != nil {
-		t.Fatal(err)
-	}
-	if policy.ID == "" || policy.CreatedAt.IsZero() {
-		t.Fatalf("CreatePolicy 应盖章: %+v", policy)
-	}
-
-	if err := store.UpdatePolicy(ctx, &model.Policy{
-		ID: policy.ID, Name: "p2", Enabled: false,
-		Rules: []model.PolicyRule{{Subject: "agent-b", Tool: "b.detail", Effect: model.PolicyEffectDeny}},
-	}); err != nil {
-		t.Fatalf("UpdatePolicy: %v", err)
-	}
-	got, err := store.GetPolicy(ctx, policy.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Name != "p2" || got.Enabled || len(got.Rules) != 1 || got.Rules[0].Effect != model.PolicyEffectDeny {
-		t.Fatalf("更新后回读不一致: %+v", got)
-	}
-
-	if err := store.DeletePolicy(ctx, policy.ID); err != nil {
-		t.Fatalf("DeletePolicy: %v", err)
-	}
-	if _, err := store.GetPolicy(ctx, policy.ID); err == nil {
-		t.Fatal("删除后 GetPolicy 应报错")
-	}
-}
-
 // TestDeleteServerCascadesRoutesMemory 验证删除 Server 会级联清理其路由。
 func TestDeleteServerCascadesRoutesMemory(t *testing.T) {
 	store := New()

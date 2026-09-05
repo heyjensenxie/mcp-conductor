@@ -1,7 +1,7 @@
 // Package model 定义 MCP Conductor 的核心领域模型。
 //
 // 遵循"领域模型优先"原则（见 PRD 第五节），MVP 覆盖 Server、Tool、Route、
-// Policy、Credential、Traffic；Evaluation、Dataset、TestCase、Version 仅预留边界。
+// AccessKey、Credential、Traffic；Evaluation、Dataset、TestCase、Version 仅预留边界。
 package model
 
 import (
@@ -65,10 +65,17 @@ type Tool struct {
 	Description string `json:"description,omitempty"`
 	// InputSchema 是上游 tools/list 返回的 JSON Schema（序列化形式）。
 	InputSchema map[string]any `json:"input_schema,omitempty"`
-	RiskLevel   string         `json:"risk_level,omitempty"`
-	Enabled     bool           `json:"enabled"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	// SourceDescription / SourceInputSchema 保存最近一次上游发现结果，供控制台
+	// 对比与恢复默认值；人工覆盖后的对外字段不会被重新发现覆盖。
+	SourceDescription     string         `json:"source_description,omitempty"`
+	SourceInputSchema     map[string]any `json:"source_input_schema,omitempty"`
+	NameOverridden        bool           `json:"name_overridden"`
+	DescriptionOverridden bool           `json:"description_overridden"`
+	InputSchemaOverridden bool           `json:"input_schema_overridden"`
+	RiskLevel             string         `json:"risk_level,omitempty"`
+	Enabled               bool           `json:"enabled"`
+	CreatedAt             time.Time      `json:"created_at"`
+	UpdatedAt             time.Time      `json:"updated_at"`
 }
 
 // Route 描述"对外工具（或匹配规则）→ 目标 Server"的路由定义。
@@ -81,32 +88,6 @@ type Route struct {
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-}
-
-// PolicyEffect 表示策略对某类访问的最终裁定。
-type PolicyEffect string
-
-const (
-	PolicyEffectAllow PolicyEffect = "allow"
-	PolicyEffectDeny  PolicyEffect = "deny"
-)
-
-// PolicyRule 表示一条"主体/对象"权限规则。MVP 采用简单 RBAC：
-// 规则作用于 Tool（GatewayName）或通配，主体是调用凭据身份。
-type PolicyRule struct {
-	Subject string       `json:"subject"` // 主体标识，如 api-key 名称
-	Tool    string       `json:"tool"`    // 支持前缀通配，如 "university.*"
-	Effect  PolicyEffect `json:"effect"`
-}
-
-// Policy 是一组权限规则，可按 for对工具调用进行 allow/deny 裁定。
-type Policy struct {
-	ID        string       `json:"id"`
-	Name      string       `json:"name"`
-	Rules     []PolicyRule `json:"rules"`
-	Enabled   bool         `json:"enabled"`
-	CreatedAt time.Time    `json:"created_at"`
-	UpdatedAt time.Time    `json:"updated_at"`
 }
 
 // CredentialKind 表示 Gateway 调用上游 MCP Server 时使用的凭据类型。

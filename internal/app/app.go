@@ -27,7 +27,6 @@ import (
 	"github.com/xmj128/mcp-conductor/internal/mcpclient"
 	"github.com/xmj128/mcp-conductor/internal/model"
 	"github.com/xmj128/mcp-conductor/internal/observability"
-	"github.com/xmj128/mcp-conductor/internal/policy"
 	"github.com/xmj128/mcp-conductor/internal/ratelimit"
 	"github.com/xmj128/mcp-conductor/internal/registry"
 	"github.com/xmj128/mcp-conductor/internal/router"
@@ -61,8 +60,7 @@ func Run(ctx context.Context) error {
 
 	registrySvc := registry.NewService(store, adapter)
 	resolver := router.NewResolver(store, store).WithRoutes(store)
-	policyEngine := policy.NewEngine(store)
-	authorizer := access.NewAuthorizer(policyEngine)
+	authorizer := access.NewAuthorizer()
 	metrics := observability.NewMetrics()
 	recorder := observability.NewRecorder(store, cfg.Observability.RecordBody, cfg.Observability.SampleRate)
 

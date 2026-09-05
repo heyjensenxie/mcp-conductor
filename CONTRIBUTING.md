@@ -16,7 +16,7 @@
 
 ## 测试要求
 
-- 新增/变更核心逻辑（Router、Balancer、Rate Limiter、Policy、Tool Namespace 等）须带单元测试。
+- 新增/变更核心逻辑（Router、Balancer、Rate Limiter、Tool Namespace 等）须带单元测试。
 - 聚合相关改动尤其要覆盖 **Tool Name Collision** 回归用例。
 
 ## IDE/工作台
