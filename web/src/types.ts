@@ -1,5 +1,13 @@
 // 与后端 internal/model 保持一致的领域类型。
 
+// 管理面列表统一分页信封（后端 /api 列表 data 形状）。
+export interface Paged<T> {
+  items: T[]
+  total: number
+  page: number
+  page_size: number
+}
+
 export type ServerStatus = 'unknown' | 'healthy' | 'unhealthy' | 'disabled'
 export type Transport = 'stdio' | 'https' | 'sse'
 

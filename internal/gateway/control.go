@@ -68,14 +68,19 @@ func NewControl(registry *registry.Service, store storage.Store, metrics *observ
 	return &Control{registry: registry, store: store, metrics: metrics, keyHash: keyHash}
 }
 
-// handleListServers 列出全部 Server。
+// handleListServers 分页列出 Server，支持 q/enabled/health_status 筛选。
 func (c *Control) handleListServers(w http.ResponseWriter, r *http.Request) {
-	servers, err := c.registry.ListServers(r.Context())
+	q, err := bindServerQuery(r)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	servers, total, err := c.store.QueryServers(r.Context(), q)
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
-	writeOK(w, RequestIDFrom(r.Context()), servers)
+	writeOK(w, RequestIDFrom(r.Context()), pageData[model.Server]{Items: servers, Total: total, Page: q.Page, PageSize: q.PageSize})
 }
 
 // handleCreateServer 注册 Server 并触发工具发现。
@@ -161,24 +166,36 @@ func (c *Control) handleTestServer(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, RequestIDFrom(r.Context()), map[string]string{"status": "ok"})
 }
 
-// handleListTools 列出全部聚合工具。
+// handleListTools 分页列出全部聚合工具，支持 q/server_id/enabled 筛选
+// （控制面列表包含已禁用工具，供运维启停）。
 func (c *Control) handleListTools(w http.ResponseWriter, r *http.Request) {
-	tools, err := c.registry.ListTools(r.Context())
+	q, err := bindToolQuery(r)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	tools, total, err := c.store.QueryTools(r.Context(), q)
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
-	writeOK(w, RequestIDFrom(r.Context()), tools)
+	writeOK(w, RequestIDFrom(r.Context()), pageData[model.Tool]{Items: tools, Total: total, Page: q.Page, PageSize: q.PageSize})
 }
 
-// handleListServerTools 列出指定 Server 的工具。
+// handleListServerTools 分页列出指定 Server 的工具（server_id 取自路径）。
 func (c *Control) handleListServerTools(w http.ResponseWriter, r *http.Request) {
-	tools, err := c.registry.ListServerTools(r.Context(), r.PathValue("id"))
+	q, err := bindToolQuery(r)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	q.ServerID = r.PathValue("id")
+	tools, total, err := c.store.QueryTools(r.Context(), q)
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
-	writeOK(w, RequestIDFrom(r.Context()), tools)
+	writeOK(w, RequestIDFrom(r.Context()), pageData[model.Tool]{Items: tools, Total: total, Page: q.Page, PageSize: q.PageSize})
 }
 
 // handleUpdateTool 维护平台对外的工具名称、描述和输入 Schema；源定义仍由
@@ -321,14 +338,19 @@ func (c *Control) handleDeleteRoute(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusNoContent, "ok", "success", RequestIDFrom(r.Context()), nil)
 }
 
-// handleListRoutes 列出全部路由。
+// handleListRoutes 分页列出路由，支持 q/server_id/enabled 筛选。
 func (c *Control) handleListRoutes(w http.ResponseWriter, r *http.Request) {
-	routes, err := c.store.ListRoutes(r.Context())
+	q, err := bindRouteQuery(r)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	routes, total, err := c.store.QueryRoutes(r.Context(), q)
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
-	writeOK(w, RequestIDFrom(r.Context()), routes)
+	writeOK(w, RequestIDFrom(r.Context()), pageData[model.Route]{Items: routes, Total: total, Page: q.Page, PageSize: q.PageSize})
 }
 
 // validateRoute 校验路由引用完整性：name 非空、目标 Server 存在、tool_names 逐项已注册。
@@ -395,14 +417,21 @@ func (c *Control) handleCreateCredential(w http.ResponseWriter, r *http.Request)
 	writeOK(w, RequestIDFrom(r.Context()), credential)
 }
 
-// handleListCredentials 列出指定 Server 的凭证元数据。
+// handleListCredentials 分页列出指定 Server 的凭证元数据，支持 q/kind/has_value
+// 筛选。列表语义为元数据（不解密值，Value json:"-" 不外发）。
 func (c *Control) handleListCredentials(w http.ResponseWriter, r *http.Request) {
-	credentials, err := c.store.ListCredentialsByServer(r.Context(), r.PathValue("id"))
+	q, err := bindCredentialQuery(r)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	q.ServerID = r.PathValue("id")
+	credentials, total, err := c.store.QueryCredentials(r.Context(), q)
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
-	writeOK(w, RequestIDFrom(r.Context()), credentials)
+	writeOK(w, RequestIDFrom(r.Context()), pageData[model.Credential]{Items: credentials, Total: total, Page: q.Page, PageSize: q.PageSize})
 }
 
 // handleUpdateCredential 更新指定 Server 下某个凭证的元数据；空值字段表示
@@ -506,14 +535,19 @@ func (c *Control) findCredential(ctx context.Context, serverID, credID string) (
 
 // ---- AccessKey ----
 
-// handleListKeys 列出全部 API Key（不含 KeyHash/Secret）。
+// handleListKeys 分页列出全部 API Key（不含 KeyHash/Secret），支持 q/enabled 筛选。
 func (c *Control) handleListKeys(w http.ResponseWriter, r *http.Request) {
-	keys, err := c.store.ListAccessKeys(r.Context())
+	q, err := bindAccessKeyQuery(r)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	keys, total, err := c.store.QueryAccessKeys(r.Context(), q)
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
-	writeOK(w, RequestIDFrom(r.Context()), keys)
+	writeOK(w, RequestIDFrom(r.Context()), pageData[model.AccessKey]{Items: keys, Total: total, Page: q.Page, PageSize: q.PageSize})
 }
 
 // createKeyResponse 是创建 API Key 的响应：普通 AccessKey 字段 + 仅此一次的
@@ -707,29 +741,21 @@ func (c *Control) handleMetricsTrend(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, RequestIDFrom(r.Context()), map[string]any{"series": series})
 }
 
-// handleLogs 返回最近的调用日志；支持 ?server_id= 过滤与 ?limit=（默认 100，
-// 上限 500）。
+// handleLogs 分页返回调用日志，支持 server_id/q/status/from/to 筛选。
+// 不再提供旧 ?limit= 截断语义：控制台通过 page/page_size 取页（Dashboard 等
+// 全量场景传较大 page_size）。
 func (c *Control) handleLogs(w http.ResponseWriter, r *http.Request) {
-	limit := 100
-	if s := r.URL.Query().Get("limit"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 500 {
-			limit = n
-		}
+	q, err := bindTrafficQuery(r)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, err)
+		return
 	}
-	var (
-		logs []model.TrafficSample
-		err  error
-	)
-	if serverID := r.URL.Query().Get("server_id"); serverID != "" {
-		logs, err = c.store.RecentTrafficByServer(r.Context(), serverID, limit)
-	} else {
-		logs, err = c.store.RecentTraffic(r.Context(), limit)
-	}
+	logs, total, err := c.store.QueryTraffic(r.Context(), q)
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
-	writeOK(w, RequestIDFrom(r.Context()), logs)
+	writeOK(w, RequestIDFrom(r.Context()), pageData[model.TrafficSample]{Items: logs, Total: total, Page: q.Page, PageSize: q.PageSize})
 }
 
 // decodeBody 解码 JSON 请求体。

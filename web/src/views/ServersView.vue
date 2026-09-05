@@ -11,8 +11,30 @@
       </a-space>
     </div>
 
+    <div class="filters">
+      <a-space wrap :size="8">
+        <a-input v-model:value="filters.q" allow-clear :placeholder="t('filter.keyword')" style="width: 220px" @press-enter="onFilterChange">
+          <template #prefix><SearchOutlined /></template>
+        </a-input>
+        <a-select v-model:value="filters.enabled" allow-clear :placeholder="t('common.status')" style="width: 120px" @change="onFilterChange">
+          <a-select-option value="true">{{ t('servers.enabled') }}</a-select-option>
+          <a-select-option value="false">{{ t('servers.disabled') }}</a-select-option>
+        </a-select>
+        <a-select v-model:value="filters.health" allow-clear :placeholder="t('servers.health')" style="width: 140px" @change="onFilterChange">
+          <a-select-option v-for="v in healthOptions" :key="v" :value="v">{{ v }}</a-select-option>
+        </a-select>
+      </a-space>
+    </div>
+
     <a-card :bordered="true">
-      <a-table :data-source="servers" :columns="columns" :loading="loading" :row-key="(r: any) => r.id" :pagination="false">
+      <a-table
+        :data-source="servers"
+        :columns="columns"
+        :loading="loading"
+        :row-key="(r: any) => r.id"
+        :pagination="pagination"
+        @change="onTableChange"
+      >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'name'">
             <router-link :to="`/servers/${record.id}`" class="link">{{ record.name }}</router-link>
@@ -92,8 +114,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { PlusOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons-vue'
-import { createCredential, createServer, deleteServer, getServerMetrics, listServers, listServerTools, testServer, toggleServer, updateServer } from '@/api'
+import { PlusOutlined, DeleteOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
+import { createCredential, createServer, deleteServer, getServerMetrics, listServers, listServerToolsAll, testServer, toggleServer, updateServer } from '@/api'
 import type { MCPServer, MetricSnapshot, Transport } from '@/types'
 
 const { t } = useI18n()
@@ -101,6 +123,17 @@ const { t } = useI18n()
 const servers = ref<MCPServer[]>([])
 const toolCount = ref<Record<string, number>>({})
 const loading = ref(false)
+// 服务端分页状态：由后端 total 驱动，翻页/改页大小触发重新取数。
+const pagination = reactive({
+  current: 1,
+  pageSize: 20,
+  total: 0,
+  showSizeChanger: true,
+  showTotal: (total: number) => t('filter.total', { total }),
+})
+// 列表筛选：q 关键词 + enabled 三态 + 健康状态；'' 表示不过滤。
+const filters = reactive({ q: '', enabled: '', health: '' })
+const healthOptions = ['unknown', 'healthy', 'unhealthy', 'disabled']
 const dialogVisible = ref(false)
 const submitting = ref(false)
 const form = reactive<{ name: string; endpoint: string; transport: Transport; description: string }>({
@@ -149,13 +182,29 @@ onMounted(load)
 async function load() {
   loading.value = true
   try {
-    servers.value = await listServers()
-    for (const s of servers.value) {
+    const res = await listServers({
+      page: pagination.current,
+      page_size: pagination.pageSize,
+      q: filters.q.trim() || undefined,
+      enabled: filters.enabled === 'true' ? true : filters.enabled === 'false' ? false : undefined,
+      health_status: (filters.health as MCPServer['health_status']) || undefined,
+    })
+    servers.value = res.items
+    pagination.total = res.total
+    // 工具数只对当前页做 N+1（避免整表遍历）。
+    const counts: Record<string, number> = {}
+    for (const s of res.items) {
       try {
-        toolCount.value[s.id] = (await listServerTools(s.id)).length
+        counts[s.id] = (await listServerToolsAll(s.id)).length
       } catch {
-        toolCount.value[s.id] = 0
+        counts[s.id] = 0
       }
+    }
+    toolCount.value = counts
+    if (res.items.length === 0 && pagination.current > 1 && res.total > 0) {
+      pagination.current -= 1
+      await load()
+      return
     }
     try {
       serverMetrics.value = await getServerMetrics()
@@ -167,6 +216,20 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+function onFilterChange() {
+  pagination.current = 1
+  void load()
+}
+
+function onTableChange(p: { current?: number; pageSize?: number }) {
+  if (p.current) pagination.current = p.current
+  if (p.pageSize && p.pageSize !== pagination.pageSize) {
+    pagination.pageSize = p.pageSize
+    pagination.current = 1
+  }
+  void load()
 }
 
 function openCreate() {
@@ -309,6 +372,9 @@ const healthColor = (s: string) => (s === 'healthy' ? 'green' : s === 'unhealthy
 <style scoped>
 .toolbar {
   margin-bottom: 16px;
+}
+.filters {
+  margin-bottom: 12px;
 }
 .link {
   color: #1677ff;

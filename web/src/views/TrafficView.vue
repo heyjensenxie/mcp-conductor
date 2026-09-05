@@ -14,20 +14,29 @@
 
     <div class="filters">
       <a-space wrap :size="8">
-        <a-select v-model:value="serverId" :placeholder="t('traffic.filterServer')" style="width: 260px" allow-clear @change="load">
-          <a-select-option v-for="s in servers" :key="s.id" :value="s.id">{{ s.name }}</a-select-option>
+        <a-select v-model:value="logFilters.serverId" allow-clear show-search option-filter-prop="label" :placeholder="t('filter.serverPlaceholder')" style="width: 220px" @change="onFilterChange">
+          <a-select-option v-for="s in servers" :key="s.id" :value="s.id" :label="s.name">{{ s.name }}</a-select-option>
         </a-select>
-        <a-select v-model:value="statusFilter" style="width: 140px" @change="() => {}">
-          <a-select-option value="all">{{ t('traffic.statusAll') }}</a-select-option>
+        <a-input v-model:value="logFilters.q" allow-clear :placeholder="t('filter.keyword')" style="width: 200px" @press-enter="onFilterChange">
+          <template #prefix><SearchOutlined /></template>
+        </a-input>
+        <a-select v-model:value="logFilters.status" allow-clear :placeholder="t('filter.statusPlaceholder')" style="width: 170px" @change="onFilterChange">
           <a-select-option value="success">{{ t('traffic.statusSuccess') }}</a-select-option>
-          <a-select-option value="error">{{ t('traffic.statusError') }}</a-select-option>
+          <a-select-option v-for="code in statusOptions" :key="code" :value="code">{{ code }}</a-select-option>
         </a-select>
-        <span class="hint">{{ t('traffic.scopeHint') }}</span>
-        <a-tag>{{ t('traffic.count') }}：{{ filtered.length }}</a-tag>
+        <a-range-picker v-model:value="dateRange" show-time class="range" @change="onRangeChange" />
       </a-space>
     </div>
 
-    <a-table :data-source="filtered" :columns="columns" size="small" :pagination="false" :row-key="(r: any) => r.request_id">
+    <a-table
+      :data-source="logs"
+      :columns="columns"
+      size="small"
+      :loading="loading"
+      :pagination="pagination"
+      :row-key="(r: any) => r.request_id"
+      @change="onTableChange"
+    >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'status'">
           <a-tag :color="record.status === 'success' ? 'green' : 'red'">{{ record.status }}</a-tag>
@@ -44,20 +53,44 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { ReloadOutlined } from '@ant-design/icons-vue'
-import { getLogs, getMetricsTrend, listServers } from '@/api'
+import { ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
+import { getLogs, getMetricsTrend, listAllServers } from '@/api'
 import type { MCPServer, TrafficSample, TrendPoint } from '@/types'
 import TrafficTrend from '@/components/TrafficTrend.vue'
 
 const { t } = useI18n()
 const logs = ref<TrafficSample[]>([])
 const servers = ref<MCPServer[]>([])
-const serverId = ref('')
-const statusFilter = ref<'all' | 'success' | 'error'>('all')
+const loading = ref(false)
 const trendData = ref<TrendPoint[]>([])
+
+// 服务端分页：total 来自后端匹配总数；筛选条件变化回第 1 页。
+const pagination = reactive({
+  current: 1,
+  pageSize: 20,
+  total: 0,
+  showSizeChanger: true,
+  showTotal: (total: number) => t('filter.total', { total }),
+})
+const logFilters = reactive({ serverId: '', q: '', status: '', from: '', to: '' })
+const dateRange = ref<any>(null)
+
+// 失败状态=标准错误码；'success' 之外的 code 直接展示。
+const statusOptions = [
+  'protocol_error',
+  'authentication_error',
+  'authorization_error',
+  'rate_limit_error',
+  'route_error',
+  'upstream_error',
+  'timeout_error',
+  'invalid_argument',
+  'not_found',
+  'internal_error',
+]
 
 function fmtMin(ts: number): string {
   return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -69,13 +102,6 @@ const trendSeries = computed(() => ({
   rates: trendData.value.map((p) => (p.totals ? Math.round(((p.totals - p.errors) / p.totals) * 100) : 0)),
 }))
 const trendHasData = computed(() => trendData.value.some((p) => p.totals > 0))
-
-// 状态过滤在前端执行（数据为最近 500 条）。
-const filtered = computed(() => {
-  if (statusFilter.value === 'all') return logs.value
-  const ok = statusFilter.value === 'success'
-  return logs.value.filter((l) => (l.status === 'success') === ok)
-})
 
 const columns = computed<any[]>(() => [
   { title: t('traffic.time'), key: 'timestamp', dataIndex: 'timestamp', width: 190 },
@@ -90,7 +116,7 @@ const columns = computed<any[]>(() => [
 
 onMounted(async () => {
   try {
-    servers.value = await listServers()
+    servers.value = await listAllServers()
   } catch {
     servers.value = []
   }
@@ -98,16 +124,59 @@ onMounted(async () => {
 })
 
 async function load() {
+  loading.value = true
   try {
-    const [logList, trendRes] = await Promise.all([
-      getLogs({ server_id: serverId.value || undefined, limit: 500 }),
+    const [logRes, trendRes] = await Promise.all([
+      getLogs({
+        server_id: logFilters.serverId || undefined,
+        q: logFilters.q.trim() || undefined,
+        status: logFilters.status || undefined,
+        from: logFilters.from || undefined,
+        to: logFilters.to || undefined,
+        page: pagination.current,
+        page_size: pagination.pageSize,
+      }),
       getMetricsTrend('tool', 30),
     ])
-    logs.value = logList
+    logs.value = logRes.items
+    pagination.total = logRes.total
     trendData.value = trendRes.series
+    if (logRes.items.length === 0 && pagination.current > 1 && logRes.total > 0) {
+      pagination.current -= 1
+      await load()
+      return
+    }
   } catch (e) {
     message.error(String(e))
+  } finally {
+    loading.value = false
   }
+}
+
+function onFilterChange() {
+  pagination.current = 1
+  void load()
+}
+
+function onTableChange(p: { current?: number; pageSize?: number }) {
+  if (p.current) pagination.current = p.current
+  if (p.pageSize && p.pageSize !== pagination.pageSize) {
+    pagination.pageSize = p.pageSize
+    pagination.current = 1
+  }
+  void load()
+}
+
+// 时间范围 → RFC3339（含时区偏移），后端转 UTC 做闭区间过滤。
+function onRangeChange(dates: any) {
+  if (dates && dates[0] && dates[1]) {
+    logFilters.from = dates[0].format('YYYY-MM-DDTHH:mm:ssZ')
+    logFilters.to = dates[1].format('YYYY-MM-DDTHH:mm:ssZ')
+  } else {
+    logFilters.from = ''
+    logFilters.to = ''
+  }
+  onFilterChange()
 }
 </script>
 
@@ -131,5 +200,11 @@ async function load() {
   color: var(--mc-ink-2);
   letter-spacing: 0.06em;
   margin-bottom: 4px;
+}
+.range {
+  min-width: 320px;
+}
+.mono {
+  font-family: var(--mc-mono);
 }
 </style>

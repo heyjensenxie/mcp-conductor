@@ -106,12 +106,15 @@ func TestRouteCRUDLifecycle(t *testing.T) {
 	ctrl.handleToggleRoute(rec, tg)
 	_ = decodeEnvelope(t, rec)
 
-	// 列表应只剩 1 条且 enabled。
+	// 列表应只剩 1 条且 enabled（统一分页信封 data.items）。
 	rec = httptest.NewRecorder()
 	ctrl.handleListRoutes(rec, httptest.NewRequest(http.MethodGet, "/api/routes", nil))
-	var list []model.Route
-	if err := json.Unmarshal(decodeEnvelope(t, rec).Data, &list); err != nil || len(list) != 1 || !list[0].Enabled {
-		t.Fatalf("列表异常: %v / %+v", err, list)
+	var list struct {
+		Items []model.Route `json:"items"`
+		Total int           `json:"total"`
+	}
+	if err := json.Unmarshal(decodeEnvelope(t, rec).Data, &list); err != nil || len(list.Items) != 1 || !list.Items[0].Enabled || list.Total != 1 {
+		t.Fatalf("列表异常: %v / %+v", err, list.Items)
 	}
 
 	// 删除。

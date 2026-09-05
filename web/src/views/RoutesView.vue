@@ -12,7 +12,21 @@
     </div>
 
     <a-card :bordered="true">
-      <a-table :data-source="routes" :columns="columns" :pagination="false" :row-key="(r: any) => r.id">
+      <div class="filters">
+        <a-space wrap :size="8">
+          <a-input v-model:value="filters.q" allow-clear :placeholder="t('filter.keyword')" style="width: 220px" @press-enter="onFilterChange">
+            <template #prefix><SearchOutlined /></template>
+          </a-input>
+          <a-select v-model:value="filters.serverId" allow-clear :placeholder="t('filter.serverPlaceholder')" style="width: 200px" @change="onFilterChange">
+            <a-select-option v-for="s in servers" :key="s.id" :value="s.id">{{ s.name }}</a-select-option>
+          </a-select>
+          <a-select v-model:value="filters.enabled" allow-clear :placeholder="t('filter.statusPlaceholder')" style="width: 120px" @change="onFilterChange">
+            <a-select-option value="true">{{ t('filter.enabled') }}</a-select-option>
+            <a-select-option value="false">{{ t('filter.disabled') }}</a-select-option>
+          </a-select>
+        </a-space>
+      </div>
+      <a-table :data-source="routes" :columns="columns" :loading="loading" :pagination="pagination" @change="onTableChange" :row-key="(r: any) => r.id">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'tools'">
             <a-tag v-for="tool in record.tool_names || []" :key="tool" class="tool-tag">{{ tool }}</a-tag>
@@ -64,14 +78,23 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons-vue'
-import { createRoute, deleteRoute, listRoutes, listServers, listTools, toggleRoute, updateRoute } from '@/api'
+import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
+import { createRoute, deleteRoute, listAllServers, listAllTools, listRoutes, toggleRoute, updateRoute } from '@/api'
 import type { MCPServer, Route } from '@/types'
 
 const { t } = useI18n()
 const routes = ref<Route[]>([])
 const servers = ref<MCPServer[]>([])
 const allTools = ref<string[]>([])
+const loading = ref(false)
+const pagination = reactive({
+  current: 1,
+  pageSize: 20,
+  total: 0,
+  showSizeChanger: true,
+  showTotal: (total: number) => t('filter.total', { total }),
+})
+const filters = reactive({ q: '', serverId: '', enabled: '' })
 const dialogVisible = ref(false)
 const saving = ref(false)
 const editingId = ref('')
@@ -89,17 +112,54 @@ const columns = computed<any[]>(() => [
   { title: t('common.actions'), key: 'actions', width: 160 },
 ])
 
-onMounted(load)
-
-async function load() {
+onMounted(async () => {
+  // 弹层选项（servers / 全部工具）全量拉取一次；路由表按需分页。
   try {
-    const [routeList, serverList, toolList] = await Promise.all([listRoutes(), listServers(), listTools()])
-    routes.value = routeList
+    const [serverList, toolList] = await Promise.all([listAllServers(), listAllTools()])
     servers.value = serverList
     allTools.value = toolList.map((tool) => tool.gateway_name)
   } catch (e) {
     message.error(String(e))
   }
+  await load()
+})
+
+async function load() {
+  loading.value = true
+  try {
+    const res = await listRoutes({
+      page: pagination.current,
+      page_size: pagination.pageSize,
+      q: filters.q.trim() || undefined,
+      server_id: filters.serverId || undefined,
+      enabled: filters.enabled === 'true' ? true : filters.enabled === 'false' ? false : undefined,
+    })
+    routes.value = res.items
+    pagination.total = res.total
+    if (res.items.length === 0 && pagination.current > 1 && res.total > 0) {
+      pagination.current -= 1
+      await load()
+      return
+    }
+  } catch (e) {
+    message.error(String(e))
+  } finally {
+    loading.value = false
+  }
+}
+
+function onFilterChange() {
+  pagination.current = 1
+  void load()
+}
+
+function onTableChange(p: { current?: number; pageSize?: number }) {
+  if (p.current) pagination.current = p.current
+  if (p.pageSize && p.pageSize !== pagination.pageSize) {
+    pagination.pageSize = p.pageSize
+    pagination.current = 1
+  }
+  void load()
 }
 
 function openCreate() {
@@ -168,6 +228,9 @@ async function remove(record: Route) {
 <style scoped>
 .toolbar {
   margin-bottom: 16px;
+}
+.filters {
+  margin-bottom: 12px;
 }
 .tool-tag {
   margin-right: 6px;

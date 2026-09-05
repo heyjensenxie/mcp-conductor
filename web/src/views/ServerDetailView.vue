@@ -32,7 +32,20 @@
 
       <!-- Tools -->
       <a-tab-pane :key="'tools'" :tab="t('serverDetail.tools')">
-        <a-table :data-source="tools" :columns="toolColumns" :pagination="false" size="small" :row-key="(r: any) => r.id" />
+        <div class="filters">
+          <a-input v-model:value="toolFilters.q" allow-clear :placeholder="t('filter.keyword')" style="width: 240px" @press-enter="onToolFilter">
+            <template #prefix><SearchOutlined /></template>
+          </a-input>
+        </div>
+        <a-table
+          :data-source="toolRows"
+          :columns="toolColumns"
+          :loading="toolsLoading"
+          :pagination="toolPaging"
+          size="small"
+          :row-key="(r: any) => r.id"
+          @change="onToolTableChange"
+        />
       </a-tab-pane>
 
       <!-- Instances：MVP 单实例承载，预留多实例 -->
@@ -41,7 +54,7 @@
         <a-alert type="info" :message="t('serverDetail.instancesNote')" banner class="mb" />
       </a-tab-pane>
 
-      <!-- Testing：内联工具调用 -->
+      <!-- Testing：内联工具调用（需要全量工具集，独立于分页表） -->
       <a-tab-pane :key="'testing'" :tab="t('serverDetail.testing')">
         <div class="toolbar">
           <a-space>
@@ -57,10 +70,29 @@
       <a-tab-pane :key="'logs'" :tab="t('serverDetail.logs')">
         <div class="toolbar">
           <a-space>
-            <a-button size="small" @click="loadLogs"><template #icon><ReloadOutlined /></template>{{ t('common.refresh') }}</a-button>
+            <a-button size="small" @click="loadLogsPage"><template #icon><ReloadOutlined /></template>{{ t('common.refresh') }}</a-button>
           </a-space>
         </div>
-        <a-table :data-source="logs" :columns="logColumns" :pagination="false" size="small" :row-key="(r: any) => r.request_id" />
+        <div class="filters">
+          <a-space wrap :size="8">
+            <a-input v-model:value="logFilters.q" allow-clear :placeholder="t('filter.keyword')" style="width: 220px" @press-enter="onLogFilter">
+              <template #prefix><SearchOutlined /></template>
+            </a-input>
+            <a-select v-model:value="logFilters.status" allow-clear :placeholder="t('filter.statusPlaceholder')" style="width: 150px" @change="onLogFilter">
+              <a-select-option value="success">{{ t('traffic.statusSuccess') }}</a-select-option>
+              <a-select-option v-for="code in errorStatuses" :key="code" :value="code">{{ code }}</a-select-option>
+            </a-select>
+          </a-space>
+        </div>
+        <a-table
+          :data-source="logs"
+          :columns="logColumns"
+          :loading="logsLoading"
+          :pagination="logPaging"
+          size="small"
+          :row-key="(r: any) => r.request_id"
+          @change="onLogTableChange"
+        />
       </a-tab-pane>
 
       <!-- Configuration：Server 可编辑字段 + 凭证管理 -->
@@ -94,11 +126,32 @@
           <a-col :span="12">
             <a-card :bordered="true" :title="t('serverDetail.credentials')" class="mb">
               <div class="toolbar">
-                <a-button size="small" type="primary" @click="openCredential()">
-                  <template #icon><PlusOutlined /></template>{{ t('serverDetail.newCredential') }}
-                </a-button>
+                <a-space wrap :size="8">
+                  <a-button size="small" type="primary" @click="openCredential()">
+                    <template #icon><PlusOutlined /></template>{{ t('serverDetail.newCredential') }}
+                  </a-button>
+                  <a-input v-model:value="credFilters.q" allow-clear :placeholder="t('filter.keyword')" style="width: 160px" @press-enter="onCredFilter">
+                    <template #prefix><SearchOutlined /></template>
+                  </a-input>
+                  <a-select v-model:value="credFilters.kind" allow-clear :placeholder="t('filter.kindPlaceholder')" style="width: 130px" @change="onCredFilter">
+                    <a-select-option value="api_key">{{ t('serverDetail.kindApiKey') }}</a-select-option>
+                    <a-select-option value="static_token">{{ t('serverDetail.kindStaticToken') }}</a-select-option>
+                  </a-select>
+                  <a-select v-model:value="credFilters.hasValue" allow-clear :placeholder="t('filter.hasValuePlaceholder')" style="width: 130px" @change="onCredFilter">
+                    <a-select-option value="true">{{ t('filter.hasValue') }}</a-select-option>
+                    <a-select-option value="false">{{ t('filter.noValue') }}</a-select-option>
+                  </a-select>
+                </a-space>
               </div>
-              <a-table :data-source="credentials" :columns="credColumns" :pagination="false" size="small" :row-key="(r: any) => r.id">
+              <a-table
+                :data-source="credentials"
+                :columns="credColumns"
+                :loading="credsLoading"
+                :pagination="credPaging"
+                size="small"
+                :row-key="(r: any) => r.id"
+                @change="onCredTableChange"
+              >
                 <template #bodyCell="{ column, record }">
                   <template v-if="column.key === 'has_value'">
                     <a-tag :color="record.has_value ? 'green' : 'default'">
@@ -149,7 +202,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import {
   createCredential,
   deleteCredential,
@@ -157,6 +210,7 @@ import {
   getServer,
   listServerCredentials,
   listServerTools,
+  listServerToolsAll,
   testServer,
   toggleServer,
   updateCredential,
@@ -169,12 +223,25 @@ const { t } = useI18n()
 const route = useRoute()
 const id = computed(() => String(route.params.id))
 const server = ref<MCPServer>()
+// tools = 该 Server 全量工具集（供 Testing 页 ToolInvoker 与 rediscover 后回填）。
 const tools = ref<Tool[]>([])
-const credentials = ref<Credential[]>([])
-const logs = ref<TrafficSample[]>([])
 const loading = ref(false)
 const testing = ref(false)
 const tab = ref('overview')
+
+// 列表错误状态（除 success 外，后端落 status=errs.Code 字符串）。
+const errorStatuses = [
+  'protocol_error',
+  'authentication_error',
+  'authorization_error',
+  'rate_limit_error',
+  'route_error',
+  'upstream_error',
+  'timeout_error',
+  'invalid_argument',
+  'not_found',
+  'internal_error',
+]
 
 const toolColumns = computed<any[]>(() => [
   { title: t('tools.gatewayName'), key: 'gateway_name', dataIndex: 'gateway_name' },
@@ -210,26 +277,176 @@ const credColumns = computed<any[]>(() => [
   { title: t('common.actions'), key: 'actions', width: 150 },
 ])
 
+// ---- Tools tab（分页）----
+const toolRows = ref<Tool[]>([])
+const toolsLoading = ref(false)
+const toolFilters = reactive({ q: '' })
+const toolPaging = reactive({
+  current: 1,
+  pageSize: 20,
+  total: 0,
+  showSizeChanger: true,
+  showTotal: (total: number) => t('filter.total', { total }),
+})
+
+async function loadToolPage() {
+  toolsLoading.value = true
+  try {
+    const res = await listServerTools(id.value, {
+      page: toolPaging.current,
+      page_size: toolPaging.pageSize,
+      q: toolFilters.q.trim() || undefined,
+    })
+    toolRows.value = res.items
+    toolPaging.total = res.total
+    if (res.items.length === 0 && toolPaging.current > 1 && res.total > 0) {
+      toolPaging.current -= 1
+      await loadToolPage()
+      return
+    }
+  } catch (e) {
+    message.error(String(e))
+  } finally {
+    toolsLoading.value = false
+  }
+}
+
+function onToolFilter() {
+  toolPaging.current = 1
+  void loadToolPage()
+}
+
+function onToolTableChange(p: { current?: number; pageSize?: number }) {
+  if (p.current) toolPaging.current = p.current
+  if (p.pageSize && p.pageSize !== toolPaging.pageSize) {
+    toolPaging.pageSize = p.pageSize
+    toolPaging.current = 1
+  }
+  void loadToolPage()
+}
+
+// ---- Logs tab（分页，server 取自路径）----
+const logs = ref<TrafficSample[]>([])
+const logsLoading = ref(false)
+const logFilters = reactive({ q: '', status: '' })
+const logPaging = reactive({
+  current: 1,
+  pageSize: 20,
+  total: 0,
+  showSizeChanger: true,
+  showTotal: (total: number) => t('filter.total', { total }),
+})
+
+async function loadLogsPage() {
+  logsLoading.value = true
+  try {
+    const res = await getLogs({
+      server_id: id.value,
+      page: logPaging.current,
+      page_size: logPaging.pageSize,
+      q: logFilters.q.trim() || undefined,
+      status: logFilters.status || undefined,
+    })
+    logs.value = res.items
+    logPaging.total = res.total
+    if (res.items.length === 0 && logPaging.current > 1 && res.total > 0) {
+      logPaging.current -= 1
+      await loadLogsPage()
+      return
+    }
+  } catch (e) {
+    message.error(String(e))
+  } finally {
+    logsLoading.value = false
+  }
+}
+
+function onLogFilter() {
+  logPaging.current = 1
+  void loadLogsPage()
+}
+
+function onLogTableChange(p: { current?: number; pageSize?: number }) {
+  if (p.current) logPaging.current = p.current
+  if (p.pageSize && p.pageSize !== logPaging.pageSize) {
+    logPaging.pageSize = p.pageSize
+    logPaging.current = 1
+  }
+  void loadLogsPage()
+}
+
+// ---- Configuration：Server 可编辑字段 + 凭证管理（分页）----
+const editForm = reactive<{ description: string; endpoint: string; transport: MCPServer['transport'] }>({
+  description: '',
+  endpoint: '',
+  transport: 'https',
+})
+const savingServer = ref(false)
+
+const credentials = ref<Credential[]>([])
+const credsLoading = ref(false)
+const credFilters = reactive({ q: '', kind: '', hasValue: '' })
+const credPaging = reactive({
+  current: 1,
+  pageSize: 20,
+  total: 0,
+  showSizeChanger: true,
+  showTotal: (total: number) => t('filter.total', { total }),
+})
+
+async function loadCredentialsPage() {
+  credsLoading.value = true
+  try {
+    const res = await listServerCredentials(id.value, {
+      page: credPaging.current,
+      page_size: credPaging.pageSize,
+      q: credFilters.q.trim() || undefined,
+      kind: (credFilters.kind as Credential['kind'] | '') || undefined,
+      has_value: credFilters.hasValue === 'true' ? true : credFilters.hasValue === 'false' ? false : undefined,
+    })
+    credentials.value = res.items
+    credPaging.total = res.total
+    if (res.items.length === 0 && credPaging.current > 1 && res.total > 0) {
+      credPaging.current -= 1
+      await loadCredentialsPage()
+      return
+    }
+  } catch (e) {
+    message.error(String(e))
+  } finally {
+    credsLoading.value = false
+  }
+}
+
+function onCredFilter() {
+  credPaging.current = 1
+  void loadCredentialsPage()
+}
+
+function onCredTableChange(p: { current?: number; pageSize?: number }) {
+  if (p.current) credPaging.current = p.current
+  if (p.pageSize && p.pageSize !== credPaging.pageSize) {
+    credPaging.pageSize = p.pageSize
+    credPaging.current = 1
+  }
+  void loadCredentialsPage()
+}
+
 onMounted(load)
 
 async function load() {
   loading.value = true
   try {
-    const [srv, toolList, credList] = await Promise.all([
-      getServer(id.value),
-      listServerTools(id.value),
-      listServerCredentials(id.value),
-    ])
+    const [srv, fullTools] = await Promise.all([getServer(id.value), listServerToolsAll(id.value)])
     server.value = srv
-    tools.value = toolList
-    credentials.value = credList
+    tools.value = fullTools
     syncEditForm(srv)
-    await loadLogs()
   } catch (e) {
     message.error(String(e))
   } finally {
     loading.value = false
   }
+  await Promise.allSettled([loadToolPage(), loadLogsPage(), loadCredentialsPage()])
 }
 
 async function test() {
@@ -242,12 +459,13 @@ async function test() {
   }
 }
 
-// Testing 页：重新发现并刷新工具。
+// Testing 页：重新发现并刷新工具（全量 + 分页表同步刷新）。
 async function testAndReloadTools() {
   testing.value = true
   try {
     await testServer(id.value)
-    tools.value = await listServerTools(id.value)
+    tools.value = await listServerToolsAll(id.value)
+    await loadToolPage()
     message.success(t('serverDetail.testOk'))
   } catch (e) {
     message.error(`${t('serverDetail.connectFail')}: ${e}`)
@@ -265,22 +483,6 @@ async function toggle() {
     message.error(String(e))
   }
 }
-
-async function loadLogs() {
-  try {
-    logs.value = await getLogs({ server_id: id.value, limit: 100 })
-  } catch (e) {
-    message.error(String(e))
-  }
-}
-
-// ---- Server 可编辑字段（Configuration）----
-const editForm = reactive<{ description: string; endpoint: string; transport: MCPServer['transport'] }>({
-  description: '',
-  endpoint: '',
-  transport: 'https',
-})
-const savingServer = ref(false)
 
 function syncEditForm(srv: MCPServer) {
   editForm.description = srv.description ?? ''
@@ -348,10 +550,11 @@ async function saveCredential() {
       await updateCredential(id.value, credEditId.value, { ...credForm })
     } else {
       await createCredential(id.value, { ...credForm })
+      credPaging.current = 1
     }
     message.success(t('serverDetail.credentialSaved'))
     credVisible.value = false
-    credentials.value = await listServerCredentials(id.value)
+    await loadCredentialsPage()
   } catch (e) {
     message.error(String(e))
   } finally {
@@ -363,7 +566,7 @@ async function removeCredential(record: Credential) {
   try {
     await deleteCredential(id.value, record.id)
     message.success(t('serverDetail.credentialDeleted'))
-    credentials.value = await listServerCredentials(id.value)
+    await loadCredentialsPage()
   } catch (e) {
     message.error(String(e))
   }
@@ -380,6 +583,9 @@ const healthColor = (s?: string) => (s === 'healthy' ? 'green' : s === 'unhealth
   margin-bottom: 16px;
 }
 .toolbar {
+  margin-bottom: 12px;
+}
+.filters {
   margin-bottom: 12px;
 }
 </style>

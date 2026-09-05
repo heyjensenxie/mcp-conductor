@@ -61,7 +61,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { listServers, listServerTools, getLogs, getMetrics, getMetricsTrend } from '@/api'
+import { listAllServers, listServerToolsAll, getLogs, getMetrics, getMetricsTrend } from '@/api'
 import type { MCPServer, TrafficSample, MetricSnapshot, TrendPoint } from '@/types'
 import TopToolsChart, { type ChartDatum } from '@/components/TopToolsChart.vue'
 import TrafficTrend from '@/components/TrafficTrend.vue'
@@ -117,12 +117,13 @@ const dotClass = (s: string) => (s === 'healthy' ? 'mc-dot--ok' : s === 'unhealt
 
 onMounted(async () => {
   try {
-    const [serverList, logList, metricList, trendRes] = await Promise.all([
-      listServers(),
-      getLogs({ limit: 500 }),
+    const [serverList, logRes, metricList, trendRes] = await Promise.all([
+      listAllServers(),
+      getLogs({ page_size: 500 }),
       getMetrics(),
       getMetricsTrend('tool', 30),
     ])
+    const logList = logRes.items // 近 500 条（page_size=500 取整页，非分页浏览）
     servers.value = serverList
     logs.value = logList.slice(0, 100)
     metrics.value = metricList
@@ -131,7 +132,7 @@ onMounted(async () => {
     let toolTotal = 0
     for (const s of serverList) {
       try {
-        const tools = await listServerTools(s.id)
+        const tools = await listServerToolsAll(s.id)
         toolCount.value[s.id] = tools.length
         toolTotal += tools.length
       } catch {

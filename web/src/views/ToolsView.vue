@@ -1,7 +1,21 @@
 <template>
   <a-card :bordered="true">
     <a-alert type="info" show-icon class="hint" :message="t('tools.catalogHint')" />
-    <a-table :data-source="tools" :columns="columns" :loading="loading" :pagination="false" :row-key="(r: any) => r.id">
+    <div class="filters">
+      <a-space wrap :size="8">
+        <a-input v-model:value="filters.q" allow-clear :placeholder="t('filter.keyword')" style="width: 240px" @press-enter="onFilterChange">
+          <template #prefix><SearchOutlined /></template>
+        </a-input>
+        <a-select v-model:value="filters.serverId" allow-clear :placeholder="t('filter.serverPlaceholder')" style="width: 200px" @change="onFilterChange">
+          <a-select-option v-for="s in servers" :key="s.id" :value="s.id">{{ s.name }}</a-select-option>
+        </a-select>
+        <a-select v-model:value="filters.enabled" allow-clear :placeholder="t('filter.statusPlaceholder')" style="width: 120px" @change="onFilterChange">
+          <a-select-option value="true">{{ t('filter.enabled') }}</a-select-option>
+          <a-select-option value="false">{{ t('filter.disabled') }}</a-select-option>
+        </a-select>
+      </a-space>
+    </div>
+    <a-table :data-source="tools" :columns="columns" :loading="loading" :pagination="pagination" @change="onTableChange" :row-key="(r: any) => r.id">
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'gateway_name'">
           <a-space><a-typography-text code>{{ record.gateway_name }}</a-typography-text><a-tag v-if="record.name_overridden" color="blue">{{ t('tools.customized') }}</a-tag></a-space>
@@ -36,13 +50,23 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { listServers, listTools, toggleTool, updateTool } from '@/api'
+import { SearchOutlined } from '@ant-design/icons-vue'
+import { listAllServers, listTools, toggleTool, updateTool } from '@/api'
 import type { MCPServer, Tool } from '@/types'
 
 const { t } = useI18n()
 const tools = ref<Tool[]>([])
 const servers = ref<MCPServer[]>([])
 const loading = ref(false)
+// 服务端分页状态。
+const pagination = reactive({
+  current: 1,
+  pageSize: 20,
+  total: 0,
+  showSizeChanger: true,
+  showTotal: (total: number) => t('filter.total', { total }),
+})
+const filters = reactive({ q: '', serverId: '', enabled: '' })
 const toggling = ref('')
 const editVisible = ref(false)
 const saving = ref(false)
@@ -66,13 +90,52 @@ const canonicalName = computed(() => {
   return `${namespace}.${editing.value?.original_name ?? ''}`
 })
 
-onMounted(load)
+onMounted(async () => {
+  // servers 全量只拉一次：供 server 列与 reset 名解析；表格工具本身按需分页。
+  try {
+    servers.value = await listAllServers()
+  } catch {
+    servers.value = []
+  }
+  await load()
+})
 
 async function load() {
   loading.value = true
-  try { [tools.value, servers.value] = await Promise.all([listTools(), listServers()]) }
-  catch (e) { message.error(String(e)) }
-  finally { loading.value = false }
+  try {
+    const res = await listTools({
+      page: pagination.current,
+      page_size: pagination.pageSize,
+      q: filters.q.trim() || undefined,
+      server_id: filters.serverId || undefined,
+      enabled: filters.enabled === 'true' ? true : filters.enabled === 'false' ? false : undefined,
+    })
+    tools.value = res.items
+    pagination.total = res.total
+    if (res.items.length === 0 && pagination.current > 1 && res.total > 0) {
+      pagination.current -= 1
+      await load()
+      return
+    }
+  } catch (e) {
+    message.error(String(e))
+  } finally {
+    loading.value = false
+  }
+}
+
+function onFilterChange() {
+  pagination.current = 1
+  void load()
+}
+
+function onTableChange(p: { current?: number; pageSize?: number }) {
+  if (p.current) pagination.current = p.current
+  if (p.pageSize && p.pageSize !== pagination.pageSize) {
+    pagination.pageSize = p.pageSize
+    pagination.current = 1
+  }
+  void load()
 }
 
 function openEdit(tool: Tool) {
@@ -114,6 +177,7 @@ async function toggle(record: Tool, enabled: boolean) {
 
 <style scoped>
 .hint { margin-bottom: 16px; }
+.filters { margin-bottom: 12px; }
 .schema { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .reset { padding-left: 0; }
 </style>

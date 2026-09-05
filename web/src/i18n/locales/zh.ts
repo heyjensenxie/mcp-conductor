@@ -19,6 +19,19 @@ export default {
     edit: '编辑',
     updated: '更新时间',
   },
+  // 管理面列表筛选/分页通用文案。
+  filter: {
+    total: '共 {total} 条',
+    keyword: '搜索关键词',
+    enabled: '启用',
+    disabled: '停用',
+    statusPlaceholder: '状态',
+    serverPlaceholder: '选择 Server',
+    kindPlaceholder: '类型',
+    hasValuePlaceholder: '密钥值',
+    hasValue: '已配置',
+    noValue: '未配置',
+  },
   lang: {
     zh: '简体中文',
     en: 'English',

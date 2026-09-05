@@ -331,7 +331,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { ArrowLeftOutlined, CopyOutlined, DeleteOutlined, DownOutlined, InfoCircleOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
-import { getKey, listServers, listTools, rotateKey, updateKey } from '@/api'
+import { getKey, listAllServers, listAllTools, rotateKey, updateKey } from '@/api'
 import type { AccessKey, MCPServer, Tool, ToolGrant } from '@/types'
 
 interface GrantEditor { gw: string; headers: { k: string; v: string }[]; defargs: { k: string; v: string }[] }
@@ -527,8 +527,8 @@ async function load() {
   try {
     const [loadedKey, allTools, allServers] = await Promise.all([
       getKey(String(route.params.id)),
-      listTools(),
-      listServers(),
+      listAllTools(),
+      listAllServers(),
     ])
     key.value = loadedKey
     tools.value = allTools

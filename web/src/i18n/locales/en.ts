@@ -19,6 +19,19 @@ export default {
     edit: 'Edit',
     updated: 'Updated',
   },
+  // Management-list filter / pagination labels.
+  filter: {
+    total: 'Total {total}',
+    keyword: 'Search keywords',
+    enabled: 'Enabled',
+    disabled: 'Disabled',
+    statusPlaceholder: 'Status',
+    serverPlaceholder: 'Server',
+    kindPlaceholder: 'Type',
+    hasValuePlaceholder: 'Value',
+    hasValue: 'Configured',
+    noValue: 'Not configured',
+  },
   lang: {
     zh: '简体中文',
     en: 'English',

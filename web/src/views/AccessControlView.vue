@@ -9,8 +9,19 @@
           <a-button type="primary" size="large" @click="openCreate"><template #icon><PlusOutlined /></template>{{ t('access.newKey') }}</a-button>
         </section>
         <a-alert v-if="authRequired === false" type="warning" show-icon class="mb" :message="t('access.authDisabled')" :description="t('access.authDisabledDesc')" />
-        <a-empty v-if="!keysLoading && keys.length === 0" :description="t('access.noKeysDesc')" />
-        <a-table v-else :data-source="keys" :columns="keyColumns" :loading="keysLoading" :pagination="false" :row-key="(r: AccessKey) => r.id">
+        <div class="filters">
+          <a-space wrap :size="8">
+            <a-input v-model:value="filters.q" allow-clear :placeholder="t('filter.keyword')" style="width: 240px" @press-enter="onFilterChange">
+              <template #prefix><SearchOutlined /></template>
+            </a-input>
+            <a-select v-model:value="filters.enabled" allow-clear :placeholder="t('filter.statusPlaceholder')" style="width: 120px" @change="onFilterChange">
+              <a-select-option value="true">{{ t('filter.enabled') }}</a-select-option>
+              <a-select-option value="false">{{ t('filter.disabled') }}</a-select-option>
+            </a-select>
+          </a-space>
+        </div>
+        <a-empty v-if="!keysLoading && keys.length === 0 && pagination.total === 0" :description="t('access.noKeysDesc')" />
+        <a-table v-else :data-source="keys" :columns="keyColumns" :loading="keysLoading" :pagination="pagination" @change="onTableChange" :row-key="(r: AccessKey) => r.id">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'enabled'"><a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? t('access.active') : t('access.inactive')" /></template>
             <template v-else-if="column.key === 'quota'"><span class="mono">{{ record.qps > 0 ? `${record.qps}/s · ${record.burst}` : t('access.globalQuota') }}</span></template>
@@ -40,7 +51,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { CopyOutlined, PlusOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { createKey, deleteKey, getAuthStatus, listKeys } from '@/api'
 import type { AccessKey } from '@/types'
 
@@ -49,6 +60,14 @@ const router = useRouter()
 const loading = ref(false)
 const keysLoading = ref(false)
 const keys = ref<AccessKey[]>([])
+const pagination = reactive({
+  current: 1,
+  pageSize: 20,
+  total: 0,
+  showSizeChanger: true,
+  showTotal: (total: number) => t('filter.total', { total }),
+})
+const filters = reactive({ q: '', enabled: '' })
 const authRequired = ref<boolean | null>(null)
 const createVisible = ref(false)
 const creating = ref(false)
@@ -70,17 +89,54 @@ function openCreate() { Object.assign(createForm, { name: '', subject: '', qps: 
 function openDetail(id: string) { router.push({ name: 'access-key-detail', params: { id } }) }
 function openCreatedDetail() { secretVisible.value = false; openDetail(createdKeyID.value) }
 
-async function loadKeys() { keysLoading.value = true; try { keys.value = await listKeys() } catch (e) { message.error(String(e)) } finally { keysLoading.value = false } }
+async function loadKeys() {
+  keysLoading.value = true
+  try {
+    const res = await listKeys({
+      page: pagination.current,
+      page_size: pagination.pageSize,
+      q: filters.q.trim() || undefined,
+      enabled: filters.enabled === 'true' ? true : filters.enabled === 'false' ? false : undefined,
+    })
+    keys.value = res.items
+    pagination.total = res.total
+    if (res.items.length === 0 && pagination.current > 1 && res.total > 0) {
+      pagination.current -= 1
+      await loadKeys()
+      return
+    }
+  } catch (e) {
+    message.error(String(e))
+  } finally {
+    keysLoading.value = false
+  }
+}
+
+function onFilterChange() {
+  pagination.current = 1
+  void loadKeys()
+}
+
+function onTableChange(p: { current?: number; pageSize?: number }) {
+  if (p.current) pagination.current = p.current
+  if (p.pageSize && p.pageSize !== pagination.pageSize) {
+    pagination.pageSize = p.pageSize
+    pagination.current = 1
+  }
+  void loadKeys()
+}
+
 async function submitCreate() {
   if (!createForm.name || !createForm.subject) { message.warning(t('access.subjectRequired')); return }
   creating.value = true
   try {
     const key = await createKey({ ...createForm, grants: [] })
     createdSecret.value = key.secret ?? ''; createdKeyID.value = key.id; createVisible.value = false; secretVisible.value = true
+    pagination.current = 1
     await loadKeys()
   } catch (e) { message.error(String(e)) } finally { creating.value = false }
 }
-async function remove(key: AccessKey) { try { await deleteKey(key.id); await loadKeys(); message.success(t('access.deletedOk')) } catch (e) { message.error(String(e)) } }
+async function remove(key: AccessKey) { try { await deleteKey(key.id); pagination.current = 1; await loadKeys(); message.success(t('access.deletedOk')) } catch (e) { message.error(String(e)) } }
 async function copySecret() { try { await navigator.clipboard.writeText(createdSecret.value); message.success(t('access.copied')) } catch { message.warning(t('access.copyFailed')) } }
 
 onMounted(async () => { loading.value = true; try { await Promise.all([loadKeys(), getAuthStatus().then((s) => { authRequired.value = s.auth_required })]) } finally { loading.value = false } })
@@ -92,6 +148,7 @@ onMounted(async () => { loading.value = true; try { await Promise.all([loadKeys(
 .access-hero p { margin: 0; color: #627d98; max-width: 620px; }
 .eyebrow { color: #1677ff !important; font-family: var(--mc-mono); font-size: 11px; letter-spacing: .12em; }
 .mb { margin-bottom: 16px; }
+.filters { margin: 0 0 16px; }
 .secret-row { display: flex; }
 .configure-btn { margin-top: 18px; }
 .mono { font-family: var(--mc-mono); }

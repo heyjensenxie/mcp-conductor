@@ -18,7 +18,7 @@
 import { onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { listServers, listServerTools, testServer } from '@/api'
+import { listAllServers, listServerToolsAll, testServer } from '@/api'
 import type { MCPServer, Tool } from '@/types'
 import ToolInvoker from '@/components/ToolInvoker.vue'
 
@@ -31,7 +31,7 @@ const loadingTools = ref(false)
 
 onMounted(async () => {
   try {
-    servers.value = await listServers()
+    servers.value = await listAllServers()
   } catch (e) {
     message.error(String(e))
   }
@@ -47,7 +47,7 @@ async function connect() {
   loadingTools.value = true
   try {
     await testServer(serverId.value)
-    tools.value = await listServerTools(serverId.value)
+    tools.value = await listServerToolsAll(serverId.value)
     message.success(t('testing.connectedOk'))
   } catch (e) {
     message.error(`${t('testing.connectFail')}: ${e}`)

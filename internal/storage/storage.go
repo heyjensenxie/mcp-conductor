@@ -8,6 +8,7 @@ import (
 	"context"
 
 	"github.com/xmj128/mcp-conductor/internal/model"
+	"github.com/xmj128/mcp-conductor/internal/storage/query"
 )
 
 // ServerStore 管理 MCP Server 元数据。
@@ -73,6 +74,43 @@ type TrafficStore interface {
 	RecentTrafficByServer(ctx context.Context, serverID string, limit int) ([]model.TrafficSample, error)
 }
 
+// ---- 管理面列表查询（分页 + 关键词/字段筛选）----
+//
+// 方法名 Query* 与上文 List* 并存：List* 返回全量，供数据面/内部全量消费
+// （MCP tools/list、健康巡检、路由热路径、改名引用迁移、上游凭证注入等）；
+// Query* 面向控制台管理列表，按 query.X 过滤并分页，返回 (匹配行, 匹配总数)。
+// 排序固定（见各实现与文档），不开放列排序。
+
+// ServerQueryStore 分页查询 Server。
+type ServerQueryStore interface {
+	QueryServers(ctx context.Context, q query.ServerQuery) ([]model.Server, int, error)
+}
+
+// ToolQueryStore 分页查询 Tool（ServerID 过滤复用 /api/servers/{id}/tools）。
+type ToolQueryStore interface {
+	QueryTools(ctx context.Context, q query.ToolQuery) ([]model.Tool, int, error)
+}
+
+// RouteQueryStore 分页查询路由。
+type RouteQueryStore interface {
+	QueryRoutes(ctx context.Context, q query.RouteQuery) ([]model.Route, int, error)
+}
+
+// CredentialQueryStore 分页查询单 Server 的凭证元数据。
+type CredentialQueryStore interface {
+	QueryCredentials(ctx context.Context, q query.CredentialQuery) ([]model.Credential, int, error)
+}
+
+// AccessKeyQueryStore 分页查询 API Key。
+type AccessKeyQueryStore interface {
+	QueryAccessKeys(ctx context.Context, q query.AccessKeyQuery) ([]model.AccessKey, int, error)
+}
+
+// TrafficQueryStore 分页查询调用日志。
+type TrafficQueryStore interface {
+	QueryTraffic(ctx context.Context, q query.TrafficQuery) ([]model.TrafficSample, int, error)
+}
+
 // Store 聚合全部实体存储接口，作为组合注入的入口。
 type Store interface {
 	ServerStore
@@ -81,4 +119,10 @@ type Store interface {
 	CredentialStore
 	AccessKeyStore
 	TrafficStore
+	ServerQueryStore
+	ToolQueryStore
+	RouteQueryStore
+	CredentialQueryStore
+	AccessKeyQueryStore
+	TrafficQueryStore
 }

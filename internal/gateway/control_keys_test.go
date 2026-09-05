@@ -68,9 +68,13 @@ func TestKeySecretReturnedOnlyOnCreate(t *testing.T) {
 	if strings.Contains(string(listRaw.Data), secret) {
 		t.Fatalf("list 不得回读明文 secret: %s", listRaw.Data)
 	}
-	var list []model.AccessKey
-	if err := json.Unmarshal(listRaw.Data, &list); err != nil || len(list) != 1 {
-		t.Fatalf("解析 list 失败: %v / %d", err, len(list))
+	// 分页信封：list 数据含 items/total，且不得回读明文 secret。
+	var list struct {
+		Items []model.AccessKey `json:"items"`
+		Total int               `json:"total"`
+	}
+	if err := json.Unmarshal(listRaw.Data, &list); err != nil || len(list.Items) != 1 || list.Total != 1 {
+		t.Fatalf("解析 list 失败: %v / %d / total=%d", err, len(list.Items), list.Total)
 	}
 
 	// get 单个同样不得回读。
