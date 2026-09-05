@@ -11,7 +11,7 @@ SET NAMES utf8mb4;
 CREATE TABLE IF NOT EXISTS servers (
   id            VARCHAR(64)   NOT NULL COMMENT '对外稳定 id（与内存实现一致的字符串）',
   name          VARCHAR(128)  NOT NULL,
-  description   VARCHAR(512)  NULL,
+  description   TEXT          NULL,
   endpoint      VARCHAR(2048) NOT NULL,
   transport     VARCHAR(16)   NOT NULL DEFAULT 'https',
   version       VARCHAR(64)   NULL,
@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS tools (
   server_id     VARCHAR(64)   NOT NULL,
   original_name VARCHAR(128)  NOT NULL,
   gateway_name  VARCHAR(255)  NOT NULL COMMENT 'server_namespace.original_name',
-  description   VARCHAR(512)  NULL,
+  description   TEXT          NULL,
   input_schema  TEXT          NULL COMMENT '输入 Schema JSON 文本，应用层解析',
   risk_level    VARCHAR(32)   NULL,
   enabled       TINYINT(1)    NOT NULL DEFAULT 1,

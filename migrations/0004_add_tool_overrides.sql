@@ -5,7 +5,7 @@
 SET NAMES utf8mb4;
 
 SET @has_col = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE table_schema=DATABASE() AND table_name='tools' AND column_name='source_description');
-SET @sql = IF(@has_col = 0, 'ALTER TABLE tools ADD COLUMN source_description VARCHAR(512) NULL AFTER input_schema', 'SELECT ''source_description exists''');
+SET @sql = IF(@has_col = 0, 'ALTER TABLE tools ADD COLUMN source_description TEXT NULL AFTER input_schema', 'SELECT ''source_description exists''');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @has_col = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE table_schema=DATABASE() AND table_name='tools' AND column_name='source_input_schema');
