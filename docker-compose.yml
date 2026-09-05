@@ -1,33 +1,19 @@
-# MCP Conductor 本地开发编排。
+# MCP Conductor 容器化运行（仅应用本身，不含基础设施）。
 #
-# 后端默认以 memory 模式运行，MySQL 5.7 / Redis 作为可选基础设施随编排启动，
-# 供下一阶段实现 mysql 存储与分布式限流使用。生产数据库目标为 MySQL 5.7+。
+# 不再随编排启动 MySQL / Redis 容器：数据库与 Redis 使用宿主机已有实例。
+# 容器内访问宿主机服务需用 host.docker.internal（Docker 20.10+；extra_hosts
+# 提供 host-gateway 解析，Linux/WSL2/Desktop 均可用）。
+#
+# 连宿主机 MySQL / Redis 的账号密码不要写死在 yml，用环境变量覆盖：
+#   CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME
+#   CONDUCTOR_REDIS_HOST / CONDUCTOR_REDIS_PORT / CONDUCTOR_REDIS_PASSWORD
+# 本机常见账号（示例，非默认密码）：
+#   CONDUCTOR_DB_PASSWORD=123456 docker compose up -d --build
+#
+# 提示：Redis 仅当同时开启限流（CONDUCTOR_RATELIMIT_ENABLED=true）时才会连接
+# 用于分布式 per-key 限流；本机 Redis 若只监听 127.0.0.1，需改为监听所有网卡
+# 才能被容器访问。
 services:
-  mysql:
-    image: mysql:5.7
-    environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: conductor
-      MYSQL_USER: conductor
-      MYSQL_PASSWORD: conductor
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
-    ports:
-      - "${MYSQL_PORT:-3306}:3306"
-    volumes:
-      - mysqldata:/var/lib/mysql
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uconductor -pconductor --silent"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-
   conductor:
     build:
       context: .
@@ -35,23 +21,23 @@ services:
         # 国内构建可改为 https://goproxy.cn,direct
         GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
     ports:
-      - "8080:8080"
+      - "${CONDUCTOR_HTTP_PORT:-8080}:8080"
     environment:
-      CONDUCTOR_DATABASE_DRIVER: ${CONDUCTOR_DATABASE_DRIVER:-memory}
-      CONDUCTOR_DATABASE_DSN: conductor:conductor@tcp(mysql:3306)/conductor?parseTime=true&charset=utf8mb4
-      CONDUCTOR_REDIS_ENABLED: ${CONDUCTOR_REDIS_ENABLED:-false}
-      CONDUCTOR_REDIS_ADDR: redis:6379
+      # 存储：默认连宿主机 MySQL；置 memory 可脱离数据库运行。
+      CONDUCTOR_DATABASE_DRIVER: ${CONDUCTOR_DATABASE_DRIVER:-mysql}
+      CONDUCTOR_DATABASE_DSN: "${CONDUCTOR_DB_USER:-root}:${CONDUCTOR_DB_PASSWORD:-}@tcp(${CONDUCTOR_DB_HOST:-host.docker.internal}:${CONDUCTOR_DB_PORT:-3306})/${CONDUCTOR_DB_NAME:-conductor}?parseTime=true&loc=UTC&charset=utf8mb4"
+      # Redis：仅当 RATELIMIT_ENABLED=true 时用于分布式限流。
+      CONDUCTOR_REDIS_ENABLED: ${CONDUCTOR_REDIS_ENABLED:-true}
+      CONDUCTOR_REDIS_ADDR: "${CONDUCTOR_REDIS_HOST:-host.docker.internal}:${CONDUCTOR_REDIS_PORT:-6379}"
+      CONDUCTOR_REDIS_PASSWORD: ${CONDUCTOR_REDIS_PASSWORD:-}
+      CONDUCTOR_RATELIMIT_ENABLED: ${CONDUCTOR_RATELIMIT_ENABLED:-false}
+      CONDUCTOR_RATELIMIT_QPS: ${CONDUCTOR_RATELIMIT_QPS:-100}
       CONDUCTOR_AUTH_ENABLED: ${CONDUCTOR_AUTH_ENABLED:-false}
       CONDUCTOR_AUTH_OPERATOR_TOKEN: ${CONDUCTOR_AUTH_OPERATOR_TOKEN:-}
       CONDUCTOR_AUTH_TOKEN_SECRET: ${CONDUCTOR_AUTH_TOKEN_SECRET:-}
       CONDUCTOR_AUTH_API_KEYS: ${CONDUCTOR_AUTH_API_KEYS:-}
+      CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY: ${CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY:-}
       CONDUCTOR_LOGGING_LEVEL: ${CONDUCTOR_LOGGING_LEVEL:-info}
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
-
-volumes:
-  mysqldata:

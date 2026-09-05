@@ -101,15 +101,18 @@ examples/mock-mcp   # 演示用最小 MCP Server
 - Go ≥ 1.25（后端）、Node ≥ 20（前端构建）、Docker（可选，用于 Compose）。
 - 国内拉取 Go 依赖若直连 `proxy.golang.org` 不通，先设置镜像：`go env -w GOPROXY=https://goproxy.cn,direct`。
 
-### 方式一：Docker 一键
+### 方式一：Docker（仅应用容器，数据库/Redis 用宿主机实例）
+
+Compose 只构建/运行应用本身，**不再启动 MySQL/Redis 容器**——数据库与 Redis 默认连宿主机（容器内经 `host.docker.internal` 访问）。
 
 ```bash
-docker compose up --build
+CONDUCTOR_DB_PASSWORD=<你的本地 MySQL 密码> docker compose up --build
 # Console:  http://localhost:8080
 # MCP 端点: http://localhost:8080/mcp
 ```
 
-> 若宿主 `3306` 已被占用（例如本机跑着 MySQL），用 `MYSQL_PORT=33061 docker compose up --build` 错开端口。
+- 数据库：默认 `mysql`，连宿主机 `host.docker.internal:3306` 的 `conductor` 库（库表需先执行 `migrations/0001..0003`）。账号可用 `CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME` 覆盖；`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。
+- Redis：仅当同时开启 `CONDUCTOR_REDIS_ENABLED=true` 与 `CONDUCTOR_RATELIMIT_ENABLED=true` 时才用于分布式 per-key 限流，默认关闭（本机 Redis 若只监听 `127.0.0.1` 需放开监听才能被容器访问）。
 
 ### 方式二：一键构建（带真实 Console 的单二进制，推荐）
 
