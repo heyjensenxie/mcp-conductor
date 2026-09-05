@@ -38,11 +38,12 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | 健康检查（initialize 握手 + 周期巡检） | ✅ |
 | 路由解析 + Round Robin 负载均衡（健康感知） | ✅ |
 | Tool/Route/Policy 管理闭环 + Route 覆盖转发 | ✅ Tool 启停；Route/Policy 编辑·启停·删除；启用 Route 命中 `tool_names` 时把该工具调用目标 Server 覆盖为 route 指向的 Server（恒等即原样；目标不可调用返回 `route_error`） |
-| 认证（数据面 API Key + 控制面管理令牌） | ✅ API Key 密钥 HMAC-SHA256 哈希落库、明文仅创建时一次性下发、限于 /mcp 白名单；控制面 /api 用静态 `operator_token`（数据面凭据不可访问控制面）；默认关闭 |
+| 鉴权（默认开启） | ✅ Console 用管理员账号（`admin`/`admin_password`）登录换会话；/api 接受会话或 `operator_token`；/mcp 数据面用 API Key（HMAC 哈希落库、按 key×工具白名单），与登录分离 |
 | Gateway→上游 Credential 管理（API Key / Static Token） | ✅ 值 AES-256-GCM 加密落库；经 `json:"-"` 不下发 API、不入日志；按 Server 注入上游请求头 |
 | 按 Key×Tool 白名单授权（跨 Server 聚合） | ✅ 每个 key 只可见/可调被授权工具（支持 `server.*`/`*` 通配）；每工具可配调用参数与请求头；非管理身份回退遗留策略规则 |
 | Memory（令牌桶）/ Redis 限流，支持按 Key 独立配额 | ✅ 默认关闭 |
-| Request Logging + 基础 Metrics（P50/P95/P99） | ✅ 应用层聚合 |
+| Request Logging + 基础 Metrics（P50/P95/P99） | ✅ 应用层聚合；`?scope=server` 按 Server 聚合 |
+| Traffic 调用筛选 + Observability 双维度 | ✅ 日志按 Server/状态筛选（近 500 条）；指标按 Tool/Server 查看 |
 | Vue3 Console（Ant Design Vue + ECharts） | ✅ 构建后嵌入二进制 |
 | MCP Manual Test（Console 内联） | ✅ |
 | Docker / Docker Compose / Makefile | ✅ |
@@ -194,6 +195,8 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 | `GET/POST /api/policies` · `PATCH /api/policies/{id}` · `PATCH /api/policies/{id}/toggle` · `DELETE /api/policies/{id}` | 策略 CRUD / 启停 / 删除 |
 | `GET /api/metrics` | 指标快照（p50/p95/p99、成功率；`?scope=server` 返回按 Server 聚合） |
 | `GET /api/logs` | 最近调用日志（`?server_id=` 过滤、`?limit=` 上限 500） |
+| `POST /api/auth/login` | 管理员账号登录（`admin` + 密码）换 `mc1.` 会话 |
+| `GET /api/auth/status` | 鉴权是否开启（`auth_required`） |
 | `GET /healthz` · `/readyz` | 存活 / 就绪探针 |
 
 ### 错误码
@@ -220,7 +223,8 @@ go run ./cmd/conductor
 | `redis` | enabled / addr / password | `CONDUCTOR_REDIS_ENABLED=false` |
 | `gateway` | upstream_timeout / max_concurrency | `CONDUCTOR_GATEWAY_UPSTREAM_TIMEOUT_MS=10000` |
 | `ratelimit` | enabled / qps / burst | `CONDUCTOR_RATELIMIT_QPS=100` |
-| `auth` | enabled / operator_token / token_secret / api_keys | `CONDUCTOR_AUTH_OPERATOR_TOKEN=<令牌> CONDUCTOR_AUTH_TOKEN_SECRET=<32 位 hex>` |
+| `auth` | enabled / operator_token / token_secret / api_keys | `CONDUCTOR_AUTH_OPERATOR_TOKEN=<程序化令牌> CONDUCTOR_AUTH_TOKEN_SECRET=<32 位 hex>` |
+| `auth` | admin_username / admin_password（Console 登录） | `CONDUCTOR_AUTH_ADMIN_USERNAME=admin CONDUCTOR_AUTH_ADMIN_PASSWORD=<管理员密码>` |
 | `credentials` | encryption_key（AES-256，64 位 hex） | `CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY=<hex>` |
 | `logging` | level / format | `CONDUCTOR_LOGGING_LEVEL=info` |
 | `observability` | record_body / sample_rate | `CONDUCTOR_OBSERVABILITY_SAMPLE_RATE=1.0` |

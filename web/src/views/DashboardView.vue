@@ -142,12 +142,19 @@ onMounted(async () => {
     cards.value[0].value = serverList.length
     cards.value[1].value = healthy
     cards.value[2].value = toolTotal
-    cards.value[3].value = logList.length
+
+    // 请求数 / 成功率与 topTools 同源：取 metrics 工具维累计（口径一致）。
+    const reqSum = metricList.reduce((sum, m) => sum + m.totals, 0)
+    const okSum = metricList.reduce((sum, m) => sum + m.success, 0)
+    cards.value[3].value = reqSum
+    cards.value[4].value = reqSum ? `${Math.round((okSum / reqSum) * 100)}%` : '-'
+
+    // P95 延迟与流量趋势同源：近 500 条调用日志的 P95（注明口径）。
     if (logList.length) {
-      const ok = logList.filter((l) => l.status === 'success').length
-      cards.value[4].value = `${Math.round((ok / logList.length) * 100)}%`
       const lat = logList.map((l) => l.latency_ms).sort((a, b) => a - b)
-      cards.value[5].value = lat[Math.floor(lat.length * 0.95)] ?? 0
+      cards.value[5].value = `${lat[Math.floor(lat.length * 0.95)] ?? 0}ms`
+    } else {
+      cards.value[5].value = '-'
     }
 
     topTools.value = metricList

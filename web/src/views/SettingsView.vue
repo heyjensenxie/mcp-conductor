@@ -1,27 +1,33 @@
 <template>
   <div>
-    <a-card :bordered="true" :title="t('settings.apiCredential')" class="mb">
-      <a-row :gutter="16">
-        <a-col :span="10">
-          <a-input v-model:value="token" type="password" :placeholder="t('settings.apiKeyPlaceholder')" />
-        </a-col>
-        <a-col>
-          <a-button type="primary" @click="save">{{ t('settings.save') }}</a-button>
-        </a-col>
-      </a-row>
+    <a-card :bordered="true" :title="t('settings.sessionCard')" class="mb">
+      <a-alert v-if="authRequired === false" type="info" show-icon :message="t('settings.noAuthInfo')" class="mb" />
+      <div v-else-if="store.token" class="session-row">
+        <a-tag color="green">{{ t('settings.signedIn') }}</a-tag>
+        <a-tag class="mono">{{ userTag }}</a-tag>
+        <a-popconfirm :title="t('auth.confirmLogout')" :ok-text="t('auth.logout')" :cancel-text="t('common.cancel')" @confirm="doLogout">
+          <a-button danger size="small">{{ t('auth.logout') }}</a-button>
+        </a-popconfirm>
+      </div>
+      <div v-else class="session-row">
+        <a-tag>{{ t('settings.notSignedIn') }}</a-tag>
+        <a-button type="primary" size="small" @click="router.push('/login')">{{ t('settings.goLogin') }}</a-button>
+      </div>
     </a-card>
 
-    <a-card v-if="authRequired" :bordered="true" :title="t('settings.loginTitle')" class="mb">
-      <div v-if="!sessionActive" class="login-row">
-        <a-input v-model:value="username" :placeholder="t('settings.username')" style="width: 180px" />
-        <a-input-password v-model:value="password" :placeholder="t('settings.password')" style="width: 240px" @pressEnter="doLogin" />
-        <a-button type="primary" :loading="loggingIn" @click="doLogin">{{ t('settings.loginBtn') }}</a-button>
-        <span class="hint">{{ t('settings.loginHint') }}</span>
-      </div>
-      <a-space v-else>
-        <span>{{ t('settings.sessionActive') }}</span>
-        <a-button danger size="small" @click="doLogout">{{ t('settings.logoutBtn') }}</a-button>
-      </a-space>
+    <a-card :bordered="true" class="mb">
+      <a-collapse :bordered="false">
+        <a-collapse-panel :key="'token'" :header="t('settings.advancedTitle')">
+          <a-row :gutter="16">
+            <a-col :span="14">
+              <a-input v-model:value="token" type="password" :placeholder="t('settings.apiKeyPlaceholder')" />
+            </a-col>
+            <a-col>
+              <a-button type="primary" @click="save">{{ t('settings.save') }}</a-button>
+            </a-col>
+          </a-row>
+        </a-collapse-panel>
+      </a-collapse>
     </a-card>
 
     <a-card :bordered="true" :title="t('settings.about')" class="mb">
@@ -31,7 +37,7 @@
           <code>/mcp</code>（streamable HTTP · tools/list · tools/call）
         </a-descriptions-item>
         <a-descriptions-item :label="t('settings.controlApi')">
-          <code>/api/*</code>（code / message / request_id）
+          <code>/api/*</code>（code / message / request_id；需登录会话或 operator token）
         </a-descriptions-item>
         <a-descriptions-item :label="t('settings.configDesc')">
           config.yaml + CONDUCTOR_*（server / database / redis / gateway / ratelimit / auth / credentials / logging / observability）
@@ -43,29 +49,22 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { getAuthStatus, login } from '@/api'
+import { ensureAuthRequired, invalidateAuthState, isSessionToken } from '@/auth/session'
 import { useAppStore } from '@/stores/app'
 
 const { t } = useI18n()
+const router = useRouter()
 const store = useAppStore()
 const token = ref(store.token)
+const authRequired = ref<boolean | null>(null)
 
-const authRequired = ref(false)
-const loggingIn = ref(false)
-const username = ref('')
-const password = ref('')
-// 会话令牌以 mc1. 前缀标识；sessionActive 时提供登出。
-const sessionActive = computed(() => store.token.startsWith('mc1.'))
+const userTag = computed(() => (isSessionToken(store.token) ? 'session' : 'operator'))
 
 onMounted(async () => {
-  try {
-    const st = await getAuthStatus()
-    authRequired.value = st.auth_required
-  } catch {
-    authRequired.value = false
-  }
+  authRequired.value = await ensureAuthRequired()
 })
 
 function save() {
@@ -73,30 +72,11 @@ function save() {
   message.success(t('settings.savedOk'))
 }
 
-async function doLogin() {
-  if (!password.value.trim()) {
-    message.warning(t('settings.loginPwdRequired'))
-    return
-  }
-  loggingIn.value = true
-  try {
-    const session = await login({ username: username.value.trim(), password: password.value })
-    store.setToken(session.token)
-    token.value = session.token
-    password.value = ''
-    message.success(t('settings.loginOk'))
-  } catch (e) {
-    message.error(String(e))
-  } finally {
-    loggingIn.value = false
-  }
-}
-
-function doLogout() {
-  store.setToken('')
+async function doLogout() {
+  store.clearToken()
   token.value = ''
-  username.value = ''
-  message.success(t('settings.logoutOk'))
+  invalidateAuthState()
+  await router.push('/login')
 }
 </script>
 
@@ -104,18 +84,14 @@ function doLogout() {
 .mb {
   margin-bottom: 16px;
 }
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 code {
   background: #f5f5f5;
   padding: 2px 6px;
   border-radius: 4px;
-}
-.login-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.hint {
-  color: #999;
-  font-size: 12px;
 }
 </style>

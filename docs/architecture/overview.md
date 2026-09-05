@@ -56,6 +56,8 @@ Request
 
 错误分类：`protocol / authentication / authorization / rate_limit / route / upstream / timeout / internal`，对外统一为 `code + message(脱敏) + request_id`。
 
+认证（默认开启）：Console 用管理员账号（`admin`/`admin_password`，未配置首启生成并打印）登录换会话；`/api` 控制面接受会话或 `operator_token`（程序化）；`/mcp` 数据面用 API Key，与登录分离。
+
 ## 3. 数据模型与命名空间
 
 - **Server ≠ Instance**：模型预留未来"一个逻辑 Server 对多个实例"，当前 endpoint 单实例承载。
