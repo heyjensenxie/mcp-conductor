@@ -3,7 +3,7 @@
 
 BIN := bin/mcp-conductor
 
-.PHONY: build run test vet fmt web-install web-dev web-build build-backend build-console dev docker-up docker-down
+.PHONY: build run test vet fmt web-install web-dev web-build build-backend build-console dev docker-up docker-down db-migrate
 
 ## 一键构建（默认：先构建前端，嵌入真实 Console 后产出单二进制）
 ## 前端经 go:embed 打包进二进制；不跑这一步、直接 go build 会得到占位 Console。
@@ -57,9 +57,8 @@ docker-up:
 docker-down:
 	docker compose down
 
-## 应用全部数据库迁移到 Compose 起的 MySQL 5.7（按序执行）
+## 把 migrations/*.sql 按序应用到 MySQL（连宿主机实例，见 docker-compose）
+## 需先提供 DSN：CONDUCTOR_DATABASE_DSN='user:pass@tcp(host:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate
 db-migrate:
-	@for f in migrations/*.sql; do \
-		echo "applying $$f".; \
-		docker compose exec -T mysql mysql -uconductor -pconductor --default-character-set=utf8mb4 conductor < "$$f" || exit 1; \
-	done
+	@test -n "$(CONDUCTOR_DATABASE_DSN)" || (echo "请先设置 CONDUCTOR_DATABASE_DSN（连宿主机 MySQL 的 DSN）后重试"; exit 1)
+	@CONDUCTOR_DATABASE_DSN="$(CONDUCTOR_DATABASE_DSN)" go run ./cmd/migrate

@@ -104,7 +104,8 @@ func (s *Store) UpdateServer(_ context.Context, server *model.Server) error {
 	return nil
 }
 
-// DeleteServer 删除 Server（不级联删除 Tool，由调用方决定）。
+// DeleteServer 删除 Server，并级联清理其凭证（与 MySQL 外键 CASCADE 对齐）；
+// Tool 由调用方（registry）按 DeleteToolsByServer 另行清理。
 func (s *Store) DeleteServer(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -112,6 +113,11 @@ func (s *Store) DeleteServer(_ context.Context, id string) error {
 		return fmt.Errorf("server %q 不存在", id)
 	}
 	delete(s.servers, id)
+	for _, cid := range sortedKeys(s.credentials) {
+		if s.credentials[cid].ServerID == id {
+			delete(s.credentials, cid)
+		}
+	}
 	return nil
 }
 
@@ -281,6 +287,56 @@ func (s *Store) ListCredentialsByServer(_ context.Context, serverID string) ([]m
 	return out, nil
 }
 
+// UpdateCredential 更新凭证元数据；空值字段表示不改动，空 Value 保留原值
+// （含 HasValue 标记），非空 Value 替换并置 HasValue=true。
+func (s *Store) UpdateCredential(_ context.Context, credential *model.Credential) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.credentials[credential.ID]
+	if !ok {
+		return fmt.Errorf("credential %q 不存在", credential.ID)
+	}
+	if credential.Name != "" {
+		existing.Name = credential.Name
+	}
+	if credential.Kind != "" {
+		existing.Kind = credential.Kind
+	}
+	if credential.Header != "" {
+		existing.Header = credential.Header
+	}
+	if credential.Value != "" {
+		existing.Value = credential.Value
+		existing.HasValue = true
+	}
+	existing.UpdatedAt = time.Now().UTC()
+	s.credentials[existing.ID] = existing
+	return nil
+}
+
+// DeleteCredential 删除单个凭证。
+func (s *Store) DeleteCredential(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.credentials[id]; !ok {
+		return fmt.Errorf("credential %q 不存在", id)
+	}
+	delete(s.credentials, id)
+	return nil
+}
+
+// DeleteCredentialsByServer 删除指定 Server 的全部凭证（不存在时视为成功）。
+func (s *Store) DeleteCredentialsByServer(_ context.Context, serverID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range sortedKeys(s.credentials) {
+		if s.credentials[id].ServerID == serverID {
+			delete(s.credentials, id)
+		}
+	}
+	return nil
+}
+
 // ---- AccessKeyStore ----
 
 // CreateAccessKey 新增 API Key；subject 唯一，重复返回冲突错误。
@@ -411,6 +467,22 @@ func (s *Store) RecentTraffic(_ context.Context, limit int) ([]model.TrafficSamp
 	out := make([]model.TrafficSample, 0, limit)
 	for i := len(s.traffic) - 1; i >= 0 && len(out) < limit; i-- {
 		out = append(out, s.traffic[i])
+	}
+	return out, nil
+}
+
+// RecentTrafficByServer 返回指定 Server 最近 limit 条调用采样（按追加倒序）。
+func (s *Store) RecentTrafficByServer(_ context.Context, serverID string, limit int) ([]model.TrafficSample, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 {
+		limit = len(s.traffic)
+	}
+	out := make([]model.TrafficSample, 0, limit)
+	for i := len(s.traffic) - 1; i >= 0 && len(out) < limit; i-- {
+		if s.traffic[i].ServerID == serverID {
+			out = append(out, s.traffic[i])
+		}
 	}
 	return out, nil
 }

@@ -45,6 +45,12 @@
       </a-col>
     </a-row>
 
+    <section class="mc-panel panel row-gap reveal" :style="{ animationDelay: '210ms' }">
+      <header class="panel-head mono">{{ t('dashboard.trafficTrend') }}</header>
+      <TrafficTrend v-if="trendSeries.categories.length" :categories="trendSeries.categories" :totals="trendSeries.totals" :rates="trendSeries.rates" />
+      <a-empty v-else :description="t('dashboard.noTraffic')" />
+    </section>
+
     <section class="mc-panel panel row-gap reveal" :style="{ animationDelay: '240ms' }">
       <header class="panel-head mono">{{ t('dashboard.topTools') }}</header>
       <TopToolsChart :data="topTools" />
@@ -58,11 +64,13 @@ import { useI18n } from 'vue-i18n'
 import { listServers, listServerTools, getLogs, getMetrics } from '@/api'
 import type { MCPServer, TrafficSample, MetricSnapshot } from '@/types'
 import TopToolsChart, { type ChartDatum } from '@/components/TopToolsChart.vue'
+import TrafficTrend from '@/components/TrafficTrend.vue'
 
 const { t } = useI18n()
 
 const servers = ref<MCPServer[]>([])
 const logs = ref<TrafficSample[]>([])
+const trendLogs = ref<TrafficSample[]>([]) // 供流量趋势按分钟聚合（最多 500 条）
 const metrics = ref<MetricSnapshot[]>([])
 const toolCount = ref<Record<string, number>>({})
 const cards = ref([
@@ -75,6 +83,25 @@ const cards = ref([
 ])
 
 const topTools = ref<ChartDatum[]>([])
+
+// trendSeries 把最近调用日志按分钟聚合为折线图数据（按时间升序）。
+const trendSeries = computed(() => {
+  const buckets = new Map<string, { total: number; ok: number }>()
+  for (const l of trendLogs.value) {
+    const minute = (l.timestamp || '').slice(0, 16) // 'YYYY-MM-DDTHH:MM'
+    if (!minute) continue
+    const b = buckets.get(minute) ?? { total: 0, ok: 0 }
+    b.total++
+    if (l.status === 'success') b.ok++
+    buckets.set(minute, b)
+  }
+  const times = [...buckets.keys()].sort()
+  return {
+    categories: times,
+    totals: times.map((k) => buckets.get(k)!.total),
+    rates: times.map((k) => Math.round((buckets.get(k)!.ok / buckets.get(k)!.total) * 100)),
+  }
+})
 
 const logColumns = computed<any[]>(() => [
   { title: t('traffic.tool'), key: 'tool', dataIndex: 'tool' },
@@ -94,9 +121,10 @@ const dotClass = (s: string) => (s === 'healthy' ? 'mc-dot--ok' : s === 'unhealt
 
 onMounted(async () => {
   try {
-    const [serverList, logList, metricList] = await Promise.all([listServers(), getLogs(), getMetrics()])
+    const [serverList, logList, metricList] = await Promise.all([listServers(), getLogs({ limit: 500 }), getMetrics()])
     servers.value = serverList
-    logs.value = logList
+    logs.value = logList.slice(0, 100)
+    trendLogs.value = logList
     metrics.value = metricList
 
     let toolTotal = 0

@@ -7,6 +7,7 @@ package mcpclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/xmj128/mcp-conductor/internal/errs"
@@ -33,6 +34,15 @@ func (a *Adapter) WithHeaderFor(fn func(ctx context.Context, server model.Server
 	return a
 }
 
+// codeForError 把底层上游错误归类为统一错误码：超时归 CodeTimeout，
+// 其余归 CodeUpstream（配合网关把超时从上游错误中区分出来）。
+func codeForError(err error) errs.Code {
+	if errs.IsTimeout(err) {
+		return errs.CodeTimeout
+	}
+	return errs.CodeUpstream
+}
+
 // Discover 连接上游、握手并发现工具。
 func (a *Adapter) Discover(ctx context.Context, server model.Server) ([]registry.DiscoveredTool, error) {
 	c, err := a.clientFor(ctx, server, nil)
@@ -40,11 +50,11 @@ func (a *Adapter) Discover(ctx context.Context, server model.Server) ([]registry
 		return nil, err
 	}
 	if _, err := c.Initialize(ctx); err != nil {
-		return nil, errs.Wrap(errs.CodeUpstream, err, "与 Server %q 握手失败", server.Name)
+		return nil, errs.Wrap(codeForError(err), err, "与 Server %q 握手失败", server.Name)
 	}
 	tools, err := c.ListTools(ctx)
 	if err != nil {
-		return nil, errs.Wrap(errs.CodeUpstream, err, "发现 Server %q 工具失败", server.Name)
+		return nil, errs.Wrap(codeForError(err), err, "发现 Server %q 工具失败", server.Name)
 	}
 	out := make([]registry.DiscoveredTool, 0, len(tools))
 	for _, t := range tools {
@@ -67,11 +77,14 @@ func (a *Adapter) Call(ctx context.Context, server model.Server, tool string, ar
 	}
 	result, err := c.CallTool(ctx, tool, arguments)
 	if err != nil {
-		return nil, errs.Wrap(errs.CodeUpstream, err, "调用工具 %q 失败", tool)
+		return nil, errs.Wrap(codeForError(err), err, "调用工具 %q 失败", tool)
 	}
 	if result.IsError {
+		// 上游把工具执行失败以 isError 结果返回：把回显正文放到底层 Err
+		// （客户端 err.Error() 仍可见、便于诊断），对外 Message 保持固定
+		// 短语，避免完整正文写入调用日志错误列（隐私/体积）。
 		text := firstText(result.Content)
-		return nil, errs.New(errs.CodeUpstream, "%s", text)
+		return nil, errs.Wrap(errs.CodeUpstream, errors.New(text), "上游工具执行失败")
 	}
 	contents := make([]registry.CallContent, 0, len(result.Content))
 	for _, block := range result.Content {

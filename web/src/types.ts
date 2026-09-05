@@ -108,3 +108,10 @@ export interface MetricSnapshot {
   p95: number
   p99: number
 }
+
+// 管理登录会话（POST /api/auth/login 响应，明文 token 仅下发一次）。
+export interface Session {
+  token: string
+  subject: string
+  expires_at: string
+}

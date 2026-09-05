@@ -22,9 +22,10 @@
 │   ├── router           # 工具名→(Server,实例) 解析
 │   ├── balancer         # 负载均衡接口 + RoundRobin（健康感知）
 │   ├── ratelimit        # Limiter 接口 + memory(令牌桶)/redis(固定窗口)
-│   ├── auth             # 静态 API Key 认证
-│   ├── policy           # Tool 级 RBAC 裁定（支持通配、首条匹配生效）
-│   ├── health           # 周期健康巡检
+│   ├── auth             # 认证：控制面 operator_token/登录会话、数据面 API Key
+│   ├── access           # 按 key×tool 白名单授权 + 调用配置（managed key 模式）
+│   ├── policy           # 遗留 RBAC 裁定（支持通配、首条匹配生效）
+│   ├── health           # 周期健康巡检 + 注册/启用即时探活
 │   ├── observability    # 指标聚合(P50/P95/P99) + 调用日志(采样/不记敏感体)
 │   ├── console          # 内嵌前端 dist
 │   └── gateway          # HTTP 组装、中间件链、统一 MCP 端点、控制面 REST
@@ -59,7 +60,7 @@ Request
 
 - **Server ≠ Instance**：模型预留未来"一个逻辑 Server 对多个实例"，当前 endpoint 单实例承载。
 - **Tool 对外名**：`gateway_name = <server_namespace>.<original_name>`（如 `university.search_policy`），从根本上规避多 Server 聚合的 Tool Name Collision。
-- **Credential 安全**：区分 Client→Gateway 与 Gateway→Upstream；敏感值不落库明文、不返回前端、不入日志（v0.1 仅登记元数据）。
+- **Credential 安全**：区分 Client→Gateway 与 Gateway→Upstream；敏感值经 AES-256-GCM 加密落库、不返回前端、不入日志，调用时按 Server 解密注入上游请求头（见 database.md）。
 
 ## 4. 观测
 

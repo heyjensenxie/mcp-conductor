@@ -86,6 +86,12 @@ func Run(ctx context.Context) error {
 	}
 	limiter := buildLimiter(cfg)
 
+	// 周期性健康巡检：以 initialize 握手为 Probe，启动时先全量探一遍，
+	// 注册/启用 Server 时可被控制面经 ProbeNow 即时触发单点探活。
+	monitor := health.NewMonitor(store, adapter, 30*time.Second, cfg.Gateway.UpstreamTimeout)
+	monitor.CheckOnce(ctx)
+	go monitor.Run(ctx)
+
 	server := gateway.NewServer(cfg, gateway.Deps{
 		Registry:    registrySvc,
 		MCPService:  mcpGateway,
@@ -97,12 +103,8 @@ func Run(ctx context.Context) error {
 		KeyHash: func(token string) (string, error) {
 			return auth.KeyHash(cfg.Auth.TokenSecret, token)
 		},
+		ProbeNow: monitor.TriggerCheck,
 	})
-
-	// 周期性健康巡检：以 initialize 握手为 Probe，首次立即执行一次。
-	monitor := health.NewMonitor(store, adapter, 30*time.Second, cfg.Gateway.UpstreamTimeout)
-	monitor.CheckOnce(ctx)
-	go monitor.Run(ctx)
 
 	return runWithSignal(ctx, server)
 }
@@ -188,7 +190,7 @@ func credentialHeaders(store storage.CredentialStore) func(context.Context, mode
 }
 
 // buildLimiter 按配置组装限流器：关闭→直通；Redis 可用→分布式限流；
-// 否则退化为进程内内存限流。
+// Redis 不可用→回退进程内内存限流（避免静默全放行），否则默认内存限流。
 func buildLimiter(cfg config.Config) ratelimit.Limiter {
 	if !cfg.RateLimit.Enabled {
 		return ratelimit.AllowAll{}
@@ -199,6 +201,13 @@ func buildLimiter(cfg config.Config) ratelimit.Limiter {
 			Password: cfg.Redis.Password,
 			DB:       cfg.Redis.DB,
 		})
+		// 连接自检：Redis 挂了限流回退单机实现，不因依赖抖动全局放行。
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			slog.Warn("Redis 不可用，限流回退到进程内内存实现", "addr", cfg.Redis.Addr, "error", err)
+			return ratelimit.NewMemoryLimiter(cfg.RateLimit.QPS, cfg.RateLimit.Burst)
+		}
 		return ratelimit.NewRedisLimiter(rdb, cfg.RateLimit.QPS, time.Second)
 	}
 	return ratelimit.NewMemoryLimiter(cfg.RateLimit.QPS, cfg.RateLimit.Burst)
@@ -221,7 +230,7 @@ func runWithSignal(ctx context.Context, server *http.Server) error {
 	}
 }
 
-// setupLogger 按配置设置结构化日志级别与格式。
+// setupLogger 按配置设置结构化日志级别与格式（text 默认；json 供容器/集中采集）。
 func setupLogger(cfg config.LoggingConfig) {
 	var level slog.Level
 	switch cfg.Level {
@@ -234,5 +243,11 @@ func setupLogger(cfg config.LoggingConfig) {
 	default:
 		level = slog.LevelInfo
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
+	var handler slog.Handler
+	if cfg.Format == "json" {
+		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	}
+	slog.SetDefault(slog.New(handler))
 }

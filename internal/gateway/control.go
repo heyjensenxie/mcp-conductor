@@ -1,10 +1,13 @@
 package gateway
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/xmj128/mcp-conductor/internal/errs"
@@ -53,6 +56,9 @@ type Control struct {
 	store    storage.Store
 	metrics  *observability.Metrics
 	keyHash  func(token string) (string, error) // 见 NewControl
+	// probeNow 由 registerControlRoutes 注入：注册/启用 Server 后触发即时健康
+	// 巡检；nil（如单测直接构造）则不触发，交由周期巡检兜底。
+	probeNow func(serverID string)
 }
 
 // NewControl 创建控制面处理器。
@@ -84,12 +90,31 @@ func (c *Control) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
+	// 注册即触发即时健康巡检，让列表健康状态无需等周期巡检。
+	if c.probeNow != nil {
+		c.probeNow(created.ID)
+	}
 	writeEnvelope(w, http.StatusCreated, "ok", "success", RequestIDFrom(r.Context()), created)
 }
 
 // handleGetServer 读取单个 Server。
 func (c *Control) handleGetServer(w http.ResponseWriter, r *http.Request) {
 	server, err := c.registry.GetServer(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), server)
+}
+
+// handleUpdateServer 更新 Server 的可编辑字段（name 不可改，见 registry.UpdateServer）。
+func (c *Control) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
+	var patch registry.UpdateServerPatch
+	if err := decodeBody(r, &patch); err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
+		return
+	}
+	server, err := c.registry.UpdateServer(r.Context(), r.PathValue("id"), patch)
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
@@ -110,6 +135,10 @@ func (c *Control) handleToggleServer(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
+	}
+	// 重新启用后即时探活，避免停留在 Unknown 等待周期巡检。
+	if *body.Enabled && c.probeNow != nil {
+		c.probeNow(server.ID)
 	}
 	writeOK(w, RequestIDFrom(r.Context()), server)
 }
@@ -255,6 +284,105 @@ func (c *Control) handleListCredentials(w http.ResponseWriter, r *http.Request) 
 	writeOK(w, RequestIDFrom(r.Context()), credentials)
 }
 
+// handleUpdateCredential 更新指定 Server 下某个凭证的元数据；空值字段表示
+// 不改动，空 value 保留原凭证值。返回值沿用 json:"-" 不外发明文。
+func (c *Control) handleUpdateCredential(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	credID := r.PathValue("credId")
+
+	existing, err := c.findCredential(r.Context(), serverID, credID)
+	if err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	var input struct {
+		Name   string `json:"name"`
+		Kind   string `json:"kind"`
+		Header string `json:"header"`
+		Value  string `json:"value"`
+	}
+	if err := decodeBody(r, &input); err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
+		return
+	}
+
+	// 合并当前值用于校验（api_key 类型须有注入 header）。
+	merged := *existing
+	if input.Name != "" {
+		merged.Name = input.Name
+	}
+	if input.Kind != "" {
+		merged.Kind = model.CredentialKind(input.Kind)
+	}
+	if input.Header != "" {
+		merged.Header = input.Header
+	}
+	switch merged.Kind {
+	case "", model.CredentialAPIKey, model.CredentialStaticToken:
+	default:
+		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "credential.kind 仅支持 static_token / api_key"))
+		return
+	}
+	if merged.Kind == model.CredentialAPIKey && merged.Header == "" {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "api_key 类型须提供注入 header"))
+		return
+	}
+
+	upd := &model.Credential{ID: credID, ServerID: serverID}
+	if input.Name != "" {
+		upd.Name = input.Name
+	}
+	if input.Kind != "" {
+		upd.Kind = model.CredentialKind(input.Kind)
+	}
+	if input.Header != "" {
+		upd.Header = input.Header
+	}
+	if input.Value != "" {
+		upd.Value = input.Value
+	}
+	if err := c.store.UpdateCredential(r.Context(), upd); err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	fresh, err := c.findCredential(r.Context(), serverID, credID)
+	if err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), fresh)
+}
+
+// handleDeleteCredential 删除指定 Server 下某个凭证（revoke）。
+func (c *Control) handleDeleteCredential(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	credID := r.PathValue("credId")
+	// 归属校验：确保凭证属于该 Server，避免跨 Server 误删。
+	if _, err := c.findCredential(r.Context(), serverID, credID); err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	if err := c.store.DeleteCredential(r.Context(), credID); err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeEnvelope(w, http.StatusNoContent, "ok", "success", RequestIDFrom(r.Context()), nil)
+}
+
+// findCredential 返回指定 Server 下 ID 匹配的凭证；不存在返回 not_found。
+func (c *Control) findCredential(ctx context.Context, serverID, credID string) (*model.Credential, error) {
+	creds, err := c.store.ListCredentialsByServer(ctx, serverID)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeInternal, err, "读取凭证失败")
+	}
+	for i := range creds {
+		if creds[i].ID == credID {
+			return &creds[i], nil
+		}
+	}
+	return nil, errs.New(errs.CodeNotFound, "credential %q 不存在", credID)
+}
+
 // ---- AccessKey ----
 
 // handleListKeys 列出全部 API Key（不含 KeyHash/Secret）。
@@ -391,13 +519,39 @@ func randomHex(n int) string {
 }
 
 // handleMetrics 返回调用指标快照。
+// handleMetrics 返回指标快照。默认不含按 Server 聚合的行（server: 前缀，避免
+// 污染工具维语义）；?scope=server 时只返回 Server 维度行（供 Servers 列表展示）。
 func (c *Control) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	writeOK(w, RequestIDFrom(r.Context()), c.metrics.SnapshotAll())
+	all := c.metrics.SnapshotAll()
+	scope := r.URL.Query().Get("scope")
+	out := make([]observability.Snapshot, 0, len(all))
+	for _, s := range all {
+		isServer := strings.HasPrefix(s.Key, observability.ServerDimPrefix)
+		if (scope == "server") == isServer {
+			out = append(out, s)
+		}
+	}
+	writeOK(w, RequestIDFrom(r.Context()), out)
 }
 
-// handleLogs 返回最近的调用日志（Request Log）。
+// handleLogs 返回最近的调用日志；支持 ?server_id= 过滤与 ?limit=（默认 100，
+// 上限 500）。
 func (c *Control) handleLogs(w http.ResponseWriter, r *http.Request) {
-	logs, err := c.store.RecentTraffic(r.Context(), 100)
+	limit := 100
+	if s := r.URL.Query().Get("limit"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	var (
+		logs []model.TrafficSample
+		err  error
+	)
+	if serverID := r.URL.Query().Get("server_id"); serverID != "" {
+		logs, err = c.store.RecentTrafficByServer(r.Context(), serverID, limit)
+	} else {
+		logs, err = c.store.RecentTraffic(r.Context(), limit)
+	}
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return

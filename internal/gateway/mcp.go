@@ -165,11 +165,11 @@ func (g *MCPGateway) CallTool(ctx context.Context, name string, arguments map[st
 	defer cancel()
 	contents, callErr := g.caller.Call(callCtx, resolved.Server, resolved.Tool.OriginalName, targetArgs, extraHeaders)
 
-	// 7. 观测（无论成败）
+	// 7. 观测（唯一观测点：成功/失败各记一次指标与调用日志）
 	g.record(ctx, resolved, name, identity.Subject, start, callErr)
 
 	if callErr != nil {
-		return g.fail(name, start, callErr)
+		return g.failResult(callErr)
 	}
 
 	content := make([]mcp.ContentBlock, 0, len(contents))
@@ -179,31 +179,51 @@ func (g *MCPGateway) CallTool(ctx context.Context, name string, arguments map[st
 	return &mcp.CallToolResult{Content: content}, nil
 }
 
-// record 写入指标与调用日志；错误状态只使用统一错误码，避免暴露内部细节。
+// record 是 tools/call 的唯一后置观测点：按工具与所属 Server 两个维度记录
+// 指标，并写入调用日志；错误状态只使用统一错误码与脱敏摘要，避免暴露内部
+// 细节或完整敏感体。成功与失败各只记一次（调用方不得再经其它路径重复计数）。
 func (g *MCPGateway) record(ctx context.Context, resolved *router.Resolved, name, subject string, start time.Time, callErr error) {
 	latency := time.Since(start)
 	ok := callErr == nil
 	g.metrics.Record(name, ok, latency)
+	serverID := ""
+	if resolved != nil {
+		serverID = resolved.Server.ID
+		if serverID != "" {
+			g.metrics.Record(observability.ServerDimPrefix+serverID, ok, latency)
+		}
+	}
 
 	status := "success"
 	if !ok {
 		status = string(errs.CodeOf(callErr))
 	}
-	g.recorder.Record(ctx, model.TrafficSample{
+	sample := model.TrafficSample{
 		RequestID: RequestIDFrom(ctx),
 		TraceID:   TraceIDFrom(ctx),
-		ServerID:  resolved.Server.ID,
+		ServerID:  serverID,
 		Tool:      name,
 		Client:    subject,
 		Status:    status,
 		LatencyMS: latency.Milliseconds(),
 		Timestamp: time.Now(),
-	})
+	}
+	if !ok {
+		sample.Error = errs.SafeMessage(callErr)
+	}
+	g.recorder.Record(ctx, sample)
 }
 
-// fail 封装调用失败为 isError 结果，并计入指标。
+// fail 封装"目标尚未解析"阶段的失败为 isError 结果并计入指标（此时无法
+// 写按 Server 维度的调用日志）。目标解析后的失败由 record + failResult 处理。
 func (g *MCPGateway) fail(name string, start time.Time, err error) (*mcp.CallToolResult, error) {
 	g.metrics.Record(name, false, time.Since(start))
+	return g.failResult(err)
+}
+
+// failResult 把错误组装为 isError 结果返回，不重复计数：上游失败场景的
+// 指标与调用日志已由 record 统一记录。
+func (g *MCPGateway) failResult(err error) (*mcp.CallToolResult, error) {
 	return &mcp.CallToolResult{
 		Content: []mcp.ContentBlock{{Type: "text", Text: err.Error()}},
 		IsError: true,

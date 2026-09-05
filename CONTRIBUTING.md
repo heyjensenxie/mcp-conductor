@@ -11,7 +11,7 @@
    - 领域模型优先，不从 Controller+CRUD 开始堆代码。
    - 统一错误模型与结构化日志；**日志禁止输出 Credential 与完整敏感 MCP payload**。
    - 修改后运行 `go vet ./...` 与 `go test ./...`。
-   - 前端：遵循现有 Vue3 + TS + Pinia + Element Plus 结构，保持基础设施管理平台风格。
+   - 前端：遵循现有 Vue3 + TS + Pinia + Ant Design Vue 结构，保持基础设施管理平台风格。
 4. 提交信息清晰，避免无关改动混入。
 
 ## 测试要求

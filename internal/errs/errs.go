@@ -5,8 +5,11 @@
 package errs
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
+	"strings"
 )
 
 // Code 是稳定、可枚举的错误码，对外契约的一部分。
@@ -80,4 +83,45 @@ func CodeOf(err error) Code {
 		return e.Code
 	}
 	return CodeInternal
+}
+
+// IsTimeout 判断错误是否为超时（上游 HTTP 客户端超时、网关 deadline）。
+// 用于把超时统一归类为 CodeTimeout。客户端主动取消（context.Canceled）
+// 不属于超时，避免把"调用方断连"误判为上游超时。
+func IsTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	return false
+}
+
+// maxSafeMessageLen 是写入观测/日志的错误摘要上限（字符数）。
+const maxSafeMessageLen = 256
+
+// SafeMessage 返回适合写入调用日志错误列的错误摘要：取统一错误的对外
+// Message（不含错误码前缀、不含内部根因），折叠空白并按字符截断；
+// 非统一错误返回通用文案，避免把内部细节或完整敏感体泄入观测记录。
+func SafeMessage(err error) string {
+	var e *Error
+	if errors.As(err, &e) {
+		// strings.Fields 折叠连续空白与换行，再按字符数截断。
+		return truncateRunes(strings.Join(strings.Fields(e.Message), " "), maxSafeMessageLen)
+	}
+	return "调用失败"
+}
+
+// truncateRunes 按字符数截断字符串，超长时追加省略号。
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }

@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/xmj128/mcp-conductor/internal/model"
 )
@@ -25,6 +26,98 @@ func TestCredentialValueKeptInMemory(t *testing.T) {
 	}
 	if creds[0].Value != "mem-secret" {
 		t.Fatalf("memory 应保留值，得到 %q", creds[0].Value)
+	}
+}
+
+// TestCredentialLifecycleMemory 验证凭证更新（空值保留原值 / 新值覆盖）与删除。
+func TestCredentialLifecycleMemory(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	server := &model.Server{Name: "S", Endpoint: "http://x", Enabled: true}
+	if err := store.CreateServer(ctx, server); err != nil {
+		t.Fatal(err)
+	}
+	cred := &model.Credential{ServerID: server.ID, Name: "密钥", Kind: model.CredentialAPIKey, Header: "X-Key", Value: "v1"}
+	if err := store.CreateCredential(ctx, cred); err != nil {
+		t.Fatal(err)
+	}
+
+	// 仅改元数据，value 空值应保留原值。
+	if err := store.UpdateCredential(ctx, &model.Credential{ID: cred.ID, ServerID: server.ID, Name: "改名", Kind: model.CredentialStaticToken}); err != nil {
+		t.Fatalf("UpdateCredential(元数据): %v", err)
+	}
+	creds, _ := store.ListCredentialsByServer(ctx, server.ID)
+	if len(creds) != 1 || creds[0].Name != "改名" || creds[0].Kind != model.CredentialStaticToken ||
+		creds[0].Value != "v1" || !creds[0].HasValue {
+		t.Fatalf("更新后回读不一致: %+v", creds)
+	}
+
+	// 换新值。
+	if err := store.UpdateCredential(ctx, &model.Credential{ID: cred.ID, ServerID: server.ID, Value: "v2"}); err != nil {
+		t.Fatalf("UpdateCredential(值): %v", err)
+	}
+	creds, _ = store.ListCredentialsByServer(ctx, server.ID)
+	if len(creds) != 1 || creds[0].Value != "v2" {
+		t.Fatalf("更新值后回读不一致: %+v", creds)
+	}
+
+	// 删除。
+	if err := store.DeleteCredential(ctx, cred.ID); err != nil {
+		t.Fatalf("DeleteCredential: %v", err)
+	}
+	if creds, _ := store.ListCredentialsByServer(ctx, server.ID); len(creds) != 0 {
+		t.Fatalf("删除后应无凭证，得到 %d", len(creds))
+	}
+	if err := store.DeleteCredential(ctx, cred.ID); err == nil {
+		t.Fatal("重复删除应报不存在错误")
+	}
+}
+
+// TestDeleteServerCascadesCredentialsMemory 验证删除 Server 会级联清理凭证。
+func TestDeleteServerCascadesCredentialsMemory(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	server := &model.Server{Name: "S", Endpoint: "http://x", Enabled: true}
+	if err := store.CreateServer(ctx, server); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a", "b"} {
+		if err := store.CreateCredential(ctx, &model.Credential{ServerID: server.ID, Name: name, Kind: model.CredentialStaticToken}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.DeleteServer(ctx, server.ID); err != nil {
+		t.Fatalf("DeleteServer: %v", err)
+	}
+	if creds, _ := store.ListCredentialsByServer(ctx, server.ID); len(creds) != 0 {
+		t.Fatalf("删除 Server 后凭证应被级联清理，得到 %d", len(creds))
+	}
+}
+
+// TestRecentTrafficByServerMemory 验证按 Server 过滤调用日志。
+func TestRecentTrafficByServerMemory(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, sid := range []string{"srv-1", "srv-2"} {
+		for range 3 {
+			sample := model.TrafficSample{ServerID: sid, Tool: "t", Status: "success", Timestamp: now}
+			if err := store.AppendTraffic(ctx, sample); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	logs, err := store.RecentTrafficByServer(ctx, "srv-1", 2)
+	if err != nil {
+		t.Fatalf("RecentTrafficByServer: %v", err)
+	}
+	if len(logs) != 2 {
+		t.Fatalf("应返回 2 条 srv-1 日志，得到 %d", len(logs))
+	}
+	for _, l := range logs {
+		if l.ServerID != "srv-1" {
+			t.Fatalf("混入其他 Server 日志: %+v", l)
+		}
 	}
 }
 

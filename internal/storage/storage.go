@@ -46,6 +46,11 @@ type PolicyStore interface {
 type CredentialStore interface {
 	CreateCredential(ctx context.Context, credential *model.Credential) error
 	ListCredentialsByServer(ctx context.Context, serverID string) ([]model.Credential, error)
+	// UpdateCredential 更新凭证元数据；Name/Kind/Header 空值表示不改动。
+	// Value 空值表示保留原凭证值（MySQL 侧不重写密文）；非空则替换并标记 HasValue。
+	UpdateCredential(ctx context.Context, credential *model.Credential) error
+	DeleteCredential(ctx context.Context, id string) error
+	DeleteCredentialsByServer(ctx context.Context, serverID string) error
 }
 
 // AccessKeyStore 管理 API Key 调用方（白名单授权 + 限流配额 + 调用配置）。
@@ -63,6 +68,8 @@ type AccessKeyStore interface {
 type TrafficStore interface {
 	AppendTraffic(ctx context.Context, sample model.TrafficSample) error
 	RecentTraffic(ctx context.Context, limit int) ([]model.TrafficSample, error)
+	// RecentTrafficByServer 返回指定 Server 最近 limit 条调用采样（按写入倒序）。
+	RecentTrafficByServer(ctx context.Context, serverID string, limit int) ([]model.TrafficSample, error)
 }
 
 // Store 聚合全部实体存储接口，作为组合注入的入口。

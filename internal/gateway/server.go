@@ -28,6 +28,9 @@ type Deps struct {
 	RateLimiter ratelimit.Limiter
 	// KeyHash 把 API Key 明文映射为落库哈希（源自 auth.token_secret）。
 	KeyHash func(token string) (string, error)
+	// ProbeNow 非阻塞触发对指定 Server 的即时健康巡检（注册/启用 Server 时
+	// 调用，nil 表示不触发，交由周期巡检兜底）。
+	ProbeNow func(serverID string)
 }
 
 // NewServer 组装 HTTP 服务器：统一 MCP 端点 + 控制面 REST API + 健康探针，
@@ -67,16 +70,21 @@ func NewServer(cfg config.Config, deps Deps) *http.Server {
 // registerControlRoutes 注册控制面 REST 路由（供 Vue3 Console 使用）。
 func registerControlRoutes(mux *http.ServeMux, deps Deps) {
 	control := NewControl(deps.Registry, deps.Store, deps.Metrics, deps.KeyHash)
+	// 注册/启用 Server 后即时触发健康巡检（nil 安全，测试可不注入）。
+	control.probeNow = deps.ProbeNow
 
 	mux.HandleFunc("GET /api/servers", control.handleListServers)
 	mux.HandleFunc("POST /api/servers", control.handleCreateServer)
 	mux.HandleFunc("GET /api/servers/{id}", control.handleGetServer)
+	mux.HandleFunc("PATCH /api/servers/{id}", control.handleUpdateServer)
 	mux.HandleFunc("PATCH /api/servers/{id}/toggle", control.handleToggleServer)
 	mux.HandleFunc("DELETE /api/servers/{id}", control.handleDeleteServer)
 	mux.HandleFunc("POST /api/servers/{id}/test", control.handleTestServer)
 	mux.HandleFunc("GET /api/servers/{id}/tools", control.handleListServerTools)
 	mux.HandleFunc("POST /api/servers/{id}/credentials", control.handleCreateCredential)
 	mux.HandleFunc("GET /api/servers/{id}/credentials", control.handleListCredentials)
+	mux.HandleFunc("PATCH /api/servers/{id}/credentials/{credId}", control.handleUpdateCredential)
+	mux.HandleFunc("DELETE /api/servers/{id}/credentials/{credId}", control.handleDeleteCredential)
 
 	mux.HandleFunc("GET /api/tools", control.handleListTools)
 	mux.HandleFunc("GET /api/routes", control.handleListRoutes)

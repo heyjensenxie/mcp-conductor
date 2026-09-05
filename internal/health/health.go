@@ -20,23 +20,26 @@ type Checker interface {
 	Check(ctx context.Context, server model.Server) (Status, error)
 }
 
-// Monitor 周期巡检全部启用的 Server，并把结果回写存储。
+// Monitor 周期巡检全部启用的 Server，并把结果回写存储；同时支持对单个
+// Server 的非阻塞即时探活（注册/启用 Server 时由控制面触发，避免等待周期）。
 type Monitor struct {
 	store    ServerStatusWriter
 	checker  Checker
 	interval time.Duration
 	timeout  time.Duration
+	req      chan string // 即时巡检请求队列（serverID），满则丢弃
 }
 
 // ServerStatusWriter 是 Monitor 回写健康状态所需的最小存储能力。
 type ServerStatusWriter interface {
 	ListServers(ctx context.Context) ([]model.Server, error)
+	GetServer(ctx context.Context, id string) (*model.Server, error)
 	UpdateServer(ctx context.Context, server *model.Server) error
 }
 
 // NewMonitor 创建周期巡检器。
 func NewMonitor(store ServerStatusWriter, checker Checker, interval, timeout time.Duration) *Monitor {
-	return &Monitor{store: store, checker: checker, interval: interval, timeout: timeout}
+	return &Monitor{store: store, checker: checker, interval: interval, timeout: timeout, req: make(chan string, 16)}
 }
 
 // Run 阻塞执行周期巡检，收到 ctx 取消信号后退出。
@@ -47,15 +50,42 @@ func (m *Monitor) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case id := <-m.req:
+			m.checkServer(ctx, id)
 		case <-ticker.C:
 			m.checkAll(ctx)
 		}
 	}
 }
 
-// CheckOnce 立即对全部启用 Server 执行一次巡检（注册 Server 时调用）。
+// CheckOnce 立即对全部启用 Server 执行一次巡检（启动时调用）。
 func (m *Monitor) CheckOnce(ctx context.Context) {
 	m.checkAll(ctx)
+}
+
+// TriggerCheck 非阻塞请求对指定 Server 立即巡检一次；队列满则丢弃
+//（周期巡检仍会兜底，避免拖慢写路径）。
+func (m *Monitor) TriggerCheck(serverID string) {
+	if serverID == "" {
+		return
+	}
+	select {
+	case m.req <- serverID:
+	default:
+	}
+}
+
+// checkServer 对单个 Server 执行一次巡检；不存在或未启用则跳过。
+func (m *Monitor) checkServer(ctx context.Context, id string) {
+	server, err := m.store.GetServer(ctx, id)
+	if err != nil {
+		slog.Warn("读取 Server 失败，跳过即时巡检", "server", id, "error", err)
+		return
+	}
+	if !server.Enabled || server.HealthStatus == model.ServerStatusDisabled {
+		return
+	}
+	m.check(ctx, *server)
 }
 
 // checkAll 巡检全部启用 Server，失败逐个记录而不中断。

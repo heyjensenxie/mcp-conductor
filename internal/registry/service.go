@@ -42,6 +42,7 @@ type CallContent struct {
 type Stores interface {
 	storage.ServerStore
 	storage.ToolStore
+	storage.CredentialStore
 }
 
 // Service 是控制面对 Server/Tool 的服务门面。
@@ -95,7 +96,9 @@ func (s *Service) ListServers(ctx context.Context) ([]model.Server, error) {
 	return s.stores.ListServers(ctx)
 }
 
-// ToggleServer 启用/禁用 Server；禁用时同步标记健康状态。
+// ToggleServer 启用/禁用 Server；禁用时标记健康状态为 Disabled，
+// 重新启用时复位为 Unknown，让健康巡检能够重新接管探活（否则会停留在
+// Disabled 永远无法恢复）。
 func (s *Service) ToggleServer(ctx context.Context, id string, enabled bool) (*model.Server, error) {
 	server, err := s.stores.GetServer(ctx, id)
 	if err != nil {
@@ -105,6 +108,8 @@ func (s *Service) ToggleServer(ctx context.Context, id string, enabled bool) (*m
 	server.UpdatedAt = time.Now().UTC()
 	if !enabled {
 		server.HealthStatus = model.ServerStatusDisabled
+	} else if server.HealthStatus == model.ServerStatusDisabled {
+		server.HealthStatus = model.ServerStatusUnknown
 	}
 	if err := s.stores.UpdateServer(ctx, server); err != nil {
 		return nil, errs.Wrap(errs.CodeInternal, err, "更新 Server 失败")
@@ -112,7 +117,7 @@ func (s *Service) ToggleServer(ctx context.Context, id string, enabled bool) (*m
 	return server, nil
 }
 
-// DeleteServer 删除 Server 及其聚合的 Tool。
+// DeleteServer 删除 Server 及其聚合的 Tool 与凭证（含上游注入凭据）。
 func (s *Service) DeleteServer(ctx context.Context, id string) error {
 	if _, err := s.stores.GetServer(ctx, id); err != nil {
 		return errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
@@ -120,10 +125,53 @@ func (s *Service) DeleteServer(ctx context.Context, id string) error {
 	if err := s.stores.DeleteToolsByServer(ctx, id); err != nil {
 		return errs.Wrap(errs.CodeInternal, err, "删除 Server 工具失败")
 	}
+	if err := s.stores.DeleteCredentialsByServer(ctx, id); err != nil {
+		return errs.Wrap(errs.CodeInternal, err, "删除 Server 凭证失败")
+	}
 	if err := s.stores.DeleteServer(ctx, id); err != nil {
 		return errs.Wrap(errs.CodeInternal, err, "删除 Server 失败")
 	}
 	return nil
+}
+
+// UpdateServerPatch 是 Server 可编辑字段（name 不可改：改名会重建对外工具
+// 命名空间，涉及删除/重发现，v0.1 不在线支持）。
+type UpdateServerPatch struct {
+	Description *string `json:"description,omitempty"`
+	Endpoint    *string `json:"endpoint,omitempty"`
+	Transport   *string `json:"transport,omitempty"`
+}
+
+// UpdateServer 按补丁更新 Server 的可编辑字段；name/enabled/health 不受影响。
+func (s *Service) UpdateServer(ctx context.Context, id string, patch UpdateServerPatch) (*model.Server, error) {
+	server, err := s.stores.GetServer(ctx, id)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
+	}
+	if patch.Description != nil {
+		server.Description = *patch.Description
+	}
+	if patch.Endpoint != nil {
+		if strings.TrimSpace(*patch.Endpoint) == "" {
+			return nil, errs.New(errs.CodeInvalidArgument, "server.endpoint 不能为空")
+		}
+		server.Endpoint = *patch.Endpoint
+	}
+	if patch.Transport != nil {
+		t := model.Transport(strings.TrimSpace(*patch.Transport))
+		if t == "" {
+			t = model.TransportStreamableHTTP
+		}
+		if t != model.TransportStreamableHTTP && t != model.TransportSSE && t != model.TransportStdio {
+			return nil, errs.New(errs.CodeInvalidArgument, "transport 仅支持 https / sse / stdio")
+		}
+		server.Transport = t
+	}
+	server.UpdatedAt = time.Now().UTC()
+	if err := s.stores.UpdateServer(ctx, server); err != nil {
+		return nil, errs.Wrap(errs.CodeInternal, err, "更新 Server 失败")
+	}
+	return server, nil
 }
 
 // Rediscover 重新发现指定 Server 的工具（测试连接/刷新 Registry 用）。

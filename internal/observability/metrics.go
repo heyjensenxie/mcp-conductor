@@ -14,6 +14,11 @@ import (
 // metricsCap 每个维度保留的最大延迟样本数，防止无限增长。
 const metricsCap = 4096
 
+// ServerDimPrefix 是 metrics 中按 Server 聚合的维度前缀（供 Servers 列表
+// 展示每个 Server 的 Requests / P95）。默认 /metrics 不返回此类行，避免
+// 污染工具维语义；需 ?scope=server 时才单独返回。
+const ServerDimPrefix = "server:"
+
 // metricRow 是单个维度（工具/Server 等）的聚合指标。
 type metricRow struct {
 	Totals  int64

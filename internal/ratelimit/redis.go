@@ -17,6 +17,9 @@ type RedisLimiter struct {
 	window time.Duration
 }
 
+// keyPrefix 限定限流 key 的命名空间，避免与 Redis 中其它用途的 key 冲突。
+const keyPrefix = "rl:"
+
 // NewRedisLimiter 创建 Redis 限流器。
 func NewRedisLimiter(client *redis.Client, rate int, window time.Duration) *RedisLimiter {
 	return &RedisLimiter{client: client, rate: rate, window: window}
@@ -34,12 +37,13 @@ func (r *RedisLimiter) Allow(ctx context.Context, key string, limit Limit) bool 
 	if rate <= 0 {
 		return true
 	}
-	n, err := r.client.Incr(ctx, key).Result()
+	rk := keyPrefix + key
+	n, err := r.client.Incr(ctx, rk).Result()
 	if err != nil {
 		return true
 	}
 	if n == 1 {
-		r.client.Expire(ctx, key, r.window)
+		r.client.Expire(ctx, rk, r.window)
 	}
 	return n <= int64(rate)
 }

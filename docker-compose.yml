@@ -21,13 +21,16 @@ services:
         # 国内构建可改为 https://goproxy.cn,direct
         GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
     ports:
-      - "${CONDUCTOR_HTTP_PORT:-8080}:8080"
+      # host 侧映射用 CONDUCTOR_HTTP_PORT；容器内实际监听读 CONDUCTOR_SERVER_PORT。
+      - "${CONDUCTOR_HTTP_PORT:-8080}:${CONDUCTOR_SERVER_PORT:-8080}"
     environment:
+      # 容器内监听端口（与应用 config 的 server.port 对齐，默认 8080）。
+      CONDUCTOR_SERVER_PORT: ${CONDUCTOR_SERVER_PORT:-8080}
       # 存储：默认连宿主机 MySQL；置 memory 可脱离数据库运行。
       CONDUCTOR_DATABASE_DRIVER: ${CONDUCTOR_DATABASE_DRIVER:-mysql}
       CONDUCTOR_DATABASE_DSN: "${CONDUCTOR_DB_USER:-root}:${CONDUCTOR_DB_PASSWORD:-}@tcp(${CONDUCTOR_DB_HOST:-host.docker.internal}:${CONDUCTOR_DB_PORT:-3306})/${CONDUCTOR_DB_NAME:-conductor}?parseTime=true&loc=UTC&charset=utf8mb4"
-      # Redis：仅当 RATELIMIT_ENABLED=true 时用于分布式限流。
-      CONDUCTOR_REDIS_ENABLED: ${CONDUCTOR_REDIS_ENABLED:-true}
+      # Redis：仅当 RATELIMIT_ENABLED=true 时才被连接用于分布式限流（默认关）。
+      CONDUCTOR_REDIS_ENABLED: ${CONDUCTOR_REDIS_ENABLED:-false}
       CONDUCTOR_REDIS_ADDR: "${CONDUCTOR_REDIS_HOST:-host.docker.internal}:${CONDUCTOR_REDIS_PORT:-6379}"
       CONDUCTOR_REDIS_PASSWORD: ${CONDUCTOR_REDIS_PASSWORD:-}
       CONDUCTOR_RATELIMIT_ENABLED: ${CONDUCTOR_RATELIMIT_ENABLED:-false}

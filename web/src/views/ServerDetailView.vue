@@ -7,46 +7,122 @@
       </template>
     </a-page-header>
 
-    <a-descriptions v-if="server" :column="2" bordered size="small" class="mb">
-      <a-descriptions-item label="ID">{{ server.id }}</a-descriptions-item>
-      <a-descriptions-item :label="t('serverDetail.status')">
-        <a-tag :color="server.enabled ? 'green' : 'default'">{{ server.enabled ? t('servers.enabled') : t('servers.disabled') }}</a-tag>
-      </a-descriptions-item>
-      <a-descriptions-item :label="t('serverDetail.endpoint')">{{ server.endpoint }}</a-descriptions-item>
-      <a-descriptions-item :label="t('serverDetail.transport')">{{ server.transport }}</a-descriptions-item>
-      <a-descriptions-item :label="t('common.description')" :span="2">{{ server.description || '-' }}</a-descriptions-item>
-    </a-descriptions>
+    <a-tabs v-model:activeKey="tab" type="card">
+      <!-- Overview：核心信息 + 快捷操作 -->
+      <a-tab-pane :key="'overview'" :tab="t('serverDetail.tabOverview')">
+        <a-descriptions v-if="server" :column="2" bordered size="small" class="mb">
+          <a-descriptions-item label="ID">{{ server.id }}</a-descriptions-item>
+          <a-descriptions-item :label="t('serverDetail.status')">
+            <a-tag :color="server.enabled ? 'green' : 'default'">{{ server.enabled ? t('servers.enabled') : t('servers.disabled') }}</a-tag>
+          </a-descriptions-item>
+          <a-descriptions-item :label="t('serverDetail.endpoint')">{{ server.endpoint }}</a-descriptions-item>
+          <a-descriptions-item :label="t('serverDetail.transport')">{{ server.transport }}</a-descriptions-item>
+          <a-descriptions-item :label="t('serverDetail.instancesCount')">{{ instanceCount }}</a-descriptions-item>
+          <a-descriptions-item :label="t('common.updated')">{{ server.updated_at }}</a-descriptions-item>
+          <a-descriptions-item :label="t('common.description')" :span="2">{{ server.description || '-' }}</a-descriptions-item>
+        </a-descriptions>
 
-    <a-space class="mb">
-      <a-button @click="test">{{ t('serverDetail.testConnection') }}</a-button>
-      <a-button v-if="server" :danger="server.enabled" @click="toggle">
-        {{ server.enabled ? t('serverDetail.disable') : t('serverDetail.enable') }}
-      </a-button>
-    </a-space>
+        <a-space>
+          <a-button @click="test">{{ t('serverDetail.testConnection') }}</a-button>
+          <a-button v-if="server" :danger="server.enabled" @click="toggle">
+            {{ server.enabled ? t('serverDetail.disable') : t('serverDetail.enable') }}
+          </a-button>
+        </a-space>
+      </a-tab-pane>
 
-    <a-tabs v-model:activeKey="tab">
+      <!-- Tools -->
       <a-tab-pane :key="'tools'" :tab="t('serverDetail.tools')">
         <a-table :data-source="tools" :columns="toolColumns" :pagination="false" size="small" :row-key="(r: any) => r.id" />
       </a-tab-pane>
-      <a-tab-pane :key="'credentials'" :tab="t('serverDetail.credentials')">
+
+      <!-- Instances：MVP 单实例承载，预留多实例 -->
+      <a-tab-pane :key="'instances'" :tab="t('serverDetail.instances')">
+        <a-table :data-source="instanceRows" :columns="instanceColumns" :pagination="false" size="small" :row-key="(r: any) => r.endpoint" />
+        <a-alert type="info" :message="t('serverDetail.instancesNote')" banner class="mb" />
+      </a-tab-pane>
+
+      <!-- Testing：内联工具调用 -->
+      <a-tab-pane :key="'testing'" :tab="t('serverDetail.testing')">
         <div class="toolbar">
-          <a-button size="small" type="primary" @click="openCredential">
-            <template #icon><PlusOutlined /></template>{{ t('serverDetail.newCredential') }}
-          </a-button>
+          <a-space>
+            <a-button size="small" :loading="testing" @click="testAndReloadTools">
+              <template #icon><ReloadOutlined /></template>{{ t('serverDetail.rediscover') }}
+            </a-button>
+          </a-space>
         </div>
-        <a-table :data-source="credentials" :columns="credColumns" :pagination="false" size="small" :row-key="(r: any) => r.id">
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'has_value'">
-              <a-tag :color="record.has_value ? 'green' : 'default'">
-                {{ record.has_value ? t('serverDetail.configured') : t('serverDetail.emptyValue') }}
-              </a-tag>
-            </template>
-          </template>
-        </a-table>
+        <ToolInvoker :tools="tools" />
+      </a-tab-pane>
+
+      <!-- Logs：该 Server 的调用记录 -->
+      <a-tab-pane :key="'logs'" :tab="t('serverDetail.logs')">
+        <div class="toolbar">
+          <a-space>
+            <a-button size="small" @click="loadLogs"><template #icon><ReloadOutlined /></template>{{ t('common.refresh') }}</a-button>
+          </a-space>
+        </div>
+        <a-table :data-source="logs" :columns="logColumns" :pagination="false" size="small" :row-key="(r: any) => r.request_id" />
+      </a-tab-pane>
+
+      <!-- Configuration：Server 可编辑字段 + 凭证管理 -->
+      <a-tab-pane :key="'configuration'" :tab="t('serverDetail.configuration')">
+        <a-row :gutter="16">
+          <a-col :span="12">
+            <a-card :bordered="true" :title="t('serverDetail.configServer')" class="mb">
+              <a-form :label-col="{ span: 6 }" :wrapper-col="{ span: 18 }">
+                <a-form-item :label="t('common.name')">
+                  <a-input :value="server?.name" disabled />
+                </a-form-item>
+                <a-form-item :label="t('common.description')">
+                  <a-textarea v-model:value="editForm.description" :rows="2" />
+                </a-form-item>
+                <a-form-item :label="t('servers.endpoint')">
+                  <a-input v-model:value="editForm.endpoint" />
+                </a-form-item>
+                <a-form-item :label="t('servers.transport')">
+                  <a-select v-model:value="editForm.transport">
+                    <a-select-option value="https">{{ t('servers.transportStreamable') }}</a-select-option>
+                    <a-select-option value="sse">{{ t('servers.transportSSE') }}</a-select-option>
+                    <a-select-option value="stdio">{{ t('servers.transportStdio') }}</a-select-option>
+                  </a-select>
+                </a-form-item>
+                <a-form-item :wrapper-col="{ offset: 6, span: 18 }">
+                  <a-button type="primary" :loading="savingServer" @click="saveServerEdit">{{ t('serverDetail.saveServer') }}</a-button>
+                </a-form-item>
+              </a-form>
+            </a-card>
+          </a-col>
+          <a-col :span="12">
+            <a-card :bordered="true" :title="t('serverDetail.credentials')" class="mb">
+              <div class="toolbar">
+                <a-button size="small" type="primary" @click="openCredential()">
+                  <template #icon><PlusOutlined /></template>{{ t('serverDetail.newCredential') }}
+                </a-button>
+              </div>
+              <a-table :data-source="credentials" :columns="credColumns" :pagination="false" size="small" :row-key="(r: any) => r.id">
+                <template #bodyCell="{ column, record }">
+                  <template v-if="column.key === 'has_value'">
+                    <a-tag :color="record.has_value ? 'green' : 'default'">
+                      {{ record.has_value ? t('serverDetail.configured') : t('serverDetail.emptyValue') }}
+                    </a-tag>
+                  </template>
+                  <template v-else-if="column.key === 'actions'">
+                    <a-space :size="4">
+                      <a-button size="small" @click="openCredential(record)">{{ t('common.edit') }}</a-button>
+                      <a-popconfirm :title="t('serverDetail.confirmDeleteCred')" @confirm="removeCredential(record)">
+                        <a-button size="small" danger>{{ t('common.delete') }}</a-button>
+                      </a-popconfirm>
+                    </a-space>
+                  </template>
+                </template>
+              </a-table>
+            </a-card>
+          </a-col>
+        </a-row>
       </a-tab-pane>
     </a-tabs>
 
-    <a-modal v-model:open="credVisible" :title="t('serverDetail.newCredential')" :ok-text="t('serverDetail.saveCredential')" :cancel-text="t('common.cancel')" :confirm-loading="credSaving" @ok="saveCredential">
+    <!-- 凭证创建/编辑弹窗 -->
+    <a-modal v-model:open="credVisible" :title="credEditId ? t('serverDetail.editCredential') : t('serverDetail.newCredential')" :ok-text="t('serverDetail.saveCredential')" :cancel-text="t('common.cancel')" :confirm-loading="credSaving" @ok="saveCredential">
       <a-form :label-col="{ span: 6 }" :wrapper-col="{ span: 18 }">
         <a-form-item :label="t('serverDetail.credName')" :required="true">
           <a-input v-model:value="credForm.name" :placeholder="t('serverDetail.credNamePlaceholder')" />
@@ -61,7 +137,7 @@
           <a-input v-model:value="credForm.header" :placeholder="t('serverDetail.credHeaderPlaceholder')" />
         </a-form-item>
         <a-form-item :label="t('serverDetail.credValue')">
-          <a-input-password v-model:value="credForm.value" :placeholder="t('serverDetail.credValuePlaceholder')" />
+          <a-input-password v-model:value="credForm.value" :placeholder="credEditId ? t('serverDetail.credValueEditPlaceholder') : t('serverDetail.credValuePlaceholder')" />
         </a-form-item>
       </a-form>
     </a-modal>
@@ -73,9 +149,21 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { PlusOutlined } from '@ant-design/icons-vue'
-import { createCredential, getServer, listServerCredentials, listServerTools, testServer, toggleServer } from '@/api'
-import type { Credential, MCPServer, Tool } from '@/types'
+import { PlusOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import {
+  createCredential,
+  deleteCredential,
+  getLogs,
+  getServer,
+  listServerCredentials,
+  listServerTools,
+  testServer,
+  toggleServer,
+  updateCredential,
+  updateServer,
+} from '@/api'
+import type { Credential, MCPServer, Tool, TrafficSample } from '@/types'
+import ToolInvoker from '@/components/ToolInvoker.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -83,19 +171,43 @@ const id = computed(() => String(route.params.id))
 const server = ref<MCPServer>()
 const tools = ref<Tool[]>([])
 const credentials = ref<Credential[]>([])
+const logs = ref<TrafficSample[]>([])
 const loading = ref(false)
-const tab = ref('tools')
+const testing = ref(false)
+const tab = ref('overview')
 
 const toolColumns = computed<any[]>(() => [
   { title: t('tools.gatewayName'), key: 'gateway_name', dataIndex: 'gateway_name' },
   { title: t('tools.original'), key: 'original_name', dataIndex: 'original_name', width: 150 },
   { title: t('tools.description'), key: 'description', dataIndex: 'description', ellipsis: true },
 ])
+
+// MVP 单实例承载：Instances 页展示该 Server 的"唯一实例"（endpoint）。
+const instanceRows = computed(() =>
+  server.value ? [{ endpoint: server.value.endpoint, transport: server.value.transport, health_status: server.value.health_status }] : [],
+)
+const instanceColumns = computed<any[]>(() => [
+  { title: t('serverDetail.endpoint'), key: 'endpoint', dataIndex: 'endpoint' },
+  { title: t('serverDetail.transport'), key: 'transport', dataIndex: 'transport', width: 120 },
+  { title: t('servers.health'), key: 'health_status', dataIndex: 'health_status', width: 120 },
+])
+const instanceCount = computed(() => (server.value ? 1 : 0))
+
+const logColumns = computed<any[]>(() => [
+  { title: t('traffic.tool'), key: 'tool', dataIndex: 'tool' },
+  { title: t('traffic.status'), key: 'status', dataIndex: 'status', width: 130 },
+  { title: t('traffic.latencyMs'), key: 'latency_ms', dataIndex: 'latency_ms', width: 90 },
+  { title: t('traffic.client'), key: 'client', dataIndex: 'client', width: 110 },
+  { title: t('traffic.error'), key: 'error', dataIndex: 'error', ellipsis: true },
+  { title: t('traffic.time'), key: 'timestamp', dataIndex: 'timestamp', width: 170 },
+])
+
 const credColumns = computed<any[]>(() => [
   { title: t('common.name'), key: 'name', dataIndex: 'name' },
-  { title: t('serverDetail.credKind'), key: 'kind', dataIndex: 'kind', width: 140 },
-  { title: t('serverDetail.credHeader'), key: 'header', dataIndex: 'header', width: 170 },
-  { title: t('serverDetail.valueColumn'), key: 'has_value', width: 100 },
+  { title: t('serverDetail.credKind'), key: 'kind', dataIndex: 'kind', width: 130 },
+  { title: t('serverDetail.credHeader'), key: 'header', dataIndex: 'header', width: 150 },
+  { title: t('serverDetail.valueColumn'), key: 'has_value', width: 90 },
+  { title: t('common.actions'), key: 'actions', width: 150 },
 ])
 
 onMounted(load)
@@ -103,9 +215,16 @@ onMounted(load)
 async function load() {
   loading.value = true
   try {
-    server.value = await getServer(id.value)
-    tools.value = await listServerTools(id.value)
-    credentials.value = await listServerCredentials(id.value)
+    const [srv, toolList, credList] = await Promise.all([
+      getServer(id.value),
+      listServerTools(id.value),
+      listServerCredentials(id.value),
+    ])
+    server.value = srv
+    tools.value = toolList
+    credentials.value = credList
+    syncEditForm(srv)
+    await loadLogs()
   } catch (e) {
     message.error(String(e))
   } finally {
@@ -123,6 +242,20 @@ async function test() {
   }
 }
 
+// Testing 页：重新发现并刷新工具。
+async function testAndReloadTools() {
+  testing.value = true
+  try {
+    await testServer(id.value)
+    tools.value = await listServerTools(id.value)
+    message.success(t('serverDetail.testOk'))
+  } catch (e) {
+    message.error(`${t('serverDetail.connectFail')}: ${e}`)
+  } finally {
+    testing.value = false
+  }
+}
+
 async function toggle() {
   if (!server.value) return
   try {
@@ -133,9 +266,54 @@ async function toggle() {
   }
 }
 
-// ---- Credential 表单 ----
+async function loadLogs() {
+  try {
+    logs.value = await getLogs({ server_id: id.value, limit: 100 })
+  } catch (e) {
+    message.error(String(e))
+  }
+}
+
+// ---- Server 可编辑字段（Configuration）----
+const editForm = reactive<{ description: string; endpoint: string; transport: MCPServer['transport'] }>({
+  description: '',
+  endpoint: '',
+  transport: 'https',
+})
+const savingServer = ref(false)
+
+function syncEditForm(srv: MCPServer) {
+  editForm.description = srv.description ?? ''
+  editForm.endpoint = srv.endpoint
+  editForm.transport = srv.transport
+}
+
+async function saveServerEdit() {
+  if (!editForm.endpoint.trim()) {
+    message.warning(t('servers.fillRequired'))
+    return
+  }
+  savingServer.value = true
+  try {
+    const updated = await updateServer(id.value, {
+      description: editForm.description,
+      endpoint: editForm.endpoint,
+      transport: editForm.transport,
+    })
+    server.value = updated
+    syncEditForm(updated)
+    message.success(t('servers.updatedOk'))
+  } catch (e) {
+    message.error(String(e))
+  } finally {
+    savingServer.value = false
+  }
+}
+
+// ---- Credential 表单（创建/编辑共用；编辑时空 value 表示不改值）----
 const credVisible = ref(false)
 const credSaving = ref(false)
+const credEditId = ref('')
 const credForm = reactive<{ name: string; kind: 'api_key' | 'static_token'; header: string; value: string }>({
   name: '',
   kind: 'api_key',
@@ -143,8 +321,19 @@ const credForm = reactive<{ name: string; kind: 'api_key' | 'static_token'; head
   value: '',
 })
 
-function openCredential() {
-  Object.assign(credForm, { name: '', kind: 'api_key', header: '', value: '' })
+function openCredential(record?: Credential) {
+  if (record) {
+    credEditId.value = record.id
+    Object.assign(credForm, {
+      name: record.name,
+      kind: record.kind,
+      header: record.header ?? '',
+      value: '',
+    })
+  } else {
+    credEditId.value = ''
+    Object.assign(credForm, { name: '', kind: 'api_key', header: '', value: '' })
+  }
   credVisible.value = true
 }
 
@@ -155,14 +344,28 @@ async function saveCredential() {
   }
   credSaving.value = true
   try {
-    await createCredential(id.value, { ...credForm })
+    if (credEditId.value) {
+      await updateCredential(id.value, credEditId.value, { ...credForm })
+    } else {
+      await createCredential(id.value, { ...credForm })
+    }
     message.success(t('serverDetail.credentialSaved'))
     credVisible.value = false
-    await load()
+    credentials.value = await listServerCredentials(id.value)
   } catch (e) {
     message.error(String(e))
   } finally {
     credSaving.value = false
+  }
+}
+
+async function removeCredential(record: Credential) {
+  try {
+    await deleteCredential(id.value, record.id)
+    message.success(t('serverDetail.credentialDeleted'))
+    credentials.value = await listServerCredentials(id.value)
+  } catch (e) {
+    message.error(String(e))
   }
 }
 

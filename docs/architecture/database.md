@@ -35,8 +35,12 @@
 - 迁移文件：`migrations/`（`.sql`，5.7 可执行）
 - MySQL 驱动：`internal/storage/mysql`（已实现，满足 `storage.Store`；DSN 须含 `parseTime=true&loc=UTC&charset=utf8mb4`）
 - 集成测试：`MYSQL_TEST_DSN='...' go test ./internal/storage/mysql/ -v`（未设 DSN 自动跳过；须在真实 MySQL 5.7 上执行迁移后运行）
-- 应用迁移（开发环境，Compose 起的容器）：
-  `docker compose exec -T mysql mysql -uconductor -pconductor --default-character-set=utf8mb4 conductor < migrations/0001_init_schema.sql`（或 `make db-migrate`）
+- 应用迁移（开发环境，连宿主机 MySQL）：迁移文件为可重复执行的 DDL（幂等），执行器不做版本记录表：
+  ```bash
+  CONDUCTOR_DATABASE_DSN='user:pass@tcp(host:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' \
+    go run ./cmd/migrate     # 等价 make db-migrate
+  ```
+  `cmd/migrate` 按文件名序执行 `migrations/*.sql` 并自动补 `multiStatements=true`。
 
 ## 上线检查清单（涉及 SQL 的改动合入前）
 

@@ -239,6 +239,50 @@ func TestCredentialCreateWithoutKeyRejectsValue(t *testing.T) {
 	}
 }
 
+// TestCredentialLifecycleMySQL 验证凭证更新（空值保留原值 / 值覆盖）与删除。
+func TestCredentialLifecycleMySQL(t *testing.T) {
+	store := openTestKeyed(t)
+	ctx := context.Background()
+
+	srv := testServer("凭证生命周期", "http://localhost:9000/mcp")
+	if err := store.CreateServer(ctx, srv); err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+	cred := &model.Credential{ServerID: srv.ID, Name: "密钥", Kind: model.CredentialAPIKey, Header: "X-Key", Value: "v1"}
+	if err := store.CreateCredential(ctx, cred); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+
+	// 仅改元数据，value 空值保留原值。
+	if err := store.UpdateCredential(ctx, &model.Credential{ID: cred.ID, ServerID: srv.ID, Name: "改名", Kind: model.CredentialStaticToken}); err != nil {
+		t.Fatalf("UpdateCredential(元数据): %v", err)
+	}
+	creds, err := store.ListCredentialsByServer(ctx, srv.ID)
+	if err != nil || len(creds) != 1 {
+		t.Fatalf("List: %v / %d", err, len(creds))
+	}
+	if creds[0].Name != "改名" || creds[0].Kind != model.CredentialStaticToken || creds[0].Value != "v1" || !creds[0].HasValue {
+		t.Fatalf("更新后回读不一致: %+v", creds[0])
+	}
+
+	// 换新值并回读（解密）。
+	if err := store.UpdateCredential(ctx, &model.Credential{ID: cred.ID, ServerID: srv.ID, Value: "v2"}); err != nil {
+		t.Fatalf("UpdateCredential(值): %v", err)
+	}
+	creds, err = store.ListCredentialsByServer(ctx, srv.ID)
+	if err != nil || len(creds) != 1 || creds[0].Value != "v2" {
+		t.Fatalf("更新值后回读不一致: %+v / %v", creds, err)
+	}
+
+	// 删除后列表为空。
+	if err := store.DeleteCredential(ctx, cred.ID); err != nil {
+		t.Fatalf("DeleteCredential: %v", err)
+	}
+	if creds, _ := store.ListCredentialsByServer(ctx, srv.ID); len(creds) != 0 {
+		t.Fatalf("删除后应无凭证，得到 %d", len(creds))
+	}
+}
+
 func TestPolicyRulesRoundTrip(t *testing.T) {
 	store := openTest(t)
 	ctx := context.Background()

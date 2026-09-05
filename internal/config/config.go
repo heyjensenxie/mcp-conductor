@@ -193,6 +193,11 @@ func applyEnvOverrides(cfg *Config) {
 	if v := lookupEnv("CONDUCTOR_REDIS_ADDR"); v != "" {
 		cfg.Redis.Addr = v
 	}
+	if v := lookupEnv("CONDUCTOR_REDIS_DB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Redis.DB = n
+		}
+	}
 	if v := lookupEnv("CONDUCTOR_REDIS_PASSWORD"); v != "" {
 		cfg.Redis.Password = v
 	}
@@ -220,9 +225,17 @@ func applyEnvOverrides(cfg *Config) {
 	if v := lookupEnv("CONDUCTOR_LOGGING_LEVEL"); v != "" {
 		cfg.Logging.Level = v
 	}
+	if v := lookupEnv("CONDUCTOR_LOGGING_FORMAT"); v != "" {
+		cfg.Logging.Format = v
+	}
 	if v := lookupEnv("CONDUCTOR_GATEWAY_UPSTREAM_TIMEOUT_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Gateway.UpstreamTimeout = time.Duration(n) * time.Millisecond
+		}
+	}
+	if v := lookupEnv("CONDUCTOR_GATEWAY_MAX_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Gateway.MaxConcurrency = n
 		}
 	}
 	if v := lookupEnv("CONDUCTOR_RATELIMIT_ENABLED"); v != "" {
@@ -231,6 +244,11 @@ func applyEnvOverrides(cfg *Config) {
 	if v := lookupEnv("CONDUCTOR_RATELIMIT_QPS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.RateLimit.QPS = n
+		}
+	}
+	if v := lookupEnv("CONDUCTOR_RATELIMIT_BURST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.RateLimit.Burst = n
 		}
 	}
 	if v := lookupEnv("CONDUCTOR_OBSERVABILITY_RECORD_BODY"); v != "" {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/xmj128/mcp-conductor/internal/model"
 )
@@ -339,6 +341,64 @@ func (s *Store) ListCredentialsByServer(ctx context.Context, serverID string) ([
 	return out, rows.Err()
 }
 
+// UpdateCredential 更新凭证元数据；Name/Kind/Header 空值表示不改动。
+// Value 空值保留原密文与 HasValue；非空时重新加密落库并置 HasValue=1。
+func (s *Store) UpdateCredential(ctx context.Context, credential *model.Credential) error {
+	sets := []string{"updated_at = ?"}
+	args := []any{fmtTimeUTC(time.Now().UTC())}
+	if credential.Name != "" {
+		sets = append(sets, "name = ?")
+		args = append(args, credential.Name)
+	}
+	if credential.Kind != "" {
+		sets = append(sets, "kind = ?")
+		args = append(args, credential.Kind)
+	}
+	if credential.Header != "" {
+		sets = append(sets, "header = ?")
+		args = append(args, credential.Header)
+	}
+	if credential.Value != "" {
+		encrypted, err := encryptValue(s.credCipher, credential.Value)
+		if err != nil {
+			return err
+		}
+		sets = append(sets, "encrypted_value = ?", "has_value = 1")
+		args = append(args, encrypted)
+	}
+	args = append(args, credential.ID, credential.ServerID)
+
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE credentials SET "+strings.Join(sets, ", ")+" WHERE id = ? AND server_id = ?", args...)
+	if err != nil {
+		return fmt.Errorf("update credentials: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("credential %q 不存在", credential.ID)
+	}
+	return nil
+}
+
+// DeleteCredential 删除单个凭证；不存在时返回存在性错误。
+func (s *Store) DeleteCredential(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, "DELETE FROM credentials WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete credentials: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("credential %q 不存在", id)
+	}
+	return nil
+}
+
+// DeleteCredentialsByServer 删除指定 Server 的全部凭证（不存在时视为成功）。
+func (s *Store) DeleteCredentialsByServer(ctx context.Context, serverID string) error {
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM credentials WHERE server_id = ?", serverID); err != nil {
+		return fmt.Errorf("delete credentials by server: %w", err)
+	}
+	return nil
+}
+
 // ---- AccessKeyStore ----
 
 const accessKeyColumns = `id, name, subject, enabled, COALESCE(key_hash,''), qps, burst, created_at, updated_at`
@@ -579,6 +639,29 @@ func (s *Store) RecentTraffic(ctx context.Context, limit int) ([]model.TrafficSa
 		`SELECT request_id, COALESCE(trace_id,''), COALESCE(server_id,''), tool, COALESCE(client,''),
 		        status, latency_ms, COALESCE(error,''), ts
 		 FROM traffic_log ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]model.TrafficSample, 0)
+	for rows.Next() {
+		var sample model.TrafficSample
+		if err := rows.Scan(&sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.Tool,
+			&sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error, &sample.Timestamp); err != nil {
+			return nil, err
+		}
+		out = append(out, sample)
+	}
+	return out, rows.Err()
+}
+
+// RecentTrafficByServer 返回指定 Server 最近 limit 条调用采样（按写入倒序）。
+func (s *Store) RecentTrafficByServer(ctx context.Context, serverID string, limit int) ([]model.TrafficSample, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT request_id, COALESCE(trace_id,''), COALESCE(server_id,''), tool, COALESCE(client,''),
+		        status, latency_ms, COALESCE(error,''), ts
+		 FROM traffic_log WHERE server_id = ? ORDER BY id DESC LIMIT ?`, serverID, limit)
 	if err != nil {
 		return nil, err
 	}

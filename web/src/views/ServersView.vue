@@ -24,8 +24,11 @@
             <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? t('servers.enabled') : t('servers.disabled') }}</a-tag>
           </template>
           <template v-else-if="column.key === 'tools'">{{ toolCount[record.id] ?? 0 }}</template>
+          <template v-else-if="column.key === 'requests'">{{ metricByID[record.id]?.totals ?? '-' }}</template>
+          <template v-else-if="column.key === 'p95'">{{ metricByID[record.id] ? `${metricByID[record.id].p95.toFixed(0)}ms` : '-' }}</template>
           <template v-else-if="column.key === 'actions'">
             <a-space :size="4">
+              <a-button size="small" @click="openEdit(record)">{{ t('servers.edit') }}</a-button>
               <a-button size="small" @click="test(record)">{{ t('servers.test') }}</a-button>
               <a-button size="small" :danger="record.enabled" @click="toggle(record)">
                 {{ record.enabled ? t('servers.disable') : t('servers.enable') }}
@@ -39,10 +42,10 @@
       </a-table>
     </a-card>
 
-    <a-modal v-model:open="dialogVisible" :title="t('servers.dialogTitle')" :confirm-loading="submitting" @ok="submit" :ok-text="t('servers.register')" :cancel-text="t('common.cancel')">
+    <a-modal v-model:open="dialogVisible" :title="editing ? t('servers.editTitle') : t('servers.dialogTitle')" :confirm-loading="submitting" @ok="submit" :ok-text="editing ? t('servers.saveEdit') : t('servers.register')" :cancel-text="t('common.cancel')">
       <a-form :label-col="{ span: 6 }" :wrapper-col="{ span: 18 }">
-        <a-form-item :label="t('common.name')" :required="true">
-          <a-input v-model:value="form.name" placeholder="University MCP" />
+        <a-form-item :label="t('common.name')" :required="!editing">
+          <a-input v-model:value="form.name" :disabled="editing" :placeholder="editing ? t('servers.nameReadonlyHint') : 'University MCP'" />
         </a-form-item>
         <a-form-item :label="t('servers.endpoint')" :required="true">
           <a-input v-model:value="form.endpoint" :placeholder="t('servers.endpointPlaceholder')" />
@@ -58,26 +61,28 @@
           <a-textarea v-model:value="form.description" :rows="2" />
         </a-form-item>
 
-        <a-divider orientation="left" class="auth-divider">{{ t('servers.auth') }}</a-divider>
-        <div v-if="reqHeaders.length" class="auth-rows">
-          <div v-for="(row, i) in reqHeaders" :key="i" class="auth-row">
-            <a-input
-              v-model:value="row.header"
-              :disabled="row.bearer"
-              :placeholder="row.bearer ? 'Authorization' : t('servers.authHeaderPh')"
-              class="auth-header"
-            />
-            <a-checkbox v-model:checked="row.bearer">{{ t('servers.authBearer') }}</a-checkbox>
-            <a-input-password v-model:value="row.value" :placeholder="t('servers.authValuePh')" class="auth-value" />
-            <a-button type="text" size="small" @click="reqHeaders.splice(i, 1)">
-              <template #icon><DeleteOutlined /></template>
-            </a-button>
+        <template v-if="!editing">
+          <a-divider orientation="left" class="auth-divider">{{ t('servers.auth') }}</a-divider>
+          <div v-if="reqHeaders.length" class="auth-rows">
+            <div v-for="(row, i) in reqHeaders" :key="i" class="auth-row">
+              <a-input
+                v-model:value="row.header"
+                :disabled="row.bearer"
+                :placeholder="row.bearer ? 'Authorization' : t('servers.authHeaderPh')"
+                class="auth-header"
+              />
+              <a-checkbox v-model:checked="row.bearer">{{ t('servers.authBearer') }}</a-checkbox>
+              <a-input-password v-model:value="row.value" :placeholder="t('servers.authValuePh')" class="auth-value" />
+              <a-button type="text" size="small" @click="reqHeaders.splice(i, 1)">
+                <template #icon><DeleteOutlined /></template>
+              </a-button>
+            </div>
           </div>
-        </div>
-        <div v-else class="auth-empty">{{ t('servers.authEmpty') }}</div>
-        <a-button type="dashed" block @click="addAuthRow">
-          <template #icon><PlusOutlined /></template>{{ t('servers.authAdd') }}
-        </a-button>
+          <div v-else class="auth-empty">{{ t('servers.authEmpty') }}</div>
+          <a-button type="dashed" block @click="addAuthRow">
+            <template #icon><PlusOutlined /></template>{{ t('servers.authAdd') }}
+          </a-button>
+        </template>
       </a-form>
     </a-modal>
   </div>
@@ -88,8 +93,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { PlusOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons-vue'
-import { createCredential, createServer, deleteServer, listServers, listServerTools, testServer, toggleServer } from '@/api'
-import type { MCPServer, Transport } from '@/types'
+import { createCredential, createServer, deleteServer, getServerMetrics, listServers, listServerTools, testServer, toggleServer, updateServer } from '@/api'
+import type { MCPServer, MetricSnapshot, Transport } from '@/types'
 
 const { t } = useI18n()
 
@@ -113,15 +118,30 @@ interface AuthRow {
   value: string
 }
 const reqHeaders = ref<AuthRow[]>([])
+// 编辑态：true 时同一弹窗承担"编辑 Server 可编辑字段"（name 只读、不配凭证）。
+const editing = ref(false)
+const editingId = ref('')
+// 按 Server 聚合的指标（key = server:<id>），供 Requests / P95 列。
+const serverMetrics = ref<MetricSnapshot[]>([])
+const metricByID = computed<Record<string, MetricSnapshot>>(() => {
+  const m: Record<string, MetricSnapshot> = {}
+  for (const s of serverMetrics.value) {
+    const id = s.key.startsWith('server:') ? s.key.slice('server:'.length) : s.key
+    m[id] = s
+  }
+  return m
+})
 
 const columns = computed<any[]>(() => [
   { title: t('common.name'), key: 'name', dataIndex: 'name' },
   { title: t('servers.endpoint'), key: 'endpoint', dataIndex: 'endpoint', ellipsis: true },
   { title: t('servers.transport'), key: 'transport', dataIndex: 'transport', width: 110 },
   { title: t('servers.tools'), key: 'tools', width: 70 },
+  { title: t('servers.requests'), key: 'requests', width: 90 },
+  { title: t('servers.p95'), key: 'p95', width: 80 },
   { title: t('servers.health'), key: 'health', dataIndex: 'health_status', width: 100 },
   { title: t('common.status'), key: 'enabled', dataIndex: 'enabled', width: 100 },
-  { title: t('common.actions'), key: 'actions', width: 240 },
+  { title: t('common.actions'), key: 'actions', width: 300 },
 ])
 
 onMounted(load)
@@ -137,6 +157,11 @@ async function load() {
         toolCount.value[s.id] = 0
       }
     }
+    try {
+      serverMetrics.value = await getServerMetrics()
+    } catch {
+      serverMetrics.value = []
+    }
   } catch (e) {
     message.error(String(e))
   } finally {
@@ -145,10 +170,24 @@ async function load() {
 }
 
 function openCreate() {
+  editing.value = false
+  editingId.value = ''
   form.name = ''
   form.endpoint = ''
   form.transport = 'https'
   form.description = ''
+  reqHeaders.value = []
+  dialogVisible.value = true
+}
+
+// 编辑：name 不可改（后端会拒绝改名），仅携带可编辑字段。
+function openEdit(row: MCPServer) {
+  editing.value = true
+  editingId.value = row.id
+  form.name = row.name
+  form.endpoint = row.endpoint
+  form.transport = row.transport
+  form.description = row.description ?? ''
   reqHeaders.value = []
   dialogVisible.value = true
 }
@@ -176,6 +215,25 @@ function buildAuthCredentials() {
 async function submit() {
   if (!form.name || !form.endpoint) {
     message.warning(t('servers.fillRequired'))
+    return
+  }
+  submitting.value = true
+  // 编辑态：name 不可改，仅提交可编辑字段。
+  if (editing.value) {
+    try {
+      await updateServer(editingId.value, {
+        description: form.description,
+        endpoint: form.endpoint,
+        transport: form.transport,
+      })
+      message.success(t('servers.updatedOk'))
+      dialogVisible.value = false
+      await load()
+    } catch (e) {
+      message.error(String(e))
+    } finally {
+      submitting.value = false
+    }
     return
   }
   const authRows = buildAuthCredentials()

@@ -70,3 +70,64 @@ func TestToolNameCollisionNamespaced(t *testing.T) {
 		}
 	}
 }
+
+// TestToggleServerEnableResetsHealth 验证禁用后再启用会把健康状态复位为
+// Unknown（而非停留在 Disabled），使健康巡检能重新接管探活。
+func TestToggleServerEnableResetsHealth(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	svc := NewService(store, &fakeDiscoverer{})
+
+	created, err := svc.CreateServer(ctx, &model.Server{Name: "U", Endpoint: "http://a:9000"})
+	if err != nil {
+		t.Fatalf("创建 Server 失败: %v", err)
+	}
+
+	if _, err := svc.ToggleServer(ctx, created.ID, false); err != nil {
+		t.Fatalf("禁用失败: %v", err)
+	}
+	if got, _ := store.GetServer(ctx, created.ID); got.HealthStatus != model.ServerStatusDisabled {
+		t.Fatalf("禁用后应为 disabled，得到 %s", got.HealthStatus)
+	}
+
+	if _, err := svc.ToggleServer(ctx, created.ID, true); err != nil {
+		t.Fatalf("重新启用失败: %v", err)
+	}
+	got, err := store.GetServer(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetServer: %v", err)
+	}
+	if !got.Enabled {
+		t.Fatal("Server 应处于启用状态")
+	}
+	if got.HealthStatus != model.ServerStatusUnknown {
+		t.Fatalf("重新启用后健康状态应复位为 unknown，得到 %s", got.HealthStatus)
+	}
+}
+
+// TestDeleteServerCascadesCredentials 验证删除 Server 会级联清理其凭证。
+func TestDeleteServerCascadesCredentials(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	svc := NewService(store, &fakeDiscoverer{})
+
+	created, err := svc.CreateServer(ctx, &model.Server{Name: "Del", Endpoint: "http://a:9000"})
+	if err != nil {
+		t.Fatalf("创建 Server 失败: %v", err)
+	}
+	for _, name := range []string{"a", "b"} {
+		if err := store.CreateCredential(ctx, &model.Credential{ServerID: created.ID, Name: name, Kind: model.CredentialStaticToken}); err != nil {
+			t.Fatalf("CreateCredential: %v", err)
+		}
+	}
+
+	if err := svc.DeleteServer(ctx, created.ID); err != nil {
+		t.Fatalf("DeleteServer: %v", err)
+	}
+	if creds, _ := store.ListCredentialsByServer(ctx, created.ID); len(creds) != 0 {
+		t.Fatalf("删除 Server 后凭证应被级联清理，得到 %d", len(creds))
+	}
+	if _, err := store.GetServer(ctx, created.ID); err == nil {
+		t.Fatal("删除后 Server 应不存在")
+	}
+}

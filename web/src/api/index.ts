@@ -1,9 +1,13 @@
 import http, { unwrap } from './http'
-import type { AccessKey, Credential, MCPServer, MetricSnapshot, Policy, Route, Tool, ToolGrant, TrafficSample } from '@/types'
+import type { AccessKey, Credential, MCPServer, MetricSnapshot, Policy, Route, Session, Tool, ToolGrant, TrafficSample } from '@/types'
 
 // ---- Auth（免认证端点）----
 
 export const getAuthStatus = () => unwrap<{ auth_required: boolean }>(http.get('/auth/status'))
+
+// 登录换取会话令牌（仅 auth.enabled 且填 operator_token 时可用）。
+export const login = (payload: { username: string; password: string }) =>
+  unwrap<Session>(http.post('/auth/login', payload))
 
 // ---- Servers ----
 
@@ -16,6 +20,12 @@ export const getServer = (id: string) => unwrap<MCPServer>(http.get(`/servers/${
 
 export const toggleServer = (id: string, enabled: boolean) =>
   unwrap<MCPServer>(http.patch(`/servers/${id}/toggle`, { enabled }))
+
+// 更新 Server 可编辑字段（name 不可改，见后端 registry.UpdateServer）。
+export const updateServer = (
+  id: string,
+  payload: Partial<Pick<MCPServer, 'description' | 'endpoint' | 'transport'>>,
+) => unwrap<MCPServer>(http.patch(`/servers/${id}`, payload))
 
 export const deleteServer = (id: string) => unwrap<void>(http.delete(`/servers/${id}`))
 
@@ -30,6 +40,15 @@ export const createCredential = (
   id: string,
   payload: { name: string; kind: 'api_key' | 'static_token'; header: string; value: string },
 ) => unwrap<Credential>(http.post(`/servers/${id}/credentials`, payload))
+
+export const updateCredential = (
+  id: string,
+  credId: string,
+  payload: Partial<{ name: string; kind: 'api_key' | 'static_token'; header: string; value: string }>,
+) => unwrap<Credential>(http.patch(`/servers/${id}/credentials/${credId}`, payload))
+
+export const deleteCredential = (id: string, credId: string) =>
+  unwrap<void>(http.delete(`/servers/${id}/credentials/${credId}`))
 
 // ---- Tools / Routes / Policies ----
 
@@ -62,6 +81,13 @@ export const deleteKey = (id: string) => unwrap<void>(http.delete(`/keys/${id}`)
 
 // ---- Metrics / Logs ----
 
-export const getMetrics = () => unwrap<MetricSnapshot[]>(http.get('/metrics'))
+// getMetrics 读取指标快照；scope='tool'（默认）排除 server: 前缀行，
+// scope='server' 只返回按 Server 聚合的行。
+export const getMetrics = (scope?: 'tool' | 'server') =>
+  unwrap<MetricSnapshot[]>(http.get('/metrics', { params: scope ? { scope } : undefined }))
 
-export const getLogs = () => unwrap<TrafficSample[]>(http.get('/logs'))
+export const getServerMetrics = () => unwrap<MetricSnapshot[]>(http.get('/metrics', { params: { scope: 'server' } }))
+
+// getLogs 读取最近调用日志；可选按 server 过滤与条数限制。
+export const getLogs = (opts?: { server_id?: string; limit?: number }) =>
+  unwrap<TrafficSample[]>(http.get('/logs', { params: opts }))

@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/xmj128/mcp-conductor/internal/errs"
 	"github.com/xmj128/mcp-conductor/internal/model"
 )
 
@@ -158,3 +160,35 @@ func TestAdapter_InjectsCredentialHeaders(t *testing.T) {
 		t.Fatalf("上游应收到注入的凭据 header，得到 %q", gotHeader)
 	}
 }
+
+// TestAdapter_CallTimeoutMapsToCodeTimeout 验证慢上游 + 网关超时被归类为
+// CodeTimeout（而非笼统的 CodeUpstream）。
+func TestAdapter_CallTimeoutMapsToCodeTimeout(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond) // 慢于调用方超时
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":{}}`, string(req.ID))))
+	}))
+	defer upstream.Close()
+
+	adapter := New()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := adapter.Call(ctx, model.Server{
+		Endpoint:  upstream.URL,
+		Transport: model.TransportStreamableHTTP,
+	}, "search", map[string]any{}, nil)
+	if err == nil {
+		t.Fatal("慢上游应返回错误")
+	}
+	if code := errs.CodeOf(err); code != errs.CodeTimeout {
+		t.Fatalf("错误码应归类为 timeout_error，得到 %s", code)
+	}
+}
+

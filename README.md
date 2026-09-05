@@ -75,7 +75,7 @@ internal/
   config            # config.yaml + CONDUCTOR_* 环境变量（分组）
   model             # 领域模型
   errs              # 统一错误模型 code/message/request_id
-  storage           # 存储接口 + memory 实现（mysql 5.7 下一阶段）
+  storage           # 存储接口 + memory/mysql 5.7 双实现（生产 MySQL 5.7+）
   mcp               # MCP 协议最小层（手写 JSON-RPC，streamable HTTP 无状态）
   mcpclient         # 上游 Server 适配：发现 / 调用 / 健康 Probe
   registry          # Server CRUD + Tool 发现 / 命名空间聚合
@@ -111,7 +111,7 @@ CONDUCTOR_DB_PASSWORD=<你的本地 MySQL 密码> docker compose up --build
 # MCP 端点: http://localhost:8080/mcp
 ```
 
-- 数据库：默认 `mysql`，连宿主机 `host.docker.internal:3306` 的 `conductor` 库（库表需先执行 `migrations/0001..0003`）。账号可用 `CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME` 覆盖；`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。
+- 数据库：默认 `mysql`，连宿主机 `host.docker.internal:3306` 的 `conductor` 库（库表需先执行 `migrations/0001..0003`，宿主机已有 MySQL 时用 `CONDUCTOR_DATABASE_DSN='root:***@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate`）。账号可用 `CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME` 覆盖；`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。
 - Redis：仅当同时开启 `CONDUCTOR_REDIS_ENABLED=true` 与 `CONDUCTOR_RATELIMIT_ENABLED=true` 时才用于分布式 per-key 限流，默认关闭（本机 Redis 若只监听 `127.0.0.1` 需放开监听才能被容器访问）。
 
 ### 方式二：一键构建（带真实 Console 的单二进制，推荐）
@@ -235,12 +235,13 @@ make build-backend # 仅编译后端（用当前 internal/console/dist，调试�
 make web-dev       # 前端热更新 :5173（代理 /api、/mcp）
 make test          # 后端单元测试
 make vet           # go vet 静态检查
-make docker-up     # Compose 一键启动（MySQL 5.7 / Redis / Conductor）
+make docker-up     # Compose 仅启动应用（数据库/Redis 用宿主机实例）
+make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATABASE_DSN）
 ```
 
 - **后端约定**：统一错误模型与结构化日志（不打印 Credential、Token 与完整敏感 MCP payload）；核心模块测试优先（Router / Balancer / Rate Limiter / Policy / Tool Namespace）。
 - **前端约定**：基础设施管理平台风格（现代、克制、高信息密度），Ant Design Vue + ECharts + Pinia，Payload 不可达时保持空态。
-- **测试**：`go test ./...` 覆盖 7 个包（含 Tool Name Collision 回归、真实 JSON-RPC 握手链路）。
+- **测试**：`go test ./...` 覆盖 16 个包（含 Tool Name Collision 回归、真实 JSON-RPC 握手链路、防指标重复计数与调用日志脱敏）。
 
 ## Examples
 
@@ -249,7 +250,7 @@ make docker-up     # Compose 一键启动（MySQL 5.7 / Redis / Conductor）
 ## Roadmap
 
 - **v0.1（当前）**：最小闭环 + 运维基础（Registry / 聚合 / 路由 / 治理 / 观测 / Console / Docker）。其中 **MySQL 5.7+ 持久化驱动已先行落地**（`internal/storage/mysql`，实测通过）。
-- **v0.2 候选**：Credential 落库与上游凭据注入、SSE/stdio 上游接入、Route/Policy 管理页完善、数据库迁移工具与 CI 接通。
+- **v0.2 候选**：SSE/stdio 上游接入、Route/Policy 管理页完善、Server 多实例负载均衡真正生效、观测时间序列（Traffic Replay）、CI 接通（GitHub Actions 目前有意移除，需要时再加）。注：Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）已随 v0.1 落地。
 - **v0.3 候选**：Evaluation 边界（Dataset / TestCase / MCP Score 接口）、协议/Schema/性能测试、CI Quality Gate。
 - **远期**：独立 Python Evaluation Worker、AI 优化建议、Traffic Replay、单逻辑 Server 多实例负载均衡。
 
