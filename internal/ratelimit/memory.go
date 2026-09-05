@@ -9,6 +9,7 @@ import (
 // MemoryLimiter 是基于进程内存的令牌桶限流器。
 //
 // 每个 key 独立维护令牌桶，按速率补充令牌；不足时拒绝请求。
+// 构造参数作为全局默认；Allow 可传入按 key 的 Limit 覆盖默认值。
 // 开发模式默认实现，多个实例间不共享状态。
 type MemoryLimiter struct {
 	mu      sync.Mutex
@@ -33,10 +34,19 @@ func NewMemoryLimiter(rate int, burst int) *MemoryLimiter {
 	}
 }
 
-// Allow 判断 key 是否放行：不限流直接放行；否则补充令牌后按桶余额裁定。
-func (m *MemoryLimiter) Allow(_ context.Context, key string) bool {
-	if m.rate <= 0 {
+// Allow 判断 key 是否放行：limit 提供该 key 的配额，零值回退到构造时默认；
+// 不限流直接放行；否则补充令牌后按桶余额裁定。
+func (m *MemoryLimiter) Allow(_ context.Context, key string, limit Limit) bool {
+	rate := float64(limit.QPS)
+	if limit.QPS <= 0 {
+		rate = m.rate
+	}
+	if rate <= 0 {
 		return true
+	}
+	burst := limit.Burst
+	if burst <= 0 {
+		burst = m.burst
 	}
 	now := m.now()
 	m.mu.Lock()
@@ -44,14 +54,14 @@ func (m *MemoryLimiter) Allow(_ context.Context, key string) bool {
 
 	b, ok := m.buckets[key]
 	if !ok {
-		b = &memoryBucket{tokens: float64(m.burst), last: now}
+		b = &memoryBucket{tokens: float64(burst), last: now}
 		m.buckets[key] = b
 	}
 	// 先按时间间隔补充令牌。
 	elapsed := now.Sub(b.last).Seconds()
-	b.tokens += elapsed * m.rate
-	if b.tokens > float64(m.burst) {
-		b.tokens = float64(m.burst)
+	b.tokens += elapsed * rate
+	if b.tokens > float64(burst) {
+		b.tokens = float64(burst)
 	}
 	b.last = now
 

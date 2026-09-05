@@ -26,6 +26,8 @@ type Deps struct {
 	Auth        auth.Authenticator
 	AuthService *auth.Service
 	RateLimiter ratelimit.Limiter
+	// KeyHash 把 API Key 明文映射为落库哈希（源自 auth.token_secret）。
+	KeyHash func(token string) (string, error)
 }
 
 // NewServer 组装 HTTP 服务器：统一 MCP 端点 + 控制面 REST API + 健康探针，
@@ -64,7 +66,7 @@ func NewServer(cfg config.Config, deps Deps) *http.Server {
 
 // registerControlRoutes 注册控制面 REST 路由（供 Vue3 Console 使用）。
 func registerControlRoutes(mux *http.ServeMux, deps Deps) {
-	control := NewControl(deps.Registry, deps.Store, deps.Metrics)
+	control := NewControl(deps.Registry, deps.Store, deps.Metrics, deps.KeyHash)
 
 	mux.HandleFunc("GET /api/servers", control.handleListServers)
 	mux.HandleFunc("POST /api/servers", control.handleCreateServer)
@@ -81,6 +83,12 @@ func registerControlRoutes(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("POST /api/routes", control.handleCreateRoute)
 	mux.HandleFunc("GET /api/policies", control.handleListPolicies)
 	mux.HandleFunc("POST /api/policies", control.handleCreatePolicy)
+
+	mux.HandleFunc("GET /api/keys", control.handleListKeys)
+	mux.HandleFunc("POST /api/keys", control.handleCreateKey)
+	mux.HandleFunc("GET /api/keys/{id}", control.handleGetKey)
+	mux.HandleFunc("PATCH /api/keys/{id}", control.handleUpdateKey)
+	mux.HandleFunc("DELETE /api/keys/{id}", control.handleDeleteKey)
 
 	mux.HandleFunc("GET /api/metrics", control.handleMetrics)
 	mux.HandleFunc("GET /api/logs", control.handleLogs)

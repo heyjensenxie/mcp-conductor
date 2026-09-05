@@ -26,11 +26,21 @@ ratelimit:
   qps: 100
   burst: 10
 
+# 认证。关闭（默认）时一切开箱即用；开启后：
+#   - /api 控制面：仅接受管理令牌 operator_token（或经登录换取的会话令牌）；
+#   - /mcp 数据面：接受管理令牌与数据面 API Key（api_keys）。
 auth:
-  enabled: false # 开启后所有入口请求须携带 X-Api-Key 或 Authorization: Bearer <key>
+  enabled: false
+  # 控制面/Console 管理凭据；auth.enabled 时必须配置。在 Console“设置”页录入
+  # 该令牌，或作为 password 调用 POST /api/auth/login 换取会话。
+  operator_token: ""
+  # 数据面引导 key（subject:key，逗号分隔，可多个）：仅 /mcp，默认全量授权；
+  # 不作为控制面凭据。留空则全部数据面 key 由 Console 在 /api 创建。
   api_keys: []
   # api_keys:
-  #   - "admin:dev-admin-key"   # 格式 subject:key，key 用于鉴权，subject 用于授权
+  #   - "client-a:dev-client-key"
+  # 签发会话令牌的 HMAC 密钥（32 位 hex）；auth.enabled 时必须配置。
+  token_secret: ""
 
 # Gateway→上游 凭证加密：AES-256 密钥（64 位 hex）。为空时 MySQL 存储拒绝
 # 落库明文凭证值（仅 memory 模式可在进程内承载）。

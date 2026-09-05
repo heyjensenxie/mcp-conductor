@@ -35,7 +35,7 @@ func (a *Adapter) WithHeaderFor(fn func(ctx context.Context, server model.Server
 
 // Discover 连接上游、握手并发现工具。
 func (a *Adapter) Discover(ctx context.Context, server model.Server) ([]registry.DiscoveredTool, error) {
-	c, err := a.clientFor(ctx, server)
+	c, err := a.clientFor(ctx, server, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -58,8 +58,10 @@ func (a *Adapter) Discover(ctx context.Context, server model.Server) ([]registry
 }
 
 // Call 调用上游工具并转换为 Gateway 统一结果。
-func (a *Adapter) Call(ctx context.Context, server model.Server, tool string, arguments map[string]any) ([]registry.CallContent, error) {
-	c, err := a.clientFor(ctx, server)
+// extraHeaders 是按工具附加的请求头（如 per-tool 鉴权），与 Server 级
+// 凭据（headerFor）合并；同名 header 以工具级为准。
+func (a *Adapter) Call(ctx context.Context, server model.Server, tool string, arguments map[string]any, extraHeaders map[string]string) ([]registry.CallContent, error) {
+	c, err := a.clientFor(ctx, server, extraHeaders)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +89,7 @@ func (a *Adapter) Call(ctx context.Context, server model.Server, tool string, ar
 
 // Check 以 initialize 握手结果作为健康结论。
 func (a *Adapter) Check(ctx context.Context, server model.Server) (model.ServerStatus, error) {
-	c, err := a.clientFor(ctx, server)
+	c, err := a.clientFor(ctx, server, nil)
 	if err != nil {
 		return model.ServerStatusUnhealthy, err
 	}
@@ -97,8 +99,9 @@ func (a *Adapter) Check(ctx context.Context, server model.Server) (model.ServerS
 	return model.ServerStatusHealthy, nil
 }
 
-// clientFor 选择传输方式并构建客户端。
-func (a *Adapter) clientFor(ctx context.Context, server model.Server) (*mcp.HTTPClient, error) {
+// clientFor 选择传输方式并构建客户端；header 合并顺序为 Server 级凭据
+// 优先、extraHeaders（工具级）后置从而覆盖同名头。
+func (a *Adapter) clientFor(ctx context.Context, server model.Server, extraHeaders map[string]string) (*mcp.HTTPClient, error) {
 	switch server.Transport {
 	case "", model.TransportStreamableHTTP, model.TransportSSE:
 		opts := []mcp.Option{}
@@ -106,6 +109,9 @@ func (a *Adapter) clientFor(ctx context.Context, server model.Server) (*mcp.HTTP
 			for k, v := range a.headerFor(ctx, server) {
 				opts = append(opts, mcp.WithHeader(k, v))
 			}
+		}
+		for k, v := range extraHeaders {
+			opts = append(opts, mcp.WithHeader(k, v))
 		}
 		return mcp.NewHTTPClient(server.Endpoint, opts...), nil
 	case model.TransportStdio:

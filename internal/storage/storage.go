@@ -48,6 +48,17 @@ type CredentialStore interface {
 	ListCredentialsByServer(ctx context.Context, serverID string) ([]model.Credential, error)
 }
 
+// AccessKeyStore 管理 API Key 调用方（白名单授权 + 限流配额 + 调用配置）。
+type AccessKeyStore interface {
+	CreateAccessKey(ctx context.Context, key *model.AccessKey) error
+	GetAccessKey(ctx context.Context, id string) (*model.AccessKey, error)
+	GetAccessKeyBySubject(ctx context.Context, subject string) (*model.AccessKey, error)
+	GetAccessKeyByKeyHash(ctx context.Context, keyHash string) (*model.AccessKey, error)
+	ListAccessKeys(ctx context.Context) ([]model.AccessKey, error)
+	UpdateAccessKey(ctx context.Context, key *model.AccessKey) error
+	DeleteAccessKey(ctx context.Context, id string) error
+}
+
 // TrafficStore 以追加方式记录工具调用采样（Request Log）。
 type TrafficStore interface {
 	AppendTraffic(ctx context.Context, sample model.TrafficSample) error
@@ -61,5 +72,6 @@ type Store interface {
 	RouteStore
 	PolicyStore
 	CredentialStore
+	AccessKeyStore
 	TrafficStore
 }

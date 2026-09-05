@@ -37,10 +37,10 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | 统一 MCP Endpoint（`tools/list` 聚合、`tools/call` 路由） | ✅ streamable HTTP 无状态模式 |
 | 健康检查（initialize 握手 + 周期巡检） | ✅ |
 | 路由解析 + Round Robin 负载均衡（健康感知） | ✅ |
-| 基础认证（静态 API Key） | ✅ 默认关闭 |
+| 认证（数据面 API Key + 控制面管理令牌） | ✅ API Key 密钥 HMAC-SHA256 哈希落库、明文仅创建时一次性下发、限于 /mcp 白名单；控制面 /api 用静态 `operator_token`（数据面凭据不可访问控制面）；默认关闭 |
 | Gateway→上游 Credential 管理（API Key / Static Token） | ✅ 值 AES-256-GCM 加密落库；经 `json:"-"` 不下发 API、不入日志；按 Server 注入上游请求头 |
-| Tool 级权限策略（RBAC，支持通配、首条命中生效） | ✅ 默认放行 |
-| Memory（令牌桶）/ Redis 限流 | ✅ 默认关闭 |
+| 按 Key×Tool 白名单授权（跨 Server 聚合） | ✅ 每个 key 只可见/可调被授权工具（支持 `server.*`/`*` 通配）；每工具可配调用参数与请求头；非管理身份回退遗留策略规则 |
+| Memory（令牌桶）/ Redis 限流，支持按 Key 独立配额 | ✅ 默认关闭 |
 | Request Logging + 基础 Metrics（P50/P95/P99） | ✅ 应用层聚合 |
 | Vue3 Console（Ant Design Vue + ECharts） | ✅ 构建后嵌入二进制 |
 | MCP Manual Test（Console 内联） | ✅ |
@@ -82,7 +82,7 @@ internal/
   router            # 工具名 → (Server, 实例) 解析
   balancer          # 负载均衡（RoundRobin，健康感知）
   ratelimit         # memory 令牌桶 / redis 固定窗口
-  auth · policy     # 认证（API Key）· Tool 级 RBAC
+  auth · policy     # 认证（控制面 operator token / 数据面 API Key）· Tool 级 RBAC
   health            # 周期健康巡检
   observability     # 指标聚合 + 调用日志（采样 / 不记敏感体）
   console           # go:embed 前端 dist
@@ -111,21 +111,19 @@ docker compose up --build
 
 > 若宿主 `3306` 已被占用（例如本机跑着 MySQL），用 `MYSQL_PORT=33061 docker compose up --build` 错开端口。
 
-### 方式二：本地后端（内存模式，无需任何外部依赖）
+### 方式二：一键构建（带真实 Console 的单二进制，推荐）
+
+Console 前端是经 `go:embed` 在编译期打包进二进制的，**只改代码不重建前端/二进制是看不到界面变化的**。
 
 ```bash
-go run ./cmd/conductor            # 监听 :8080，默认 memory 存储
+make web-install        # npm --prefix web install（首次）
+make build              # 构建前端并嵌入 → bin/mcp-conductor
+./bin/mcp-conductor     # 访问 :8080 即用真实 Console
 ```
 
-### 方式三：带真实 Console 的单二进制
+> 仅调试后端、不需要 UI 时可 `make build-backend`（或 `go run ./cmd/conductor`）——此时 :8080 打开的是占位 Console（提示先构建前端），并非最新界面。
 
-```bash
-make web-install                  # npm --prefix web install
-make build-console                # 构建前端并嵌入 → bin/mcp-conductor
-./bin/mcp-conductor               # 单二进制，访问 :8080 即用 Console
-```
-
-开发期前端热更新：另开终端 `make web-dev`（`:5173`，已代理 `/api` 与 `/mcp` 到后端）。
+开发期前端热更新：另开终端 `make web-dev`（`:5173`，已代理 `/api` 与 `/mcp` 到后端），浏览器访问 `http://localhost:5173` 看最新界面。
 
 ### 最小闭环演示（5 分钟）
 
@@ -159,11 +157,15 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 | `tools/list` | 返回全部 Server 聚合后的 Tool 列表（namespaced） |
 | `tools/call` | 按 `gateway_name` 调用，自动授权 → 路由 → 均衡 → 转发上游 |
 
-认证开启时携带 `Authorization: Bearer <key>` 或 `X-Api-Key: <key>`；调用失败统一以 `isError: true` 结果返回，不暴露内部细节。
+认证开启后：
+- `/mcp`（数据面）：携带**数据面 API Key**（`Authorization: Bearer <key>` 或 `X-Api-Key: <key>`），只可调该 key 白名单内的工具；
+- `/api/*`（控制面）：仅接受**管理令牌** `auth.operator_token` 或经 `POST /api/auth/login` 签发的会话令牌（同样放 `X-Api-Key`/`Bearer`）。数据面 API Key 访问 `/api` 会得到 403，也不能用来登录换取会话。
+
+调用失败统一以 `isError: true` 结果返回，不暴露内部细节。
 
 ### 控制面 REST `GET /api/*`
 
-统一信封：`{ "code", "message", "request_id", "data" }`。端点一览：
+统一信封：`{ "code", "message", "request_id", "data" }`。**开启认证后，以下端点均要求管理令牌 `operator_token` 或登录会话**；数据面 API Key 访问返回 403。端点一览：
 
 | 方法 / 路径 | 说明 |
 | --- | --- |
@@ -188,7 +190,11 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 
 ```bash
 cp config.example.yaml config.yaml
-CONDUCTOR_AUTH_ENABLED=true CONDUCTOR_AUTH_API_KEYS="admin:dev-key" go run ./cmd/conductor
+CONDUCTOR_AUTH_ENABLED=true \
+CONDUCTOR_AUTH_OPERATOR_TOKEN="change-me-operator-token" \
+CONDUCTOR_AUTH_TOKEN_SECRET="<32 位 hex>" \
+CONDUCTOR_AUTH_API_KEYS="client-a:dev-key" \
+go run ./cmd/conductor
 ```
 
 | 分组 | 关键项 | 环境变量示例 |
@@ -198,7 +204,7 @@ CONDUCTOR_AUTH_ENABLED=true CONDUCTOR_AUTH_API_KEYS="admin:dev-key" go run ./cmd
 | `redis` | enabled / addr / password | `CONDUCTOR_REDIS_ENABLED=false` |
 | `gateway` | upstream_timeout / max_concurrency | `CONDUCTOR_GATEWAY_UPSTREAM_TIMEOUT_MS=10000` |
 | `ratelimit` | enabled / qps / burst | `CONDUCTOR_RATELIMIT_QPS=100` |
-| `auth` | enabled / api_keys | `CONDUCTOR_AUTH_API_KEYS="admin:dev-key"` |
+| `auth` | enabled / operator_token / token_secret / api_keys | `CONDUCTOR_AUTH_OPERATOR_TOKEN=<令牌> CONDUCTOR_AUTH_TOKEN_SECRET=<32 位 hex>` |
 | `credentials` | encryption_key（AES-256，64 位 hex） | `CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY=<hex>` |
 | `logging` | level / format | `CONDUCTOR_LOGGING_LEVEL=info` |
 | `observability` | record_body / sample_rate | `CONDUCTOR_OBSERVABILITY_SAMPLE_RATE=1.0` |
@@ -220,9 +226,10 @@ CONDUCTOR_DATABASE_DSN='conductor:conductor@tcp(localhost:3306)/conductor?parseT
 
 ```bash
 make web-install   # 安装前端依赖
-make run           # 启动后端 :8080（memory 模式）
+make build         # 构建前端并产出带真实 Console 的单二进制（默认构建）
+make run           # 一键构建并运行（:8080，带真实 Console）
+make build-backend # 仅编译后端（用当前 internal/console/dist，调试后端用）
 make web-dev       # 前端热更新 :5173（代理 /api、/mcp）
-make build-console # 构建前端并产出单二进制 bin/mcp-conductor
 make test          # 后端单元测试
 make vet           # go vet 静态检查
 make docker-up     # Compose 一键启动（MySQL 5.7 / Redis / Conductor）

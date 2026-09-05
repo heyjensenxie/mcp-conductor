@@ -8,8 +8,9 @@ import (
 	"github.com/xmj128/mcp-conductor/internal/errs"
 )
 
-// handleLogin 校验用户名/密码并签发会话令牌。
-// username 可留空（此时 password 视为静态 API Key）；正常 UI 登录走用户名+密码。
+// handleLogin 校验管理令牌并签发会话令牌。
+// password 必须是 auth.operator_token（AccessKey 明文不能用于登录）；
+// username 仅作 UI 友好显示，由认证服务忽略。登录端点属于 /api/auth/* 免认证路径。
 func handleLogin(svc *auth.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -21,7 +22,7 @@ func handleLogin(svc *auth.Service) http.HandlerFunc {
 				errs.New(errs.CodeInvalidArgument, "请求体须包含 password"))
 			return
 		}
-		session, err := svc.Login(body.Username, body.Password)
+		session, err := svc.Login(r.Context(), body.Username, body.Password)
 		if err != nil {
 			writeGatewayError(w, r, http.StatusUnauthorized, err)
 			return

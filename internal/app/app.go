@@ -9,13 +9,16 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/xmj128/mcp-conductor/internal/access"
 	"github.com/xmj128/mcp-conductor/internal/auth"
 	"github.com/xmj128/mcp-conductor/internal/balancer"
 	"github.com/xmj128/mcp-conductor/internal/config"
+	"github.com/xmj128/mcp-conductor/internal/errs"
 	"github.com/xmj128/mcp-conductor/internal/gateway"
 	"github.com/xmj128/mcp-conductor/internal/health"
 	"github.com/xmj128/mcp-conductor/internal/mcpclient"
@@ -53,6 +56,7 @@ func Run(ctx context.Context) error {
 	registrySvc := registry.NewService(store, adapter)
 	resolver := router.NewResolver(store, store)
 	policyEngine := policy.NewEngine(store)
+	authorizer := access.NewAuthorizer(policyEngine)
 	metrics := observability.NewMetrics()
 	recorder := observability.NewRecorder(store, cfg.Observability.RecordBody, cfg.Observability.SampleRate)
 
@@ -61,16 +65,24 @@ func Run(ctx context.Context) error {
 		resolver,
 		balancer.NewRoundRobin(),
 		adapter,
-		policyEngine,
+		authorizer,
 		metrics,
 		recorder,
 		gateway.WithUpstreamTimeout(cfg.Gateway.UpstreamTimeout),
 		gateway.WithMaxConcurrency(cfg.Gateway.MaxConcurrency),
 	)
 
-	authSvc, err := auth.NewService(cfg.Auth)
+	authSvc, err := auth.NewService(cfg.Auth, store)
 	if err != nil {
 		return err
+	}
+	// 把 config 中的静态 API Key（auth.api_keys）作为数据面引导 key 落库：
+	// 已存在的 subject 跳过，避免覆盖 Console 侧管理；seed 默认全量授权。
+	// 注意：API Key 仅能访问 /mcp 数据面，控制面 /api 使用 auth.operator_token。
+	if cfg.Auth.Enabled {
+		if err := seedBootstrapKeys(ctx, store, cfg.Auth.APIKeys, cfg.Auth.TokenSecret); err != nil {
+			return err
+		}
 	}
 	limiter := buildLimiter(cfg)
 
@@ -82,6 +94,9 @@ func Run(ctx context.Context) error {
 		Auth:        authSvc,
 		AuthService: authSvc,
 		RateLimiter: limiter,
+		KeyHash: func(token string) (string, error) {
+			return auth.KeyHash(cfg.Auth.TokenSecret, token)
+		},
 	})
 
 	// 周期性健康巡检：以 initialize 握手为 Probe，首次立即执行一次。
@@ -90,6 +105,43 @@ func Run(ctx context.Context) error {
 	go monitor.Run(ctx)
 
 	return runWithSignal(ctx, server)
+}
+
+// seedBootstrapKeys 把 config 中的静态 API Key（subject:key）落库为数据面
+// AccessKey，保留 v0.1 配置式体验：已存在按 subject 跳过，seed 默认全量授权
+// （*），使引导 key 在 /mcp 上"全量可见可调"。这些 key 无法访问 /api 控制面
+// （控制面使用 auth.operator_token），避免配置型凭据升级为管理权限。
+func seedBootstrapKeys(ctx context.Context, store storage.AccessKeyStore, apiKeys []string, tokenSecretHex string) error {
+	for _, entry := range apiKeys {
+		subject, key := entry, entry
+		if i := strings.IndexByte(entry, ':'); i > 0 {
+			subject, key = entry[:i], entry[i+1:]
+		}
+		if subject == "" || key == "" {
+			continue
+		}
+		if _, err := store.GetAccessKeyBySubject(ctx, subject); err == nil {
+			continue // 已存在（Console 已管理），不覆盖
+		}
+		keyHash, err := auth.KeyHash(tokenSecretHex, key)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		k := &model.AccessKey{
+			Name:      subject,
+			Subject:   subject,
+			Enabled:   true,
+			Grants:    []model.ToolGrant{{GatewayName: "*"}},
+			KeyHash:   keyHash,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if err := store.CreateAccessKey(ctx, k); err != nil {
+			return errs.Wrap(errs.CodeInternal, err, "seed API Key %q 失败", subject)
+		}
+	}
+	return nil
 }
 
 // openStore 按配置选择存储后端：默认 memory；配置为 mysql 时连接 MySQL 5.7+。

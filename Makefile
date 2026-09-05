@@ -3,15 +3,22 @@
 
 BIN := bin/mcp-conductor
 
-.PHONY: build run test vet fmt web-install web-dev web-build dev docker-up docker-down
+.PHONY: build run test vet fmt web-install web-dev web-build build-backend build-console dev docker-up docker-down
 
-## 构建后端（本地；前端未构建时使用占位 console）
+## 一键构建（默认：先构建前端，嵌入真实 Console 后产出单二进制）
+## 前端经 go:embed 打包进二进制；不跑这一步、直接 go build 会得到占位 Console。
 build:
+	npm --prefix web run build
+	rm -rf internal/console/dist && mkdir -p internal/console/dist && cp -r web/dist/* internal/console/dist/
 	mkdir -p bin && go build -o $(BIN) ./cmd/conductor
 
-## 直接运行后端
-run:
-	go run ./cmd/conductor
+## 构建并运行单二进制（带真实 Console）
+run: build
+	./$(BIN)
+
+## 仅构建后端（使用当前 internal/console/dist 内容；迭代后端时用）
+build-backend:
+	mkdir -p bin && go build -o $(BIN) ./cmd/conductor
 
 ## 单元测试
 test:
@@ -29,17 +36,19 @@ fmt:
 web-install:
 	npm --prefix web install
 
-## 前端开发服务器（代理 /api 与 /mcp 到 :8080）
+## 前端开发服务器（代理 /api 与 /mcp 到 :8080，热更新）
 web-dev:
 	npm --prefix web run dev
 
-## 构建前端产物
+## 仅构建前端产物（go:embed 需要它被拷入 internal/console/dist）
 web-build:
 	npm --prefix web run build
 
-## 构建单二进制（先构建前端，嵌入真实 Console 产物）
-build-console:
-	npm --prefix web run build && rm -rf internal/console/dist && cp -r web/dist internal/console/dist && go build -o $(BIN) ./cmd/conductor
+## 兼容别名：等同 build
+build-console: build
+
+## 本地一键启动（等同 run）
+dev: run
 
 ## 数据库/队列基础设施已由 docker compose up 提供
 docker-up:
@@ -54,6 +63,3 @@ db-migrate:
 		echo "applying $$f".; \
 		docker compose exec -T mysql mysql -uconductor -pconductor --default-character-set=utf8mb4 conductor < "$$f" || exit 1; \
 	done
-
-## 本地一键启动后端
-dev: run

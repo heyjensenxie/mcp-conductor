@@ -76,11 +76,14 @@ type CredentialsConfig struct {
 
 // AuthConfig 控制 Gateway 与 Control Plane 的认证。
 type AuthConfig struct {
-	// Enabled 开启后，所有入口请求须登录（静态 API Key 或会话令牌）。
+	// Enabled 开启后，控制面 /api 仅接受管理令牌（operator_token 或会话），
+	// 数据面 /mcp 接受管理令牌与数据面 API Key。
 	Enabled bool `yaml:"enabled"`
-	// APIKeys 是本实例合法凭据集合（格式 subject:key）。
+	// APIKeys 是本实例数据面引导凭据（格式 subject:key，全量授权、仅 /mcp）。
 	APIKeys []string `yaml:"api_keys"`
-	// TokenSecret 用于签发公钥会话令牌的 HMAC 密钥；auth.enabled 时必须配置。
+	// OperatorToken 是控制面/Console 的管理凭据；auth.enabled 时必须配置。
+	OperatorToken string `yaml:"operator_token"`
+	// TokenSecret 用于签发会话令牌的 HMAC 密钥；auth.enabled 时必须配置。
 	TokenSecret string `yaml:"token_secret"`
 	// SessionTTL 登录会话有效期（默认 12h）。
 	SessionTTL time.Duration `yaml:"session_ttl"`
@@ -124,10 +127,11 @@ func Default() Config {
 			Burst:   1,
 		},
 		Auth: AuthConfig{
-			Enabled:     false,
-			APIKeys:     []string{},
-			TokenSecret: "",
-			SessionTTL:  12 * time.Hour,
+			Enabled:       false,
+			APIKeys:       []string{},
+			OperatorToken: "",
+			TokenSecret:   "",
+			SessionTTL:    12 * time.Hour,
 		},
 		Credentials: CredentialsConfig{
 			EncryptionKey: "",
@@ -198,6 +202,9 @@ func applyEnvOverrides(cfg *Config) {
 	if v := lookupEnv("CONDUCTOR_AUTH_API_KEYS"); v != "" {
 		// 多个 key 以逗号分隔。
 		cfg.Auth.APIKeys = splitCSV(v)
+	}
+	if v := lookupEnv("CONDUCTOR_AUTH_OPERATOR_TOKEN"); v != "" {
+		cfg.Auth.OperatorToken = v
 	}
 	if v := lookupEnv("CONDUCTOR_AUTH_TOKEN_SECRET"); v != "" {
 		cfg.Auth.TokenSecret = v
@@ -272,8 +279,8 @@ func (c Config) validate() error {
 	if c.Database.Driver == "mysql" && strings.TrimSpace(c.Database.DSN) == "" {
 		return fmt.Errorf("database.driver 为 mysql 时须提供 database.dsn")
 	}
-	if c.Auth.Enabled && len(c.Auth.APIKeys) == 0 {
-		return fmt.Errorf("auth.enabled 时须配置至少一个 auth.api_keys")
+	if c.Auth.Enabled && strings.TrimSpace(c.Auth.OperatorToken) == "" {
+		return fmt.Errorf("auth.enabled 时须配置 auth.operator_token（控制面管理凭据）")
 	}
 	if c.Auth.Enabled && strings.TrimSpace(c.Auth.TokenSecret) == "" {
 		return fmt.Errorf("auth.enabled 时须配置 auth.token_secret（签发登录令牌用）")

@@ -57,6 +57,27 @@
         <a-form-item :label="t('common.description')">
           <a-textarea v-model:value="form.description" :rows="2" />
         </a-form-item>
+
+        <a-divider orientation="left" class="auth-divider">{{ t('servers.auth') }}</a-divider>
+        <div v-if="reqHeaders.length" class="auth-rows">
+          <div v-for="(row, i) in reqHeaders" :key="i" class="auth-row">
+            <a-input
+              v-model:value="row.header"
+              :disabled="row.bearer"
+              :placeholder="row.bearer ? 'Authorization' : t('servers.authHeaderPh')"
+              class="auth-header"
+            />
+            <a-checkbox v-model:checked="row.bearer">{{ t('servers.authBearer') }}</a-checkbox>
+            <a-input-password v-model:value="row.value" :placeholder="t('servers.authValuePh')" class="auth-value" />
+            <a-button type="text" size="small" @click="reqHeaders.splice(i, 1)">
+              <template #icon><DeleteOutlined /></template>
+            </a-button>
+          </div>
+        </div>
+        <div v-else class="auth-empty">{{ t('servers.authEmpty') }}</div>
+        <a-button type="dashed" block @click="addAuthRow">
+          <template #icon><PlusOutlined /></template>{{ t('servers.authAdd') }}
+        </a-button>
       </a-form>
     </a-modal>
   </div>
@@ -66,8 +87,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons-vue'
-import { createServer, deleteServer, listServers, listServerTools, testServer, toggleServer } from '@/api'
+import { PlusOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { createCredential, createServer, deleteServer, listServers, listServerTools, testServer, toggleServer } from '@/api'
 import type { MCPServer, Transport } from '@/types'
 
 const { t } = useI18n()
@@ -83,6 +104,15 @@ const form = reactive<{ name: string; endpoint: string; transport: Transport; de
   transport: 'https',
   description: '',
 })
+// 注册时可配置任意多条"上游请求头"（可选）：每条 = 请求头名 + 值，
+// 勾选 Bearer 时该条固定注入 Authorization: Bearer <值>（走 static_token）。
+// 落库为 Credential，值 AES 加密；header 可留空代表无附加头。
+interface AuthRow {
+  header: string
+  bearer: boolean
+  value: string
+}
+const reqHeaders = ref<AuthRow[]>([])
 
 const columns = computed<any[]>(() => [
   { title: t('common.name'), key: 'name', dataIndex: 'name' },
@@ -119,7 +149,28 @@ function openCreate() {
   form.endpoint = ''
   form.transport = 'https'
   form.description = ''
+  reqHeaders.value = []
   dialogVisible.value = true
+}
+
+function addAuthRow() {
+  reqHeaders.value.push({ header: '', bearer: false, value: '' })
+}
+
+// 校验并生成要落库的凭证列表：密钥值未填的行视为无效并忽略；
+// 自定义 Header 行（非 Bearer）必须填写请求头名，否则拦截提醒。
+function buildAuthCredentials() {
+  const rows: { kind: 'api_key' | 'static_token'; header: string; value: string }[] = []
+  for (const row of reqHeaders.value) {
+    if (!row.value) continue // 无密钥值 → 忽略该行
+    if (!row.bearer && !row.header) return null // 有值但缺 header
+    rows.push({
+      kind: row.bearer ? 'static_token' : 'api_key',
+      header: row.bearer ? '' : row.header,
+      value: row.value,
+    })
+  }
+  return rows
 }
 
 async function submit() {
@@ -127,10 +178,35 @@ async function submit() {
     message.warning(t('servers.fillRequired'))
     return
   }
+  const authRows = buildAuthCredentials()
+  if (authRows === null) {
+    message.warning(t('servers.authHeaderRequired'))
+    return
+  }
   submitting.value = true
   try {
-    await createServer({ ...form })
-    message.success(t('servers.registeredOk'))
+    const server = await createServer({ ...form })
+    // 注册时若有请求头配置，随即逐条落 Credential（值加密存储）。
+    const failures: string[] = []
+    for (const [i, row] of authRows.entries()) {
+      try {
+        await createCredential(server.id, {
+          name: `${server.name} auth#${i + 1}`,
+          kind: row.kind,
+          header: row.header,
+          value: row.value,
+        })
+      } catch (e) {
+        failures.push(String(e))
+      }
+    }
+    if (failures.length) {
+      message.warning(`${t('servers.registeredOk')}，${t('servers.authFail')}: ${failures[0]}`)
+    } else if (authRows.length) {
+      message.success(t('servers.authApplied'))
+    } else {
+      message.success(t('servers.registeredOk'))
+    }
     dialogVisible.value = false
     await load()
   } catch (e) {
@@ -179,5 +255,30 @@ const healthColor = (s: string) => (s === 'healthy' ? 'green' : s === 'unhealthy
 .link {
   color: #1677ff;
   font-weight: 500;
+}
+.auth-divider {
+  margin-top: 8px;
+}
+.auth-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.auth-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.auth-header {
+  flex: 0 0 200px;
+}
+.auth-value {
+  flex: 1;
+}
+.auth-empty {
+  color: #999;
+  font-size: 12px;
+  padding: 2px 0 8px;
 }
 </style>

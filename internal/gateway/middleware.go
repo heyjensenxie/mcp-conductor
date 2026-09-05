@@ -81,13 +81,24 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
-// authMiddleware 校验调用凭据并写入调用主体。路径 /mcp 使用 JSON-RPC 错误格式。
-// 认证/探针端点（/api/auth/*、/healthz、/readyz）免认证，交由对应处理器。
+// authMiddleware 校验调用凭据并写入调用主体；同时执行控制面授权。
+//
+// 免认证路径：
+//   - /api/auth/*、/healthz、/readyz（登录/探针）；
+//   - Console SPA 与其静态资源（/、/assets/*、favicon 等）——前端只在 /api、/mcp
+//     调用时携带凭据，因此需先能加载登录界面/设置页录入凭据；
+//
+// 其余路径（/api/*、/mcp）均须通过认证。
+// 控制面授权：/api/* 只放行 Operator 身份（管理令牌 / 会话令牌；认证关闭时匿名
+// 亦视为 Operator）。数据面 API Key（Identity.Key 非空）即使凭据有效，也仅限
+// /mcp 使用，无法访问 /api——与内部 access.Authorizer 的 key×工具白名单正交。
 func authMiddleware(authenticator auth.Authenticator) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasPrefix(r.URL.Path, "/api/auth/") ||
-				r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+			path := r.URL.Path
+			if strings.HasPrefix(path, "/api/auth/") ||
+				path == "/healthz" || path == "/readyz" ||
+				(!strings.HasPrefix(path, "/api") && !strings.HasPrefix(path, mcpPath)) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -100,6 +111,11 @@ func authMiddleware(authenticator auth.Authenticator) Middleware {
 					status = http.StatusInternalServerError
 				}
 				writeGatewayError(w, r, status, err)
+				return
+			}
+			if strings.HasPrefix(path, "/api") && !identity.Operator {
+				writeGatewayError(w, r, http.StatusForbidden,
+					errs.New(errs.CodeAuthorization, "控制面需要管理令牌"))
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), identity)))
@@ -116,10 +132,16 @@ func extractToken(r *http.Request) string {
 }
 
 // rateLimitMiddleware 按调用主体/IP 执行限流，超限返回 429。
+// 被管理的 API Key（identity.Key）携带独立配额时按 key 限额，
+// 否则回退到限流器构造时的全局默认。
 func rateLimitMiddleware(limiter ratelimit.Limiter) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !limiter.Allow(r.Context(), clientKey(r)) {
+			limit := ratelimit.Limit{}
+			if identity := IdentityFrom(r.Context()); identity.Key != nil && identity.Key.QPS > 0 {
+				limit = ratelimit.Limit{QPS: identity.Key.QPS, Burst: identity.Key.Burst}
+			}
+			if !limiter.Allow(r.Context(), clientKey(r), limit) {
 				writeGatewayError(w, r, http.StatusTooManyRequests,
 					errs.New(errs.CodeRateLimit, "请求过于频繁，请稍后重试"))
 				return

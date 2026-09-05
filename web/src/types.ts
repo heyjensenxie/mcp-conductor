@@ -66,6 +66,26 @@ export interface Credential {
   updated_at: string
 }
 
+// API Key 访问控制：白名单授权 + 按 key 限流 + 调用配置。
+export interface ToolGrant {
+  gateway_name: string
+  headers?: Record<string, string>
+  default_args?: Record<string, unknown>
+}
+
+export interface AccessKey {
+  id: string
+  name: string
+  subject: string
+  enabled: boolean
+  qps: number
+  burst: number
+  grants: ToolGrant[]
+  secret?: string // 仅创建响应返回一次
+  created_at: string
+  updated_at: string
+}
+
 export interface TrafficSample {
   request_id: string
   trace_id?: string

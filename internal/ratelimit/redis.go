@@ -23,10 +23,15 @@ func NewRedisLimiter(client *redis.Client, rate int, window time.Duration) *Redi
 }
 
 // Allow 统计窗口内请求数并裁定是否放行。
+// limit 提供该 key 的 QPS 配额，零值回退到构造时默认；各 key 独立计数。
 // Redis 故障时采取"故障放行"策略，避免 Gateway 因依赖抖动整体不可用；
 // 是否告警由上层日志/观测负责。
-func (r *RedisLimiter) Allow(ctx context.Context, key string) bool {
-	if r.rate <= 0 {
+func (r *RedisLimiter) Allow(ctx context.Context, key string, limit Limit) bool {
+	rate := limit.QPS
+	if limit.QPS <= 0 {
+		rate = r.rate
+	}
+	if rate <= 0 {
 		return true
 	}
 	n, err := r.client.Incr(ctx, key).Result()
@@ -36,5 +41,5 @@ func (r *RedisLimiter) Allow(ctx context.Context, key string) bool {
 	if n == 1 {
 		r.client.Expire(ctx, key, r.window)
 	}
-	return n <= int64(r.rate)
+	return n <= int64(rate)
 }

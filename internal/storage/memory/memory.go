@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/xmj128/mcp-conductor/internal/model"
 )
@@ -24,6 +25,9 @@ type Store struct {
 	routes      map[string]model.Route
 	policies    map[string]model.Policy
 	credentials map[string]model.Credential
+	keys        map[string]model.AccessKey
+	keysByHash  map[string]model.AccessKey // key_hash -> key
+	keysBySubj  map[string]model.AccessKey // subject -> key
 	traffic     []model.TrafficSample
 
 	seq int64
@@ -38,6 +42,9 @@ func New() *Store {
 		routes:      make(map[string]model.Route),
 		policies:    make(map[string]model.Policy),
 		credentials: make(map[string]model.Credential),
+		keys:        make(map[string]model.AccessKey),
+		keysByHash:  make(map[string]model.AccessKey),
+		keysBySubj:  make(map[string]model.AccessKey),
 		traffic:     make([]model.TrafficSample, 0, 64),
 	}
 }
@@ -251,6 +258,12 @@ func (s *Store) CreateCredential(_ context.Context, credential *model.Credential
 	if credential.ID == "" {
 		credential.ID = s.nextID("cred")
 	}
+	now := time.Now().UTC()
+	if credential.CreatedAt.IsZero() {
+		credential.CreatedAt = now
+	}
+	credential.UpdatedAt = now
+	credential.HasValue = credential.Value != ""
 	s.credentials[credential.ID] = *credential
 	return nil
 }
@@ -266,6 +279,116 @@ func (s *Store) ListCredentialsByServer(_ context.Context, serverID string) ([]m
 		}
 	}
 	return out, nil
+}
+
+// ---- AccessKeyStore ----
+
+// CreateAccessKey 新增 API Key；subject 唯一，重复返回冲突错误。
+func (s *Store) CreateAccessKey(_ context.Context, key *model.AccessKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if key.ID == "" {
+		key.ID = s.nextID("key")
+	}
+	if _, ok := s.keys[key.ID]; ok {
+		return errors.New("access key 已存在")
+	}
+	if _, ok := s.keysBySubj[key.Subject]; ok {
+		return fmt.Errorf("主题 %q 已存在", key.Subject)
+	}
+	// 只持久化不含明文 Secret 的副本（与 MySQL 不落 secret 一致）；明文仅在
+	// 创建响应下发一次。stored 为值副本，不污染调用方仍在使用的 key 对象。
+	stored := *key
+	stored.Secret = ""
+	s.keys[key.ID] = stored
+	s.keysBySubj[key.Subject] = stored
+	if key.KeyHash != "" {
+		s.keysByHash[key.KeyHash] = stored
+	}
+	return nil
+}
+
+// GetAccessKey 按 id 读取 API Key。
+func (s *Store) GetAccessKey(_ context.Context, id string) (*model.AccessKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	key, ok := s.keys[id]
+	if !ok {
+		return nil, fmt.Errorf("access key %q 不存在", id)
+	}
+	return &key, nil
+}
+
+// GetAccessKeyBySubject 按主体读取 API Key。
+func (s *Store) GetAccessKeyBySubject(_ context.Context, subject string) (*model.AccessKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	key, ok := s.keysBySubj[subject]
+	if !ok {
+		return nil, fmt.Errorf("access key（subject %q）不存在", subject)
+	}
+	return &key, nil
+}
+
+// GetAccessKeyByKeyHash 按密钥哈希读取 API Key（认证用）。
+func (s *Store) GetAccessKeyByKeyHash(_ context.Context, keyHash string) (*model.AccessKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	key, ok := s.keysByHash[keyHash]
+	if !ok {
+		return nil, fmt.Errorf("access key %q 不存在", keyHash)
+	}
+	return &key, nil
+}
+
+// ListAccessKeys 返回全部 API Key（按 id 排序，保证输出稳定）。
+func (s *Store) ListAccessKeys(_ context.Context) ([]model.AccessKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.AccessKey, 0, len(s.keys))
+	for _, id := range sortedKeys(s.keys) {
+		out = append(out, s.keys[id])
+	}
+	return out, nil
+}
+
+// UpdateAccessKey 覆盖 API Key 字段并同步索引（subject/哈希可能变更）。
+func (s *Store) UpdateAccessKey(_ context.Context, key *model.AccessKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.keys[key.ID]
+	if !ok {
+		return fmt.Errorf("access key %q 不存在", key.ID)
+	}
+	delete(s.keysBySubj, existing.Subject)
+	if existing.KeyHash != "" {
+		delete(s.keysByHash, existing.KeyHash)
+	}
+	// 与 CreateAccessKey 一致：落库副本不含明文 Secret。
+	stored := *key
+	stored.Secret = ""
+	s.keys[key.ID] = stored
+	s.keysBySubj[key.Subject] = stored
+	if key.KeyHash != "" {
+		s.keysByHash[key.KeyHash] = stored
+	}
+	return nil
+}
+
+// DeleteAccessKey 删除 API Key 并清理索引。
+func (s *Store) DeleteAccessKey(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key, ok := s.keys[id]
+	if !ok {
+		return fmt.Errorf("access key %q 不存在", id)
+	}
+	delete(s.keys, id)
+	delete(s.keysBySubj, key.Subject)
+	if key.KeyHash != "" {
+		delete(s.keysByHash, key.KeyHash)
+	}
+	return nil
 }
 
 // ---- TrafficStore ----

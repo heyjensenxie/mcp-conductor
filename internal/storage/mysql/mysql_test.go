@@ -304,3 +304,55 @@ func TestTrafficAppendRecent(t *testing.T) {
 		t.Fatalf("RecentTraffic 应按写入倒序: %+v", samples)
 	}
 }
+
+// 需要迁移 0003_add_access_keys.sql 已执行。
+func TestAccessKeyCRUD(t *testing.T) {
+	store := openTest(t)
+	ctx := context.Background()
+
+	key := &model.AccessKey{
+		Name: "Partner A", Subject: "partner-a", Enabled: true, QPS: 5, Burst: 10,
+		KeyHash: "hash-1",
+		Grants: []model.ToolGrant{
+			{GatewayName: "mock.search", Headers: map[string]string{"X-Tenant": "a"}, DefaultArgs: map[string]any{"env": "prod"}},
+		},
+	}
+	if err := store.CreateAccessKey(ctx, key); err != nil {
+		t.Fatalf("CreateAccessKey: %v", err)
+	}
+	t.Cleanup(func() { _ = store.DeleteAccessKey(ctx, key.ID) })
+	if key.ID == "" {
+		t.Fatal("CreateAccessKey 应生成 id")
+	}
+
+	// byHash / bySubject / byID 三种途径均能读回 grants 与配额。
+	byHash, err := store.GetAccessKeyByKeyHash(ctx, "hash-1")
+	if err != nil || byHash.Subject != "partner-a" || len(byHash.Grants) != 1 {
+		t.Fatalf("GetAccessKeyByKeyHash: %v / %+v", err, byHash)
+	}
+	if byHash.Grants[0].Headers["X-Tenant"] != "a" || byHash.Grants[0].DefaultArgs["env"] != "prod" {
+		t.Fatalf("grants JSON 回读不一致: %+v", byHash.Grants)
+	}
+	bySubj, err := store.GetAccessKeyBySubject(ctx, "partner-a")
+	if err != nil || bySubj.QPS != 5 {
+		t.Fatalf("GetAccessKeyBySubject: %v / %+v", err, bySubj)
+	}
+
+	// 更新 grants 为整体替换。
+	updated := *byHash
+	updated.Grants = []model.ToolGrant{{GatewayName: "mock.*"}}
+	updated.Enabled = false
+	if err := store.UpdateAccessKey(ctx, &updated); err != nil {
+		t.Fatalf("UpdateAccessKey: %v", err)
+	}
+	again, err := store.GetAccessKey(ctx, updated.ID)
+	if err != nil || len(again.Grants) != 1 || again.Grants[0].GatewayName != "mock.*" || again.Enabled {
+		t.Fatalf("Update 后回读不一致: %v / %+v", err, again)
+	}
+
+	// List 稳定读取。
+	all, err := store.ListAccessKeys(ctx)
+	if err != nil || len(all) == 0 {
+		t.Fatalf("ListAccessKeys: %v / %d", err, len(all))
+	}
+}

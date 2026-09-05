@@ -339,6 +339,223 @@ func (s *Store) ListCredentialsByServer(ctx context.Context, serverID string) ([
 	return out, rows.Err()
 }
 
+// ---- AccessKeyStore ----
+
+const accessKeyColumns = `id, name, subject, enabled, COALESCE(key_hash,''), qps, burst, created_at, updated_at`
+
+func scanAccessKey(scan func(dest ...any) error) (model.AccessKey, error) {
+	var k model.AccessKey
+	err := scan(&k.ID, &k.Name, &k.Subject, &k.Enabled, &k.KeyHash, &k.QPS, &k.Burst,
+		&k.CreatedAt, &k.UpdatedAt)
+	if err != nil {
+		return model.AccessKey{}, err
+	}
+	return k, nil
+}
+
+// getAccessKey 按查询条件读取单个 key，并补齐其 grants。
+func (s *Store) getAccessKey(ctx context.Context, where, arg string) (*model.AccessKey, error) {
+	k, err := scanAccessKey(func(dest ...any) error {
+		return s.db.QueryRowContext(ctx,
+			"SELECT "+accessKeyColumns+" FROM access_keys WHERE "+where, arg).Scan(dest...)
+	})
+	if err != nil {
+		return nil, notExistError(err, "access key", arg)
+	}
+	grants, err := s.loadGrants(ctx, k.ID)
+	if err != nil {
+		return nil, err
+	}
+	k.Grants = grants
+	return &k, nil
+}
+
+// loadGrants 读取某 key 的全部白名单条目（含 headers / default_args JSON 文本）。
+func (s *Store) loadGrants(ctx context.Context, keyID string) ([]model.ToolGrant, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT gateway_name, COALESCE(headers,''), COALESCE(default_args,'')
+		 FROM access_key_grants WHERE key_id = ? ORDER BY gateway_name`, keyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]model.ToolGrant, 0)
+	for rows.Next() {
+		var grant model.ToolGrant
+		var headers, defaultArgs string
+		if err := rows.Scan(&grant.GatewayName, &headers, &defaultArgs); err != nil {
+			return nil, err
+		}
+		if err := unmarshalJSON(headers, &grant.Headers); err != nil {
+			return nil, err
+		}
+		if err := unmarshalJSON(defaultArgs, &grant.DefaultArgs); err != nil {
+			return nil, err
+		}
+		out = append(out, grant)
+	}
+	return out, rows.Err()
+}
+
+// allAccessKeys 供 List 一次性读取全部 key 及其 grants（两次查询后聚组）。
+func (s *Store) allAccessKeys(ctx context.Context) ([]model.AccessKey, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+accessKeyColumns+" FROM access_keys ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]model.AccessKey, 0)
+	index := make(map[string]int) // keyID -> out 下标
+	for rows.Next() {
+		k, err := scanAccessKey(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		index[k.ID] = len(out)
+		out = append(out, k)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// 一次读取全部 grants 并按 key 分组填充。
+	grows, err := s.db.QueryContext(ctx,
+		`SELECT key_id, gateway_name, COALESCE(headers,''), COALESCE(default_args,'')
+		 FROM access_key_grants ORDER BY key_id, gateway_name`)
+	if err != nil {
+		return nil, err
+	}
+	defer grows.Close()
+	for grows.Next() {
+		var keyID, gatewayName, headers, defaultArgs string
+		if err := grows.Scan(&keyID, &gatewayName, &headers, &defaultArgs); err != nil {
+			return nil, err
+		}
+		i, ok := index[keyID]
+		if !ok {
+			continue
+		}
+		grant := model.ToolGrant{GatewayName: gatewayName}
+		if err := unmarshalJSON(headers, &grant.Headers); err != nil {
+			return nil, err
+		}
+		if err := unmarshalJSON(defaultArgs, &grant.DefaultArgs); err != nil {
+			return nil, err
+		}
+		out[i].Grants = append(out[i].Grants, grant)
+	}
+	return out, grows.Err()
+}
+
+// replaceGrants 在事务中先清空再写入指定 key 的白名单条目。
+func (s *Store) replaceGrants(ctx context.Context, tx *sql.Tx, keyID string, grants []model.ToolGrant) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM access_key_grants WHERE key_id = ?`, keyID); err != nil {
+		return err
+	}
+	for _, grant := range grants {
+		headers, err := marshalJSON(grant.Headers)
+		if err != nil {
+			return err
+		}
+		defaultArgs, err := marshalJSON(grant.DefaultArgs)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO access_key_grants (id, key_id, gateway_name, headers, default_args) VALUES (?,?,?,?,?)`,
+			newID("grant"), keyID, grant.GatewayName, headers, defaultArgs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CreateAccessKey 新增 API Key（key + grants 一个事务写入）。
+func (s *Store) CreateAccessKey(ctx context.Context, key *model.AccessKey) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if key.ID == "" {
+		key.ID = newID("key")
+	}
+	now := nowOr(key.CreatedAt)
+	key.CreatedAt = now
+	key.UpdatedAt = nowOr(key.UpdatedAt)
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO access_keys (id, name, subject, enabled, key_hash, qps, burst, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+		key.ID, key.Name, key.Subject, key.Enabled, key.KeyHash, key.QPS, key.Burst,
+		fmtTimeUTC(key.CreatedAt), fmtTimeUTC(key.UpdatedAt)); err != nil {
+		return fmt.Errorf("insert access_keys: %w", err)
+	}
+	if err := s.replaceGrants(ctx, tx, key.ID, key.Grants); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// GetAccessKey 按 id 读取 API Key（含 grants）。
+func (s *Store) GetAccessKey(ctx context.Context, id string) (*model.AccessKey, error) {
+	return s.getAccessKey(ctx, "id = ?", id)
+}
+
+// GetAccessKeyBySubject 按主体读取 API Key。
+func (s *Store) GetAccessKeyBySubject(ctx context.Context, subject string) (*model.AccessKey, error) {
+	return s.getAccessKey(ctx, "subject = ?", subject)
+}
+
+// GetAccessKeyByKeyHash 按密钥哈希读取 API Key（认证用）。
+func (s *Store) GetAccessKeyByKeyHash(ctx context.Context, keyHash string) (*model.AccessKey, error) {
+	return s.getAccessKey(ctx, "key_hash = ?", keyHash)
+}
+
+// ListAccessKeys 返回全部 API Key（含 grants）。
+func (s *Store) ListAccessKeys(ctx context.Context) ([]model.AccessKey, error) {
+	return s.allAccessKeys(ctx)
+}
+
+// UpdateAccessKey 覆盖 key 字段并整体替换 grants。
+func (s *Store) UpdateAccessKey(ctx context.Context, key *model.AccessKey) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	key.UpdatedAt = nowOr(key.UpdatedAt)
+	res, err := tx.ExecContext(ctx,
+		`UPDATE access_keys SET name=?, subject=?, enabled=?, key_hash=?, qps=?, burst=?, updated_at=? WHERE id=?`,
+		key.Name, key.Subject, key.Enabled, key.KeyHash, key.QPS, key.Burst,
+		fmtTimeUTC(key.UpdatedAt), key.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("access key %q 不存在", key.ID)
+	}
+	if err := s.replaceGrants(ctx, tx, key.ID, key.Grants); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// DeleteAccessKey 删除 API Key（grants 由外键 ON DELETE CASCADE 清理）。
+func (s *Store) DeleteAccessKey(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM access_keys WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("access key %q 不存在", id)
+	}
+	return nil
+}
+
 // ---- TrafficStore ----
 
 // AppendTraffic 追加一条调用采样。请求/追踪标识为可选，错误文本仅在失败时写入。

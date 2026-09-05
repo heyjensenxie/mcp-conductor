@@ -62,12 +62,48 @@ func TestAdapter_DiscoverAndCall(t *testing.T) {
 		t.Fatalf("Discover 结果错误: %+v", tools)
 	}
 
-	contents, err := adapter.Call(ctx, server, "search", map[string]any{"q": "x"})
+	contents, err := adapter.Call(ctx, server, "search", map[string]any{"q": "x"}, nil)
 	if err != nil {
 		t.Fatalf("Call 失败: %v", err)
 	}
 	if len(contents) == 0 || contents[0].Text == "" {
 		t.Fatalf("Call 内容为空: %+v", contents)
+	}
+}
+
+// TestAdapter_ExtraHeadersOfferedPerTool 验证按工具附加的 header 随调用发送，
+// 且与 Server 级凭据同名时以工具级为准。
+func TestAdapter_ExtraHeadersOfferedPerTool(t *testing.T) {
+	var gotToolHeader, gotServerHeader string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToolHeader = r.Header.Get("X-Tenant")
+		gotServerHeader = r.Header.Get("X-Upstream-Key")
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}`, string(req.ID))))
+	}))
+	defer upstream.Close()
+
+	adapter := New().WithHeaderFor(func(_ context.Context, server model.Server) map[string]string {
+		// Server 级凭据也声明 X-Tenant，验证工具级覆盖。
+		return map[string]string{"X-Upstream-Key": "k-abcd", "X-Tenant": "server-tenant"}
+	})
+
+	if _, err := adapter.Call(context.Background(), model.Server{
+		Endpoint:  upstream.URL,
+		Transport: model.TransportStreamableHTTP,
+	}, "search", map[string]any{"q": "x"}, map[string]string{"X-Tenant": "tool-tenant"}); err != nil {
+		t.Fatalf("Call 失败: %v", err)
+	}
+	if gotServerHeader != "k-abcd" {
+		t.Fatalf("Server 级凭据应注入，得到 %q", gotServerHeader)
+	}
+	if gotToolHeader != "tool-tenant" {
+		t.Fatalf("工具级 header 应覆盖 Server 级，得到 %q", gotToolHeader)
 	}
 }
 

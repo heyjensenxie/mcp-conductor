@@ -4,7 +4,10 @@
 // Policy、Credential、Traffic；Evaluation、Dataset、TestCase、Version 仅预留边界。
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Transport 描述 MCP Server 使用的传输方式。
 type Transport string
@@ -132,6 +135,102 @@ type Credential struct {
 	Value     string    `json:"-"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ToolGrant 是"某个 key 对某个工具"的白名单条目（含调用配置）。
+//
+// GatewayName 采用对外名（server.tool），支持 "*" 与 "server.*" 前缀通配，
+// 以表达跨 Server 聚合后的授权集合；Headers 用于调用该工具时附加的请求头
+// （部分工具需要独立的多于 Server 级凭证的鉴权头），DefaultArgs 用于在调用
+// 时注入固定参数（客户端同名参数可覆盖）。
+type ToolGrant struct {
+	GatewayName string            `json:"gateway_name"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	DefaultArgs map[string]any    `json:"default_args,omitempty"`
+}
+
+// AccessKey 是 API Key 调用方的完整配置，作为认证/授权/限流的主体载体。
+//
+// 语义：被管理的 key 采用白名单模式——只能看到/调用 Grants 内命中的工具；
+// QPS/Burst 为该 key 独立限流配额，0 表示沿用全局 ratelimit 配置。
+// KeyHash 存储 HMAC-SHA256(key)，Secret 为原始密钥明文，两者均 json:"-"
+// 不随任何 API 序列化下发；明文只在创建成功时经专用响应体返回一次。
+type AccessKey struct {
+	ID        string      `json:"id"`
+	Name      string      `json:"name"`
+	Subject   string      `json:"subject"` // 唯一主体标识（日志/授权/限流维度）
+	Enabled   bool        `json:"enabled"`
+	QPS       int         `json:"qps"`   // 0 → 全局默认
+	Burst     int         `json:"burst"` // 0 → 全局默认
+	Grants    []ToolGrant `json:"grants"`
+	KeyHash   string      `json:"-"` // HMAC-SHA256 哈希，落库不下发
+	Secret    string      `json:"-"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
+}
+
+// bestGrant 返回与工具（GatewayName）命中的白名单条目中"最特异"的那条；
+// 特异性 = 模式字面量匹配长度：精确工具名 > 更长前缀 > 更短前缀 > "*"。
+// 匹配结果与 Grants 声明/存储顺序无关（修复 MySQL ORDER BY gateway_name
+// 把通配排在精确项之前导致的配置遮蔽）；同特异并列时取先声明者
+// （重复条目属冗余配置，不改变授权语义）。
+func (k *AccessKey) bestGrant(tool string) *ToolGrant {
+	var best *ToolGrant
+	bestSpec := -1
+	for i := range k.Grants {
+		spec, ok := toolMatchSpec(k.Grants[i].GatewayName, tool)
+		if ok && spec > bestSpec {
+			best = &k.Grants[i]
+			bestSpec = spec
+		}
+	}
+	return best
+}
+
+// Granted 判定该 key 是否被授权调用工具（GatewayName），支持 "*" 与 "server.*" 通配。
+func (k *AccessKey) Granted(tool string) bool {
+	return k.bestGrant(tool) != nil
+}
+
+// GrantFor 返回与工具（GatewayName）命中的最特异白名单条目及调用配置；无匹配返回 nil。
+func (k *AccessKey) GrantFor(tool string) *ToolGrant {
+	return k.bestGrant(tool)
+}
+
+// toolMatchSpec 判断模式是否与工具名匹配并返回特异性分值：
+// "*" 全匹配（0）；"server.*" 前缀通配命中同一 Server 全部工具（得分为
+// 前缀字面量长度）；其余须精确相等（得分为全串长度）。ok=false 表示未命中。
+func toolMatchSpec(pattern, tool string) (spec int, ok bool) {
+	if pattern == "*" {
+		return 0, true
+	}
+	if strings.HasSuffix(pattern, ".*") {
+		prefix := pattern[:len(pattern)-1] // 去掉尾部 "*"，保留结尾 "."，如 "svc.prod."
+		if strings.HasPrefix(tool, prefix) {
+			return len(prefix), true
+		}
+		return 0, false
+	}
+	if pattern == tool {
+		return len(pattern), true
+	}
+	return 0, false
+}
+
+// MergeArguments 把固定参数与本次调用参数合并为发给上游的参数表：
+// 以 defaultArgs 为底，客户端传入的同名键以客户端为准（允许覆盖默认值）。
+func MergeArguments(defaultArgs, clientArgs map[string]any) map[string]any {
+	if len(defaultArgs) == 0 {
+		return clientArgs
+	}
+	out := make(map[string]any, len(defaultArgs)+len(clientArgs))
+	for k, v := range defaultArgs {
+		out[k] = v
+	}
+	for k, v := range clientArgs {
+		out[k] = v
+	}
+	return out
 }
 
 // TrafficSample 是一条工具调用观测记录（Request Logging / Audit 的落库结构）。

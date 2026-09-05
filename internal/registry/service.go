@@ -27,8 +27,9 @@ type ToolDiscoverer interface {
 }
 
 // ToolCaller 调用上游 MCP Server 的某个工具。
+// extraHeaders 是按工具附加的请求头（per-tool 鉴权），可为 nil。
 type ToolCaller interface {
-	Call(ctx context.Context, server model.Server, tool string, arguments map[string]any) ([]CallContent, error)
+	Call(ctx context.Context, server model.Server, tool string, arguments map[string]any, extraHeaders map[string]string) ([]CallContent, error)
 }
 
 // CallContent 是工具调用的文本结果片段（对标 MCP content 结构）。

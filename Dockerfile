@@ -6,7 +6,7 @@
 # ---- 阶段 1：构建前端 ----
 FROM node:20-alpine AS web
 WORKDIR /src/web
-COPY web/package.json ./
+COPY web/package.json web/package-lock.json* ./
 RUN npm install
 COPY web/ .
 RUN npm run build
@@ -19,8 +19,10 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-# 用真实前端产物覆盖占位 dist。
-RUN rm -rf internal/console/dist && cp -r web/dist internal/console/dist
+# 前端以 node 阶段产物为权威来源（覆盖宿主可能带入的旧 web/dist）。
+COPY --from=web /src/web/dist ./web/dist
+# 内嵌前端产物到 go:embed 目录（先清空占位 dist）。
+RUN rm -rf internal/console/dist && mkdir -p internal/console/dist && cp -r web/dist/. internal/console/dist/
 RUN go build -trimpath -ldflags="-s -w" -o /out/mcp-conductor ./cmd/conductor
 
 # ---- 阶段 3：最小运行态 ----

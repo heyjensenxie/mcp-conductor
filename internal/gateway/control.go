@@ -1,8 +1,11 @@
 package gateway
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/xmj128/mcp-conductor/internal/errs"
 	"github.com/xmj128/mcp-conductor/internal/model"
@@ -49,11 +52,14 @@ type Control struct {
 	registry *registry.Service
 	store    storage.Store
 	metrics  *observability.Metrics
+	keyHash  func(token string) (string, error) // 见 NewControl
 }
 
 // NewControl 创建控制面处理器。
-func NewControl(registry *registry.Service, store storage.Store, metrics *observability.Metrics) *Control {
-	return &Control{registry: registry, store: store, metrics: metrics}
+// keyHash 负责把 API Key 明文映射为落库哈希（由 app 注入 auth.KeyHash），
+// 保证 Control 不接触 token_secret。
+func NewControl(registry *registry.Service, store storage.Store, metrics *observability.Metrics, keyHash func(token string) (string, error)) *Control {
+	return &Control{registry: registry, store: store, metrics: metrics, keyHash: keyHash}
 }
 
 // handleListServers 列出全部 Server。
@@ -247,6 +253,141 @@ func (c *Control) handleListCredentials(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeOK(w, RequestIDFrom(r.Context()), credentials)
+}
+
+// ---- AccessKey ----
+
+// handleListKeys 列出全部 API Key（不含 KeyHash/Secret）。
+func (c *Control) handleListKeys(w http.ResponseWriter, r *http.Request) {
+	keys, err := c.store.ListAccessKeys(r.Context())
+	if err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), keys)
+}
+
+// createKeyResponse 是创建 API Key 的响应：普通 AccessKey 字段 + 仅此一次的
+// 明文 Secret。模型字段已 json:"-"，故序列化需在此显式补出一次。
+type createKeyResponse struct {
+	model.AccessKey
+	Secret string `json:"secret"`
+}
+
+// handleCreateKey 创建 API Key：生成随机明文密钥并返回（仅此一次），
+// 落库仅存哈希；subject 唯一。Grants 为白名单授权 + 调用配置。
+func (c *Control) handleCreateKey(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Name    string            `json:"name"`
+		Subject string            `json:"subject"`
+		QPS     int               `json:"qps"`
+		Burst   int               `json:"burst"`
+		Grants  []model.ToolGrant `json:"grants"`
+	}
+	if err := decodeBody(r, &input); err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
+		return
+	}
+	if input.Name == "" || input.Subject == "" {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "name 与 subject 不能为空"))
+		return
+	}
+	if _, err := c.store.GetAccessKeyBySubject(r.Context(), input.Subject); err == nil {
+		writeGatewayError(w, r, http.StatusConflict, errs.New(errs.CodeInvalidArgument, "主题 %q 已存在", input.Subject))
+		return
+	}
+	secret := randomHex(32)
+	keyHash, err := c.keyHash(secret)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusInternalServerError, errs.Wrap(errs.CodeInternal, err, "生成密钥哈希失败"))
+		return
+	}
+	now := time.Now().UTC()
+	key := &model.AccessKey{
+		Name:      input.Name,
+		Subject:   input.Subject,
+		Enabled:   true,
+		QPS:       input.QPS,
+		Burst:     input.Burst,
+		Grants:    input.Grants,
+		KeyHash:   keyHash,
+		Secret:    secret, // 明文仅本次响应下发
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := c.store.CreateAccessKey(r.Context(), key); err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeEnvelope(w, http.StatusCreated, "ok", "success", RequestIDFrom(r.Context()),
+		createKeyResponse{AccessKey: *key, Secret: secret})
+}
+
+// handleGetKey 读取单个 API Key。
+func (c *Control) handleGetKey(w http.ResponseWriter, r *http.Request) {
+	key, err := c.store.GetAccessKey(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), key)
+}
+
+// handleUpdateKey 更新 API Key：名称/启用/配额/白名单；不重设密钥明文。
+func (c *Control) handleUpdateKey(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Name    *string            `json:"name"`
+		Enabled *bool              `json:"enabled"`
+		QPS     *int               `json:"qps"`
+		Burst   *int               `json:"burst"`
+		Grants  *[]model.ToolGrant `json:"grants"`
+	}
+	if err := decodeBody(r, &input); err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
+		return
+	}
+	key, err := c.store.GetAccessKey(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	if input.Name != nil {
+		key.Name = *input.Name
+	}
+	if input.Enabled != nil {
+		key.Enabled = *input.Enabled
+	}
+	if input.QPS != nil {
+		key.QPS = *input.QPS
+	}
+	if input.Burst != nil {
+		key.Burst = *input.Burst
+	}
+	if input.Grants != nil {
+		key.Grants = *input.Grants
+	}
+	key.UpdatedAt = time.Now().UTC()
+	if err := c.store.UpdateAccessKey(r.Context(), key); err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), key)
+}
+
+// handleDeleteKey 删除 API Key（grants 由存储级联清理）。
+func (c *Control) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
+	if err := c.store.DeleteAccessKey(r.Context(), r.PathValue("id")); err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeEnvelope(w, http.StatusNoContent, "ok", "success", RequestIDFrom(r.Context()), nil)
+}
+
+// randomHex 生成 n 字节随机十六进制字符串（如密钥明文）。
+func randomHex(n int) string {
+	buf := make([]byte, n)
+	_, _ = rand.Read(buf)
+	return hex.EncodeToString(buf)
 }
 
 // handleMetrics 返回调用指标快照。

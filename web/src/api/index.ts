@@ -1,5 +1,9 @@
 import http, { unwrap } from './http'
-import type { Credential, MCPServer, MetricSnapshot, Policy, Route, Tool, TrafficSample } from '@/types'
+import type { AccessKey, Credential, MCPServer, MetricSnapshot, Policy, Route, Tool, ToolGrant, TrafficSample } from '@/types'
+
+// ---- Auth（免认证端点）----
+
+export const getAuthStatus = () => unwrap<{ auth_required: boolean }>(http.get('/auth/status'))
 
 // ---- Servers ----
 
@@ -39,6 +43,22 @@ export const listPolicies = () => unwrap<Policy[]>(http.get('/policies'))
 
 export const createPolicy = (payload: Partial<Policy>) =>
   unwrap<Policy>(http.post('/policies', payload))
+
+// ---- API Keys（访问控制）----
+
+export const listKeys = () => unwrap<AccessKey[]>(http.get('/keys'))
+
+export const createKey = (payload: { name: string; subject: string; qps?: number; burst?: number; grants?: ToolGrant[] }) =>
+  unwrap<AccessKey>(http.post('/keys', payload))
+
+export const getKey = (id: string) => unwrap<AccessKey>(http.get(`/keys/${id}`))
+
+export const updateKey = (
+  id: string,
+  payload: Partial<Pick<AccessKey, 'name' | 'enabled' | 'qps' | 'burst' | 'grants'>>,
+) => unwrap<AccessKey>(http.patch(`/keys/${id}`, payload))
+
+export const deleteKey = (id: string) => unwrap<void>(http.delete(`/keys/${id}`))
 
 // ---- Metrics / Logs ----
 

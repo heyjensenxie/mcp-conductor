@@ -1,0 +1,10 @@
+# 构建上下文瘦身：排除源码无关内容，避免把密钥/旧产物带进镜像层。
+.git
+.local
+.env
+bin
+node_modules
+**/node_modules
+web/dist
+internal/console/dist
+*.log

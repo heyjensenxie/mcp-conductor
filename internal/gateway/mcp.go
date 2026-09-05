@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/xmj128/mcp-conductor/internal/access"
+	"github.com/xmj128/mcp-conductor/internal/auth"
 	"github.com/xmj128/mcp-conductor/internal/balancer"
 	"github.com/xmj128/mcp-conductor/internal/errs"
 	"github.com/xmj128/mcp-conductor/internal/mcp"
@@ -21,12 +23,12 @@ type ToolLister interface {
 
 // ToolCaller 是工具调用能力（由 registry.ToolCaller 满足）。
 type ToolCaller interface {
-	Call(ctx context.Context, server model.Server, tool string, arguments map[string]any) ([]registry.CallContent, error)
+	Call(ctx context.Context, server model.Server, tool string, arguments map[string]any, extraHeaders map[string]string) ([]registry.CallContent, error)
 }
 
-// Authorizer 裁定主体对工具的访问权限。
+// Authorizer 裁定主体对工具的访问权限（managed key 白名单 / 非管理回退遗留规则）。
 type Authorizer interface {
-	Authorize(ctx context.Context, subject string, tool string) error
+	Authorize(ctx context.Context, identity *auth.Identity, tool string) error
 }
 
 // MCPGateway 实现 mcp.ToolService，作为统一 MCP 端点的后端。
@@ -89,11 +91,16 @@ func NewMCPGateway(
 	return g
 }
 
-// ListTools 聚合返回全部已启用工具，作为 tools/list 响应。
+// ListTools 聚合返回当前主体可见的工具，作为 tools/list 响应。
+// 被管理的 API Key 只下发白名单内工具；其余主体返回全部已启用工具。
 func (g *MCPGateway) ListTools(ctx context.Context) ([]mcp.Tool, error) {
 	tools, err := g.tools.ListTools(ctx)
 	if err != nil {
 		return nil, errs.Wrap(errs.CodeInternal, err, "读取工具注册表失败")
+	}
+	identity := IdentityFrom(ctx)
+	if identity.Key != nil {
+		tools = access.FilterTools(identity, tools)
 	}
 	out := make([]mcp.Tool, 0, len(tools))
 	for _, tool := range tools {
@@ -109,14 +116,14 @@ func (g *MCPGateway) ListTools(ctx context.Context) ([]mcp.Tool, error) {
 	return out, nil
 }
 
-// CallTool 是 tools/call 的完整处理：授权 → 路由 → 均衡 → 上游调用 → 观测。
-// 业务失败统一返回 isError 结果，仅在参数层面才返回 Go error。
+// CallTool 是 tools/call 的完整处理：授权 → 路由 → 均衡 → 调用配置 →
+// 上游调用 → 观测。业务失败统一返回 isError 结果，仅在参数层面才返回 Go error。
 func (g *MCPGateway) CallTool(ctx context.Context, name string, arguments map[string]any) (*mcp.CallToolResult, error) {
 	start := time.Now()
-	subject := IdentityFrom(ctx).Subject
+	identity := IdentityFrom(ctx)
 
-	// 1. 授权（Policy）
-	if err := g.authorizer.Authorize(ctx, subject, name); err != nil {
+	// 1. 授权（managed key 白名单 / 非管理回退 Policy）
+	if err := g.authorizer.Authorize(ctx, identity, name); err != nil {
 		return g.fail(name, start, err)
 	}
 
@@ -143,13 +150,23 @@ func (g *MCPGateway) CallTool(ctx context.Context, name string, arguments map[st
 		}
 	}
 
-	// 5. 上游调用（带超时）
+	// 5. 调用配置（key×tool）：合并固定参数、附加该工具的请求头（鉴权）
+	targetArgs := arguments
+	var extraHeaders map[string]string
+	if identity.Key != nil {
+		if grant := identity.Key.GrantFor(name); grant != nil {
+			targetArgs = model.MergeArguments(grant.DefaultArgs, arguments)
+			extraHeaders = grant.Headers
+		}
+	}
+
+	// 6. 上游调用（带超时）
 	callCtx, cancel := context.WithTimeout(ctx, g.upstreamTimeout)
 	defer cancel()
-	contents, callErr := g.caller.Call(callCtx, resolved.Server, resolved.Tool.OriginalName, arguments)
+	contents, callErr := g.caller.Call(callCtx, resolved.Server, resolved.Tool.OriginalName, targetArgs, extraHeaders)
 
-	// 6. 观测（无论成败）
-	g.record(ctx, resolved, name, subject, start, callErr)
+	// 7. 观测（无论成败）
+	g.record(ctx, resolved, name, identity.Subject, start, callErr)
 
 	if callErr != nil {
 		return g.fail(name, start, callErr)
