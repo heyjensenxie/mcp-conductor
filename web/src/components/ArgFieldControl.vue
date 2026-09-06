@@ -2,7 +2,7 @@
   <!-- 枚举 → 下拉；boolean → 开关；number/integer → 数字；其余字符串输入 -->
   <a-select
     v-if="enumOptions.length"
-    :value="modelValue"
+    :value="enumModelValue"
     :options="enumOptions"
     :allow-clear="allowClear"
     :placeholder="placeholder"
@@ -69,6 +69,12 @@ const enumOptions = computed(() =>
   (props.enumVals ?? []).map((v) => ({ value: v.value as string | number | boolean, label: v.text })),
 )
 const placeholder = computed(() => props.placeholder || t('toolDetail.selectHint'))
+
+// 枚举下拉的空态：'' 会顶掉 antd 的占位文案（仅 null/undefined 才显示）。
+// 若 '' 本身是合法枚举值（罕见）则原样展示；否则视为“未选”，以露出占位提示。
+const enumModelValue = computed(() =>
+  props.modelValue === '' && !enumOptions.value.some((o) => o.value === '') ? undefined : props.modelValue,
+)
 </script>
 
 <style scoped>

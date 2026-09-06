@@ -409,7 +409,8 @@ const secretVisible = ref(false)
 
 // ---- 试调用：以该 Key 身份端到端调用（Operator 触发，后台免明文，不写遥测）----
 const invokeVisible = ref(false)
-const invokeTool = ref('')
+// 未选保持 undefined：antd Select 仅在值为空(null/undefined)时展示占位文案。
+const invokeTool = ref<string | undefined>(undefined)
 const invokeArgsText = ref('')
 const invokeRunning = ref(false)
 const invokeOut = ref<{ type: 'ok'; res: KeyInvokeResult } | { type: 'denied'; message: string } | null>(null)
@@ -645,14 +646,16 @@ async function doRotateKey() {
 }
 
 function openInvoke() {
-  invokeTool.value = ''
+  invokeTool.value = undefined
   invokeArgsText.value = ''
   invokeOut.value = null
   invokeVisible.value = true
 }
 
 async function runInvoke() {
-  if (!key.value || !invokeTool.value) return
+  const ak = key.value
+  const tool = invokeTool.value
+  if (!ak || !tool) return
   let args: Record<string, unknown> = {}
   if (invokeArgsText.value.trim()) {
     try {
@@ -667,7 +670,7 @@ async function runInvoke() {
   invokeRunning.value = true
   invokeOut.value = null
   try {
-    const res = await invokeKey(key.value.id, { gateway_tool: invokeTool.value, arguments: args })
+    const res = await invokeKey(ak.id, { gateway_tool: tool, arguments: args })
     invokeOut.value = { type: 'ok', res }
   } catch (e) {
     // 403 授权拒绝/禁用等由后端信封给出；展示为明确拒绝而非裸错误。

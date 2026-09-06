@@ -99,9 +99,9 @@ const filters = reactive<{ q: string; serverId?: string; enabled?: string }>({ q
 const dialogVisible = ref(false)
 const saving = ref(false)
 const editingId = ref('')
-const form = reactive<{ name: string; server_id: string; tool_names: string[] }>({
+// server_id 下拉未选保持 undefined：antd Select 仅在值为空(null/undefined)时展示占位文案。
+const form = reactive<{ name: string; server_id?: string; tool_names: string[] }>({
   name: '',
-  server_id: '',
   tool_names: [],
 })
 
@@ -165,7 +165,7 @@ function onTableChange(p: { current?: number; pageSize?: number }) {
 
 function openCreate() {
   editingId.value = ''
-  Object.assign(form, { name: '', server_id: '', tool_names: [] })
+  Object.assign(form, { name: '', server_id: undefined, tool_names: [] })
   dialogVisible.value = true
 }
 
