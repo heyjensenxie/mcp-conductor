@@ -67,7 +67,8 @@ const pagination = reactive({
   showSizeChanger: true,
   showTotal: (total: number) => t('filter.total', { total }),
 })
-const filters = reactive({ q: '', enabled: '' })
+// enabled 下拉初始为 undefined：antd Select 仅在值为空(null/undefined)时展示占位文案。
+const filters = reactive<{ q: string; enabled?: string }>({ q: '' })
 const authRequired = ref<boolean | null>(null)
 const createVisible = ref(false)
 const creating = ref(false)

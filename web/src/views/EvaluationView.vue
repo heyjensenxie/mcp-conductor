@@ -213,9 +213,10 @@ import type { EvalMeta, EvalReport, EvalSuiteResult, MCPServer, ServerInstance }
 const { t } = useI18n()
 
 const servers = ref<MCPServer[]>([])
-const serverId = ref('')
+// 下拉未选保持 undefined：antd Select 仅在值为空(null/undefined)时展示占位文案。
+const serverId = ref<string | undefined>(undefined)
 // 评测定向实例：空=取首个可拨测实例（仅在该 Server 多实例时显示选择器）。
-const targetInstance = ref('')
+const targetInstance = ref<string | undefined>(undefined)
 const meta = ref<EvalMeta>()
 const report = ref<EvalReport>()
 const qualityLoading = ref(false)
@@ -246,7 +247,7 @@ onMounted(async () => {
 })
 
 async function onServerChange() {
-  targetInstance.value = ''
+  targetInstance.value = undefined
   meta.value = undefined
   report.value = undefined
   suiteResult.value = undefined

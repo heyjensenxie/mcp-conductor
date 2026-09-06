@@ -146,7 +146,15 @@ const pagination = reactive({
   showSizeChanger: true,
   showTotal: (total: number) => t('filter.total', { total }),
 })
-const logFilters = reactive({ serverId: '', instanceId: '', q: '', status: '', from: '', to: '' })
+// 下拉筛选(serverId/instanceId/status)初始为 undefined：antd Select 仅在值为空(null/undefined)时展示占位文案。
+const logFilters = reactive<{
+  q: string
+  serverId?: string
+  instanceId?: string
+  status?: string
+  from: string
+  to: string
+}>({ q: '', from: '', to: '' })
 const dateRange = ref<any>(null)
 
 // 失败状态=标准错误码；'success' 之外的 code 直接展示。
@@ -239,7 +247,7 @@ function onFilterChange() {
 // 切换 Server 时级联加载其实例，供按实例筛选；实例下拉仅在多实例 Server 出现。
 async function onServerFilter() {
   instances.value = []
-  logFilters.instanceId = ''
+  logFilters.instanceId = undefined
   if (logFilters.serverId) {
     try {
       instances.value = await listServerInstances(logFilters.serverId)

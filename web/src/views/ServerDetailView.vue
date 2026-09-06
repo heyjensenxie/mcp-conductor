@@ -552,7 +552,8 @@ function onToolTableChange(p: { current?: number; pageSize?: number }) {
 // ---- Logs tab（分页，server 取自路径）----
 const logs = ref<TrafficSample[]>([])
 const logsLoading = ref(false)
-const logFilters = reactive({ q: '', status: '' })
+// status 下拉初始为 undefined：antd Select 仅在值为空(null/undefined)时展示占位文案。
+const logFilters = reactive<{ q: string; status?: string }>({ q: '' })
 const logPaging = reactive({
   current: 1,
   pageSize: 20,
@@ -605,7 +606,8 @@ const savingServer = ref(false)
 
 const credentials = ref<Credential[]>([])
 const credsLoading = ref(false)
-const credFilters = reactive({ q: '', kind: '', hasValue: '' })
+// kind/hasValue 下拉初始为 undefined：antd Select 仅在值为空(null/undefined)时展示占位文案。
+const credFilters = reactive<{ q: string; kind?: string; hasValue?: string }>({ q: '' })
 const credPaging = reactive({
   current: 1,
   pageSize: 20,

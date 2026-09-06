@@ -76,7 +76,8 @@ const pagination = reactive({
   showSizeChanger: true,
   showTotal: (total: number) => t('filter.total', { total }),
 })
-const filters = reactive({ q: '', serverId: '', enabled: '' })
+// 下拉筛选(serverId/enabled)初始为 undefined：antd Select 仅在值为空(null/undefined)时展示占位文案。
+const filters = reactive<{ q: string; serverId?: string; enabled?: string }>({ q: '' })
 const toggling = ref('')
 const editVisible = ref(false)
 const saving = ref(false)

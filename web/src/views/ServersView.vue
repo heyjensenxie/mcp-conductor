@@ -141,8 +141,8 @@ const pagination = reactive({
   showSizeChanger: true,
   showTotal: (total: number) => t('filter.total', { total }),
 })
-// 列表筛选：q 关键词 + enabled 三态 + 健康状态；'' 表示不过滤。
-const filters = reactive({ q: '', enabled: '', health: '' })
+// 列表筛选：q 关键词 + enabled/health 三态下拉。下拉未选(undefined)以便展示占位提示。
+const filters = reactive<{ q: string; enabled?: string; health?: string }>({ q: '' })
 const healthOptions = ['unknown', 'healthy', 'unhealthy', 'disabled']
 const dialogVisible = ref(false)
 const submitting = ref(false)
