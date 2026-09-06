@@ -123,6 +123,21 @@ type AuthConfig struct {
 	AdminPassword string `yaml:"admin_password"`
 	// SessionTTL 登录会话有效期（默认 12h）。
 	SessionTTL time.Duration `yaml:"session_ttl"`
+	// LoginLimit 控制 Console 登录防爆破：按来源 IP 统计登录失败次数，检测窗口内
+	// 达到上限即临时封禁该 IP（TTL 自动解封，进程内状态，与数据面 auto_ban 独立）。
+	LoginLimit LoginLimitConfig `yaml:"login_limit"`
+}
+
+// LoginLimitConfig 描述 Console 登录防爆破参数（仅作用于 POST /api/auth/login；
+// operator_token 走 Authorization 直连 /api 不受影响）。
+type LoginLimitConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// MaxFailures 是检测窗口内登录失败次数阈值，达到即封禁该来源 IP（默认 5）。
+	MaxFailures int `yaml:"max_failures"`
+	// WindowSeconds 是失败计数滑动窗口（秒，默认 300=5 分钟）。
+	WindowSeconds int `yaml:"window_seconds"`
+	// BanSeconds 是达到阈值后的临时封禁时长（秒，默认 900=15 分钟），到期自动解封。
+	BanSeconds int `yaml:"ban_seconds"`
 }
 
 // LoggingConfig 控制结构化日志输出级别。
@@ -182,6 +197,12 @@ func Default() Config {
 			AdminUsername: "admin",
 			AdminPassword: "",
 			SessionTTL:    12 * time.Hour,
+			LoginLimit: LoginLimitConfig{
+				Enabled:       true, // 登录防爆破开箱即防：5 次失败 / 5 分钟 → 封该 IP 15 分钟
+				MaxFailures:   5,
+				WindowSeconds: 300,
+				BanSeconds:    900,
+			},
 		},
 		Credentials: CredentialsConfig{
 			EncryptionKey: "",
@@ -278,6 +299,24 @@ func applyEnvOverrides(cfg *Config) {
 	if v := lookupEnv("CONDUCTOR_AUTH_SESSION_TTL_MINUTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Auth.SessionTTL = time.Duration(n) * time.Minute
+		}
+	}
+	if v := lookupEnv("CONDUCTOR_AUTH_LOGIN_LIMIT_ENABLED"); v != "" {
+		cfg.Auth.LoginLimit.Enabled = parseBool(v)
+	}
+	if v := lookupEnv("CONDUCTOR_AUTH_LOGIN_LIMIT_MAX_FAILURES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Auth.LoginLimit.MaxFailures = n
+		}
+	}
+	if v := lookupEnv("CONDUCTOR_AUTH_LOGIN_LIMIT_WINDOW_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Auth.LoginLimit.WindowSeconds = n
+		}
+	}
+	if v := lookupEnv("CONDUCTOR_AUTH_LOGIN_LIMIT_BAN_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Auth.LoginLimit.BanSeconds = n
 		}
 	}
 	if v := lookupEnv("CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY"); v != "" {
@@ -435,6 +474,13 @@ func (c Config) validate() error {
 	}
 	if ab.Enabled && (ab.WindowSeconds < 1 || ab.MaxViolations < 1 || ab.BanSeconds < 1) {
 		return fmt.Errorf("ratelimit.auto_ban 开启时 window_seconds/max_violations/ban_seconds 均须 ≥1")
+	}
+	ll := c.Auth.LoginLimit
+	if ll.WindowSeconds < 0 || ll.MaxFailures < 0 || ll.BanSeconds < 0 {
+		return fmt.Errorf("auth.login_limit 各参数不能为负数")
+	}
+	if ll.Enabled && (ll.WindowSeconds < 1 || ll.MaxFailures < 1 || ll.BanSeconds < 1) {
+		return fmt.Errorf("auth.login_limit 开启时 window_seconds/max_failures/ban_seconds 均须 ≥1")
 	}
 	switch c.Database.Driver {
 	case "memory", "mysql", "":

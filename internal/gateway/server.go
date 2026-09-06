@@ -54,7 +54,9 @@ func NewServer(cfg config.Config, deps Deps) *http.Server {
 	mux.Handle(mcpPath+"/", mcpHandler)
 
 	// 认证：登录签发 / 状态探测（免认证路径）。
-	mux.HandleFunc("POST /api/auth/login", handleLogin(deps.AuthService))
+	// Console 登录防爆破：按来源 IP 统计登录失败，窗口内达上限即临时封禁该 IP。
+	mux.Handle("POST /api/auth/login",
+		loginGuardMiddleware(newLoginGuard(cfg.Auth.LoginLimit))(handleLogin(deps.AuthService)))
 	mux.HandleFunc("GET /api/auth/status", handleAuthStatus(deps.AuthService))
 
 	// 运行期治理配置缓存：封禁名单 + 三级限流阈值，存值优先、config.yaml 作种子。

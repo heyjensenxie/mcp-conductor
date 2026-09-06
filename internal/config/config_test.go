@@ -182,6 +182,41 @@ func TestAutoBanConfig(t *testing.T) {
 	}
 }
 
+// TestLoginLimitConfig 验证 auth.login_limit 的 env 覆盖与开启时参数校验。
+func TestLoginLimitConfig(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// 安全默认：默认开启（与 auth.enabled 同风格），开箱即防。
+	if !cfg.Auth.LoginLimit.Enabled {
+		t.Fatal("auth.login_limit 默认应开启")
+	}
+	if cfg.Auth.LoginLimit.MaxFailures != 5 || cfg.Auth.LoginLimit.WindowSeconds != 300 || cfg.Auth.LoginLimit.BanSeconds != 900 {
+		t.Fatalf("auth.login_limit 默认值异常: %+v", cfg.Auth.LoginLimit)
+	}
+
+	t.Setenv("CONDUCTOR_AUTH_LOGIN_LIMIT_ENABLED", "true")
+	t.Setenv("CONDUCTOR_AUTH_LOGIN_LIMIT_MAX_FAILURES", "3")
+	t.Setenv("CONDUCTOR_AUTH_LOGIN_LIMIT_WINDOW_SECONDS", "60")
+	t.Setenv("CONDUCTOR_AUTH_LOGIN_LIMIT_BAN_SECONDS", "300")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ll := cfg.Auth.LoginLimit
+	if !ll.Enabled || ll.MaxFailures != 3 || ll.WindowSeconds != 60 || ll.BanSeconds != 300 {
+		t.Fatalf("auth.login_limit env 覆盖失败: %+v", ll)
+	}
+
+	// 开启但参数非法（如 max_failures=0）应拒绝。
+	t.Setenv("CONDUCTOR_AUTH_LOGIN_LIMIT_ENABLED", "true")
+	t.Setenv("CONDUCTOR_AUTH_LOGIN_LIMIT_MAX_FAILURES", "0")
+	if _, err := Load(""); err == nil {
+		t.Fatal("auth.login_limit 开启且 max_failures=0 应被拒绝")
+	}
+}
+
 // TestSecurityIPWhitelist 验证 security.ip_whitelist 的 env 加载与非法项校验。
 func TestSecurityIPWhitelist(t *testing.T) {
 	t.Setenv("CONDUCTOR_SECURITY_IP_WHITELIST", "127.0.0.1, 10.0.0.0/8")

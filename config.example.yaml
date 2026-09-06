@@ -81,6 +81,14 @@ auth:
   admin_password: ""
   # 登录会话有效期（留空默认 12h；单位小时，环境变量用 CONDUCTOR_AUTH_SESSION_TTL_MINUTES 指定分钟）。
   session_ttl: 12h
+  # Console 登录防爆破（默认开启）：按来源 IP 统计登录失败次数，检测窗口内达到
+  # max_failures 即临时封禁该 IP（ban_seconds 到期自动解封）。仅作用于登录端点，
+  # operator_token 走 Authorization 直连 /api 不受影响。状态为进程内存态，重启即清。
+  login_limit:
+    enabled: true
+    max_failures: 5 # 检测窗口内失败次数阈值
+    window_seconds: 300 # 失败计数滑动窗口（秒，默认 300=5 分钟）
+    ban_seconds: 900 # 临时封禁时长（秒，默认 900=15 分钟）
 
 # Gateway→上游 凭证加密：AES-256 密钥（64 位 hex）。为空时 MySQL 存储拒绝
 # 落库明文凭证值（仅 memory 模式可在进程内承载）。
