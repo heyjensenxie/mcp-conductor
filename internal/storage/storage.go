@@ -87,6 +87,8 @@ type AccessKeyStore interface {
 // TrafficStore 以追加方式记录工具调用采样（Request Log）。
 type TrafficStore interface {
 	AppendTraffic(ctx context.Context, sample model.TrafficSample) error
+	// GetTraffic 按流水主键读取单条调用采样（含已捕获入参，供详情/回放；不存在返回 CodeNotFound）。
+	GetTraffic(ctx context.Context, id int64) (*model.TrafficSample, error)
 	RecentTraffic(ctx context.Context, limit int) ([]model.TrafficSample, error)
 	// RecentTrafficByServer 返回指定 Server 最近 limit 条调用采样（按写入倒序）。
 	RecentTrafficByServer(ctx context.Context, serverID string, limit int) ([]model.TrafficSample, error)
@@ -129,6 +131,17 @@ type TrafficQueryStore interface {
 	QueryTraffic(ctx context.Context, q query.TrafficQuery) ([]model.TrafficSample, int, error)
 }
 
+// TrendStore 持久化分钟桶趋势：进程内指标聚合器的“已闭合分钟”由 app 定期
+// 幂等 upsert 到此（PK (scope,dim_key,minute) 防重）；趋势读侧作为长程权威源。
+type TrendStore interface {
+	// UpsertTrendBuckets 幂等写入已闭合分钟桶（同键存在则覆盖 totals/errors）。
+	UpsertTrendBuckets(ctx context.Context, buckets []model.TrendMinute) error
+	// QueryTrendBuckets 按 query.TrendQuery 读取窗口内的分钟桶（minute 升序）。
+	QueryTrendBuckets(ctx context.Context, q query.TrendQuery) ([]model.TrendMinute, error)
+	// DeleteTrendBucketsBefore 清理 minute < before 的旧桶（保留天数收敛）。
+	DeleteTrendBucketsBefore(ctx context.Context, beforeMinute int64) error
+}
+
 // Store 聚合全部实体存储接口，作为组合注入的入口。
 type Store interface {
 	ServerStore
@@ -144,4 +157,5 @@ type Store interface {
 	CredentialQueryStore
 	AccessKeyQueryStore
 	TrafficQueryStore
+	TrendStore
 }

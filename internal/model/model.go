@@ -271,9 +271,17 @@ func MergeArguments(defaultArgs, clientArgs map[string]any) map[string]any {
 
 // TrafficSample 是一条工具调用观测记录（Request Logging / Audit 的落库结构）。
 type TrafficSample struct {
-	RequestID string `json:"request_id"`
-	TraceID   string `json:"trace_id,omitempty"`
-	ServerID  string `json:"server_id"`
+	// ID 是流水主键（MySQL 自增 / memory 自增分配），供详情与回放按 id 寻址。
+	ID int64 `json:"id"`
+	// HasArgs 标记该行是否捕获了入参（列表轻量标记，供前端启用「回放」；
+	// 入参本体见 RequestArgs，永不随列表下发）。
+	HasArgs bool `json:"has_args,omitempty"`
+	// RequestArgs 记录本次实际发出的 tools/call 入参（record_args 开启时捕获）。
+	// json:"-"：只在 GET /api/logs/{id} 详情显式带出，列表/常规序列化不泄露请求体。
+	RequestArgs map[string]any `json:"-"`
+	RequestID   string         `json:"request_id"`
+	TraceID     string         `json:"trace_id,omitempty"`
+	ServerID    string         `json:"server_id"`
 	// InstanceID 记录本次调用实际命中的上游实例；实例未定（如路由阶段失败）
 	// 或 Server 单实例未落实例归属时为 ""。
 	InstanceID string    `json:"instance_id,omitempty"`
@@ -283,4 +291,16 @@ type TrafficSample struct {
 	LatencyMS  int64     `json:"latency_ms"`
 	Error      string    `json:"error,omitempty"`
 	Timestamp  time.Time `json:"timestamp"`
+}
+
+// TrendMinute 是单个维度在某个已闭合分钟桶的计数（进程内分钟桶落库的持久形态）。
+// Scope 与 DimensionKey 的关系：tool→gateway 工具名；server→server id（ServerID 同值）；
+// instance→instance id（ServerID 记录所属 Server）。Minute 为该分钟起点（UTC Unix 秒）。
+type TrendMinute struct {
+	Scope    string `json:"scope"`
+	ServerID string `json:"server_id,omitempty"`
+	DimKey   string `json:"dim_key"`
+	Minute   int64  `json:"minute"`
+	Totals   int64  `json:"totals"`
+	Errors   int64  `json:"errors"`
 }

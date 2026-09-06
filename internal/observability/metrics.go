@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
 )
 
 // metricsCap 每个维度保留的最大延迟样本数，防止无限增长。
@@ -157,6 +159,104 @@ func (m *Metrics) trendScope(now time.Time, minutes int, match func(key string) 
 		}
 	}
 	return points
+}
+
+// parseDimKey 把进程内维度 key 解析为持久化趋势三元组（与 trend_minute 列对齐）：
+// tool 维（无前缀）→ (tool, "", tool名)；server: → (server, id, id)；
+// instance:<sid>:<iid> → (instance, sid, iid)。
+func parseDimKey(key string) (scope, serverID, dimKey string) {
+	switch {
+	case strings.HasPrefix(key, InstanceDimPrefix):
+		rest := strings.TrimPrefix(key, InstanceDimPrefix)
+		if i := strings.IndexByte(rest, ':'); i > 0 {
+			return "instance", rest[:i], rest[i+1:]
+		}
+		return "instance", "", rest
+	case strings.HasPrefix(key, ServerDimPrefix):
+		id := strings.TrimPrefix(key, ServerDimPrefix)
+		return "server", id, id
+	default:
+		return "tool", "", key
+	}
+}
+
+// PersistedBuckets 返回所有维度“已闭合”分钟桶（minute < now 的分钟起点），供
+// app 每 60s 后台幂等落库。当前 open 分钟（含 now 所在分钟）不在此列，避免把
+// 未闭合计数固化。结果在锁内拷贝后返回，不持锁做外部 I/O。
+func (m *Metrics) PersistedBuckets(now time.Time) []model.TrendMinute {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cutoff := now.Truncate(time.Minute).Unix()
+	out := make([]model.TrendMinute, 0)
+	for key, row := range m.rows {
+		scope, serverID, dimKey := parseDimKey(key)
+		for t, b := range row.buckets {
+			if t >= cutoff {
+				continue
+			}
+			out = append(out, model.TrendMinute{
+				Scope: scope, ServerID: serverID, DimKey: dimKey,
+				Minute: t, Totals: b.total, Errors: b.err,
+			})
+		}
+	}
+	return out
+}
+
+// HotTrend 读取进程内热窗内命中过滤的分钟桶（含当前 open 分钟），语义与
+// /api/metrics 快照过滤对齐（scope=instance 以归属 Server 收敛，dimKey 非空只取
+// 单维）。趋势读侧用它**只填补 store 缺失的分钟**（open 分钟与最近 ≤1min 尚未
+// 落库的闭合分钟），store 已含的分钟不双计。
+func (m *Metrics) HotTrend(scope, serverID, dimKey string, from, to int64) []model.TrendMinute {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	match := func(key string) bool {
+		switch scope {
+		case "instance":
+			if !strings.HasPrefix(key, InstanceDimPrefix) {
+				return false
+			}
+			if serverID != "" && !strings.HasPrefix(key, InstanceDimPrefix+serverID+":") {
+				return false
+			}
+		case "server":
+			if !strings.HasPrefix(key, ServerDimPrefix) {
+				return false
+			}
+			if serverID != "" && key != ServerDimPrefix+serverID {
+				return false
+			}
+		default: // tool
+			if strings.HasPrefix(key, ServerDimPrefix) || strings.HasPrefix(key, InstanceDimPrefix) {
+				return false
+			}
+		}
+		if dimKey != "" {
+			if _, _, k := parseDimKey(key); k != dimKey {
+				return false
+			}
+		}
+		return true
+	}
+
+	out := make([]model.TrendMinute, 0)
+	for key, row := range m.rows {
+		if !match(key) {
+			continue
+		}
+		scopeOf, sid, dk := parseDimKey(key)
+		for t, b := range row.buckets {
+			if t < from || t > to {
+				continue
+			}
+			out = append(out, model.TrendMinute{
+				Scope: scopeOf, ServerID: sid, DimKey: dk,
+				Minute: t, Totals: b.total, Errors: b.err,
+			})
+		}
+	}
+	return out
 }
 
 // Snapshot 是某个维度当前指标的稳定快照。

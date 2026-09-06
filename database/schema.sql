@@ -1,5 +1,5 @@
 -- =============================================================================
--- MCP Conductor 数据库全量建表语句（最终形态 = migrations/0001..0009 合并结果）
+-- MCP Conductor 数据库全量建表语句（最终形态 = migrations/0001..0011 合并结果）
 -- =============================================================================
 -- 用途：
 --   1) 结构参考：一眼看全各表/字段含义（字段与表均带 COMMENT）；
@@ -115,8 +115,10 @@ CREATE TABLE IF NOT EXISTS credentials (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Gateway→Upstream 凭证（敏感值加密落库）';
 
 -- -----------------------------------------------------------------------------
--- 调用日志（高增长流水，自增主键；只留观测字段，不存敏感参数）。
--- 管理面按 id 倒序取最近分页；0007 起为 server 等值 + 倒序翻页建了窄复合索引。
+-- 调用日志（高增长流水，自增主键；默认只留观测元数据）。
+-- 管理面按 id 倒序取最近分页；0007 起为 server 等值 + 倒序翻页建了窄复合索引；
+-- 0009 记录命中实例 instance_id；0011 起可选捕获 tools/call 入参（request_args，
+-- 默认不存：observability.record_args 开启才写，且响应永不落库）。
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS traffic_log (
   id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '自增流水主键（倒序即最近优先）',
@@ -129,13 +131,14 @@ CREATE TABLE IF NOT EXISTS traffic_log (
   status     VARCHAR(32)     NOT NULL COMMENT 'success 或错误码',
   latency_ms INT             NOT NULL COMMENT '端到端延迟（毫秒）',
   error      TEXT            NULL    COMMENT '失败时的错误文本（成功为空）',
+  request_args MEDIUMTEXT    NULL    COMMENT 'tools/call 入参 JSON（record_args 开启时写入；列表不读，仅详情/回放）',
   ts         DATETIME(3)     NOT NULL COMMENT '调用发生时间（UTC）',
   PRIMARY KEY (id),
   KEY idx_traffic_ts (ts),
   KEY idx_traffic_tool (tool),
   KEY idx_traffic_server_id_id (server_id, id),
   KEY idx_traffic_server_instance_id (server_id, instance_id, id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='调用流水日志（只保留必要观测字段）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='调用流水日志（默认只存观测元数据；0011 起可 opt-in 捕获入参供回放）';
 
 -- -----------------------------------------------------------------------------
 -- API Key 访问控制：key 是认证/授权/限流主体（subject 唯一），密钥只存哈希。
@@ -168,3 +171,19 @@ CREATE TABLE IF NOT EXISTS access_key_grants (
   UNIQUE KEY uq_grants_key_tool (key_id, gateway_name),
   CONSTRAINT fk_grants_key FOREIGN KEY (key_id) REFERENCES access_keys (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='API Key 工具白名单与调用配置';
+
+-- -----------------------------------------------------------------------------
+-- 已闭合分钟桶趋势（0010）。metrics 每 60s 把进程内“已闭合分钟”幂等 upsert 到此，
+-- 读侧作为长程权威源（当前 open 分钟由进程内热桶补）。scope=server/instance 时
+-- server_id 冗余所属 Server 便于过滤；tool 维为空串。保留天数见 trend_retention_days。
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS trend_minute (
+  scope      VARCHAR(16)  NOT NULL COMMENT 'tool | server | instance',
+  server_id  VARCHAR(64)  NOT NULL DEFAULT '' COMMENT 'server/instance 维的归属 Server（tool 维为空串）',
+  dim_key    VARCHAR(255) NOT NULL COMMENT 'tool=gateway名 / server=server id / instance=instance id',
+  minute     BIGINT       NOT NULL COMMENT '已闭合分钟桶起点（UTC Unix 秒）',
+  totals     BIGINT       NOT NULL DEFAULT 0 COMMENT '该分钟调用量',
+  errors     BIGINT       NOT NULL DEFAULT 0 COMMENT '该分钟失败数',
+  PRIMARY KEY (scope, dim_key, minute),
+  KEY idx_trend_scope_server_minute (scope, server_id, minute)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='已闭合分钟桶趋势（幂等 upsert，按保留天数清理）';

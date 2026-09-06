@@ -374,9 +374,7 @@ func (s *Store) QueryTraffic(ctx context.Context, q query.TrafficQuery) ([]model
 		return nil, 0, fmt.Errorf("count traffic: %w", err)
 	}
 
-	sql := `SELECT request_id, COALESCE(trace_id,''), COALESCE(server_id,''), COALESCE(instance_id,''), tool, COALESCE(client,''),
-	               status, latency_ms, COALESCE(error,''), ts
-	         FROM traffic_log`
+	sql := `SELECT ` + trafficListColumns + ` FROM traffic_log`
 	if len(cond) > 0 {
 		sql += " WHERE " + strings.Join(cond, " AND ")
 	}
@@ -391,10 +389,8 @@ func (s *Store) QueryTraffic(ctx context.Context, q query.TrafficQuery) ([]model
 
 	out := make([]model.TrafficSample, 0)
 	for rows.Next() {
-		var sample model.TrafficSample
-		if err := rows.Scan(&sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.InstanceID,
-			&sample.Tool, &sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error,
-			&sample.Timestamp); err != nil {
+		sample, err := scanTrafficList(rows)
+		if err != nil {
 			return nil, 0, fmt.Errorf("scan traffic: %w", err)
 		}
 		out = append(out, sample)

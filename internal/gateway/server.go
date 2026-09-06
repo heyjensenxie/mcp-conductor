@@ -36,6 +36,10 @@ type Deps struct {
 	Eval *eval.Service
 	// KeyCall 是控制面「按 Key 试调用」能力（*MCPGateway 满足；nil 表示未装配）。
 	KeyCall KeyCallService
+	// Replay 是控制面「回放捕获调用」能力（*replayService 满足；nil 表示未装配）。
+	Replay ReplayService
+	// TrendRetentionMinutes 长程分钟桶趋势保留窗口（分钟），<=0 用 NewControl 兜底。
+	TrendRetentionMinutes int
 }
 
 // NewServer 组装 HTTP 服务器：统一 MCP 端点 + 控制面 REST API + 健康探针，
@@ -79,6 +83,10 @@ func registerControlRoutes(mux *http.ServeMux, deps Deps) {
 	control.probeNow = deps.ProbeNow
 	control.eval = deps.Eval
 	control.keyCall = deps.KeyCall
+	control.replay = deps.Replay
+	if deps.TrendRetentionMinutes > 0 {
+		control.trendRetentionMinutes = deps.TrendRetentionMinutes
+	}
 
 	mux.HandleFunc("GET /api/servers", control.handleListServers)
 	mux.HandleFunc("POST /api/servers", control.handleCreateServer)
@@ -121,6 +129,8 @@ func registerControlRoutes(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("GET /api/metrics", control.handleMetrics)
 	mux.HandleFunc("GET /api/metrics/trend", control.handleMetricsTrend)
 	mux.HandleFunc("GET /api/logs", control.handleLogs)
+	mux.HandleFunc("GET /api/logs/{id}", control.handleGetLogDetail)
+	mux.HandleFunc("POST /api/logs/{id}/replay", control.handleReplayLog)
 
 	mux.HandleFunc("GET /api/evaluations/servers/{id}", control.handleEvalMeta)
 	mux.HandleFunc("POST /api/evaluations/servers/{id}/quality", control.handleEvalQuality)

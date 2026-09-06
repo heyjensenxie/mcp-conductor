@@ -85,3 +85,14 @@ type TrafficQuery struct {
 	From time.Time
 	To   time.Time
 }
+
+// TrendQuery 是分钟桶趋势的读取条件（长程序列窗口）。
+// Scope ∈ tool|server|instance；ServerID 用于收敛 server/instance 维的归属 Server
+// （tool 维忽略）；DimKey 非空时只读该单个维度；From/To 为分钟闭区间（UTC Unix 秒）。
+type TrendQuery struct {
+	Scope    string
+	ServerID string
+	DimKey   string
+	From     int64
+	To       int64
+}

@@ -1,5 +1,5 @@
 import http, { unwrap } from './http'
-import type { AccessKey, Credential, EvalMeta, EvalReport, EvalSuiteCase, EvalSuiteResult, KeyInvokeResult, MCPServer, MetricSnapshot, Paged, RediscoverPlan, Route, ServerInstance, ServerStatus, Session, Tool, ToolGrant, TrafficSample, Transport, TrendPoint } from '@/types'
+import type { AccessKey, Credential, EvalMeta, EvalReport, EvalSuiteCase, EvalSuiteResult, KeyInvokeResult, MCPServer, MetricSnapshot, Paged, RediscoverPlan, Route, ServerInstance, ServerStatus, Session, Tool, ToolGrant, TrafficDetail, TrafficReplayResult, TrafficSample, Transport, TrendPoint } from '@/types'
 
 // ---- 管理面列表查询（服务端分页 + 筛选）----
 //
@@ -210,15 +210,27 @@ export const getServerMetrics = () => unwrap<MetricSnapshot[]>(http.get('/metric
 export const getInstanceMetrics = (serverId: string) =>
   unwrap<MetricSnapshot[]>(http.get('/metrics', { params: { scope: 'instance', server_id: serverId } }))
 
-// getMetricsTrend 读取真时序趋势（近 N 分钟，按分钟桶）。
-export const getMetricsTrend = (scope: 'tool' | 'server' = 'tool', minutes = 30) =>
-  unwrap<{ series: TrendPoint[] }>(http.get('/metrics/trend', { params: { scope, minutes } }))
+// getMetricsTrend 读取真时序趋势（分钟桶，长程已持久化、跨重启可回溯）。
+// scope 支持 tool|server|instance；instance 须传 server_id；minutes 超保留天数后端截断；
+// dim_key 可选（tool=gateway名 / server=server id / instance=instance id），非空只查单维。
+export const getMetricsTrend = (
+  scope: 'tool' | 'server' | 'instance' = 'tool',
+  minutes = 30,
+  extra?: { server_id?: string; dim_key?: string },
+) => unwrap<{ series: TrendPoint[] }>(http.get('/metrics/trend', { params: { scope, minutes, ...extra } }))
 
 // getLogs 分页读取调用日志，支持 server_id/instance_id/q/status/from/to 筛选。
 // 注意：traffic_log 为流水大表，服务端对 page_size 设上限（200）且不支持 0=全量，
 // Dashboard/Traffic 均按最近分页拉取。
 export const getLogs = (params?: LogListParams) =>
   unwrap<Paged<TrafficSample>>(http.get('/logs', { params }))
+
+// getTrafficLog 读取单条调用日志详情（含已捕获入参，供回放弹窗）。
+export const getTrafficLog = (id: number) => unwrap<TrafficDetail>(http.get(`/logs/${id}`))
+
+// replayTraffic 把捕获的调用回放到其上游实例（Operator 触发；诊断，不写 metrics/调用日志）。
+export const replayTraffic = (id: number, payload?: { timeout_ms?: number }) =>
+  unwrap<TrafficReplayResult>(http.post(`/logs/${id}/replay`, payload))
 
 // ---- MCP Evaluation（评测）----
 

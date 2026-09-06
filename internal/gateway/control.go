@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -66,13 +65,25 @@ type Control struct {
 	// keyCall 由 registerControlRoutes 注入：控制面「以某 API Key 身份试调用」
 	// 能力（*MCPGateway 满足）；nil 表示未装配（handleKeyInvoke 返回 500）。
 	keyCall KeyCallService
+	// replay 由 registerControlRoutes 注入：把捕获的调用回放到其上游实例；
+	// nil 表示未装配（handleReplayLog 返回 500）。
+	replay ReplayService
+	// trendRetentionMinutes 长程分钟桶趋势保留窗口（分钟）。由 app 按
+	// observability.trend_retention_days 换算注入；NewControl 提供 7 天兜底。
+	trendRetentionMinutes int
 }
 
 // NewControl 创建控制面处理器。
 // keyHash 负责把 API Key 明文映射为落库哈希（由 app 注入 auth.KeyHash），
 // 保证 Control 不接触 token_secret。
 func NewControl(registry *registry.Service, store storage.Store, metrics *observability.Metrics, keyHash func(token string) (string, error)) *Control {
-	return &Control{registry: registry, store: store, metrics: metrics, keyHash: keyHash}
+	return &Control{
+		registry:              registry,
+		store:                 store,
+		metrics:               metrics,
+		keyHash:               keyHash,
+		trendRetentionMinutes: 7 * 24 * 60, // 默认 7 天；app 按配置覆盖
+	}
 }
 
 // handleListServers 分页列出 Server（含水合实例），支持 q/enabled/health_status 筛选。
@@ -775,32 +786,6 @@ func (c *Control) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeOK(w, RequestIDFrom(r.Context()), out)
-}
-
-// handleMetricsTrend 返回近 minutes 分钟的调用时序（真时序，进程内分钟桶）。
-// scope=tool（缺省）为工具维聚合；scope=server 为按 Server 聚合。
-func (c *Control) handleMetricsTrend(w http.ResponseWriter, r *http.Request) {
-	scope := r.URL.Query().Get("scope")
-	if scope == "" {
-		scope = "tool"
-	}
-	if scope != "tool" && scope != "server" {
-		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "scope 仅支持 tool / server"))
-		return
-	}
-	minutes := 30
-	if s := r.URL.Query().Get("minutes"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 120 {
-			minutes = n
-		}
-	}
-	var series []observability.TrendPoint
-	if scope == "server" {
-		series = c.metrics.TrendServer(minutes)
-	} else {
-		series = c.metrics.TrendTool(minutes)
-	}
-	writeOK(w, RequestIDFrom(r.Context()), map[string]any{"series": series})
 }
 
 // handleLogs 分页返回调用日志，支持 server_id/instance_id/q/status/from/to 筛选。

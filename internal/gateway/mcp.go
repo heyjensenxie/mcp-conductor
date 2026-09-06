@@ -193,8 +193,10 @@ func (g *MCPGateway) CallTool(ctx context.Context, name string, arguments map[st
 	defer cancel()
 	contents, callErr := g.caller.Call(callCtx, resolved.Server, dialInstance, resolved.Tool.OriginalName, targetArgs, extraHeaders)
 
-	// 7. 观测（唯一观测点：成功/失败各记一次指标与调用日志）
-	g.record(ctx, resolved, name, identity.Subject, dialInstance.ID, start, callErr)
+	// 7. 观测（唯一观测点：成功/失败各记一次指标与调用日志）。
+	// 入参捕获：传真正发出的合并参数（授权 default_args 合并后），record_args
+	// 开启时才由 Recorder 落库；响应永不记录。
+	g.record(ctx, resolved, name, identity.Subject, dialInstance.ID, start, targetArgs, callErr)
 
 	if callErr != nil {
 		// 失败反馈：传输/实例级故障（非工具 isError 业务失败）才触发短期冷却
@@ -215,7 +217,7 @@ func (g *MCPGateway) CallTool(ctx context.Context, name string, arguments map[st
 // 避免暴露内部细节或完整敏感体。成功与失败各只记一次（调用方不得再经其它路径
 // 重复计数）。instanceID 为本次实际拨测的实例；Server 单实例场景也会记录，
 // instance: 维仅用于观测下沉，不影响既有 server:/tool 维语义。
-func (g *MCPGateway) record(ctx context.Context, resolved *router.Resolved, name, subject, instanceID string, start time.Time, callErr error) {
+func (g *MCPGateway) record(ctx context.Context, resolved *router.Resolved, name, subject, instanceID string, start time.Time, reqArgs map[string]any, callErr error) {
 	latency := time.Since(start)
 	ok := callErr == nil
 	g.metrics.Record(name, ok, latency)
@@ -247,6 +249,10 @@ func (g *MCPGateway) record(ctx context.Context, resolved *router.Resolved, name
 	}
 	if !ok {
 		sample.Error = errs.SafeMessage(callErr)
+	}
+	// 只捕获非空入参（record_args 开启时 Recorder 才保留；空参无可回放）。
+	if len(reqArgs) > 0 {
+		sample.RequestArgs = reqArgs
 	}
 	g.recorder.Record(ctx, sample)
 }

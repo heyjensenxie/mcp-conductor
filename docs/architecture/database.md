@@ -33,7 +33,7 @@
 ## 目录
 
 - 迁移文件：`migrations/`（`.sql`，5.7 可执行，按文件名序应用）
-- 全量结构快照：`database/schema.sql`（= migrations/0001..0009 合并的最终建表，表与字段均带注释，供结构参考与全新库初始化）。**Schema 变更先落 `migrations/` 增量迁移，再同步该快照，两者必须一致；已有库升级禁止直接执行快照。**
+- 全量结构快照：`database/schema.sql`（= migrations/0001..0011 合并的最终建表，表与字段均带注释，供结构参考与全新库初始化）。**Schema 变更先落 `migrations/` 增量迁移，再同步该快照，两者必须一致；已有库升级禁止直接执行快照。**
 - MySQL 驱动：`internal/storage/mysql`（已实现，满足 `storage.Store`；DSN 须含 `parseTime=true&loc=UTC&charset=utf8mb4`）
 - 集成测试：`MYSQL_TEST_DSN='...' go test ./internal/storage/mysql/ -v`（未设 DSN 自动跳过；须在真实 MySQL 5.7 上执行迁移后运行）
 - 应用迁移（开发环境，连宿主机 MySQL）：迁移文件为可重复执行的 DDL（幂等），执行器不做版本记录表：
@@ -51,7 +51,7 @@ Server 多实例化后，具体上游端点与健康由 `server_instances` 承�
 - `server_instances`：`id/server_id/endpoint/transport/enabled/health_status/created_at/updated_at`；`server_id` 外键 `ON DELETE CASCADE` 关联 `servers(id)`。字符串 id（新建用 `inst-` 前缀；0008 回填复用 server id），`enabled` 为实例级启停，`health_status ∈ {unknown,healthy,unhealthy}`。
 - 实例列表稳定序：`ORDER BY created_at, id`（首条即"主实例"，用于列表展示与默认发现拨测）。
 - Server 删除级联删除实例（MySQL 外键）；`registry`/memory 侧显式 `DeleteInstancesByServer` 对齐。
-- MySQL 集成测试运行前需已应用 0001..0009（`make db-migrate`）。
+- MySQL 集成测试运行前需已应用 0001..0011（`make db-migrate`）。
 
 ## traffic_log.instance_id（0009 起）
 
@@ -61,6 +61,27 @@ Server 多实例后，调用观测从 Server 粒度下沉到实例粒度：`traf
 (server_id, instance_id, id)`（0007 的 `(server_id, id)` 仍保留，服务纯 Server 级
 过滤）。应用写入见 `internal/gateway/mcp.go`（metrics 另按 `instance:<sid>:<iid>`
 维度记录，供 `/api/metrics?scope=instance` 展示，纯进程内不落库）。
+
+> 注意：`traffic_log` 是**高增长流水且无自动保留/清理策略**（应用不 DELETE 该表），
+> 生产需自行规划归档/分区；管理面列表只读最近分页（`page_size` 上限 200）以限制扫描。
+
+## trend_minute 分钟桶趋势（0010 起）
+
+指标聚合器的“已闭合分钟桶”（进程内 `minute < now`）每 60s 由 app（`runTrendPersist`）
+幂等 upsert 到 `trend_minute`，PK `(scope, dim_key, minute)` 防重、重复 flush 无害。
+读侧 `/api/metrics/trend` 以本表为已闭合分钟权威源，当前 open 分钟由进程内热桶实时补
+（见 `internal/gateway/control_trend.go`）。保留天数由 `observability.trend_retention_days`
+（默认 7）控制，app 每小时 `DELETE minute < cutoff` 收敛。维度语义：tool→gateway 名
+（`server_id=''`）；server→server id；instance→instance id（`server_id` 记所属 Server，
+供 `?scope=instance&server_id=` 过滤）。本表无外键，不随 Server 删除级联清理。
+
+## traffic_log.request_args（0011 起，Traffic Replay 前提）
+
+`traffic_log` 追加可空 `request_args MEDIUMTEXT`：`observability.record_args=true`
+（默认关，入参可能含隐私）时记录本次实际发出的 tools/call 入参 JSON；**响应永不落库**
+（工具均为查询语义，回放只需入参）。列表/分页 SELECT 不读本列，仅 `GET /api/logs/{id}`
+详情与 `POST /api/logs/{id}/replay` 读取；列表以 `request_args IS NOT NULL` 派生
+`has_args` 供前端启用「回放」。受 `sample_rate` 影响：被采样丢弃的行连同入参丢弃、不可回放。
 
 ## 上线检查清单（涉及 SQL 的改动合入前）
 

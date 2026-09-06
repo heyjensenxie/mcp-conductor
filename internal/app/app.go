@@ -63,7 +63,7 @@ func Run(ctx context.Context) error {
 	resolver := router.NewResolver(store, store).WithRoutes(store).WithInstances(store)
 	authorizer := access.NewAuthorizer()
 	metrics := observability.NewMetrics()
-	recorder := observability.NewRecorder(store, cfg.Observability.RecordBody, cfg.Observability.SampleRate)
+	recorder := observability.NewRecorder(store, cfg.Observability.RecordArgs, cfg.Observability.SampleRate)
 
 	// MCP 评测：现场拨测（复用带凭据注入的 adapter）+ 进程内运行时指标。
 	evalSvc := eval.NewService(store, adapter, adapter, func(serverID string) (eval.RuntimeStats, bool) {
@@ -117,6 +117,10 @@ func Run(ctx context.Context) error {
 	monitor.CheckOnce(ctx)
 	go monitor.Run(ctx)
 
+	// 分钟桶趋势持久化：已闭合分钟每 60s 幂等落库 + 每小时按保留天数清理。
+	replaySvc := gateway.NewReplayService(store, adapter, cfg.Gateway.UpstreamTimeout)
+	go runTrendPersist(ctx, store, metrics, cfg.Observability.TrendRetentionDays)
+
 	server := gateway.NewServer(cfg, gateway.Deps{
 		Registry:    registrySvc,
 		MCPService:  mcpGateway,
@@ -128,9 +132,11 @@ func Run(ctx context.Context) error {
 		KeyHash: func(token string) (string, error) {
 			return auth.KeyHash(cfg.Auth.TokenSecret, token)
 		},
-		ProbeNow: monitor.TriggerCheck,
-		Eval:     evalSvc,
-		KeyCall:  mcpGateway,
+		ProbeNow:              monitor.TriggerCheck,
+		Eval:                  evalSvc,
+		KeyCall:               mcpGateway,
+		Replay:                replaySvc,
+		TrendRetentionMinutes: cfg.Observability.TrendRetentionDays * 24 * 60,
 	})
 
 	return runWithSignal(ctx, server)
@@ -293,6 +299,41 @@ func buildLimiter(cfg config.Config) ratelimit.Limiter {
 		return ratelimit.NewRedisLimiter(rdb, cfg.RateLimit.QPS, time.Second)
 	}
 	return ratelimit.NewMemoryLimiter(cfg.RateLimit.QPS, cfg.RateLimit.Burst)
+}
+
+// runTrendPersist 把指标聚合器的“已闭合分钟桶”每 60s 幂等落库到 trend_minute，
+// 并每小时按保留天数（默认 7）清理旧桶。落库/清理失败仅告警：趋势读侧由进程内
+// 热桶兜底最近 2h，不影响数据面计数。
+func runTrendPersist(ctx context.Context, store storage.TrendStore, metrics *observability.Metrics, retentionDays int) {
+	persist := func(now time.Time) {
+		if buckets := metrics.PersistedBuckets(now); len(buckets) > 0 {
+			if err := store.UpsertTrendBuckets(ctx, buckets); err != nil {
+				slog.Warn("趋势落库失败", "error", err, "buckets", len(buckets))
+			}
+		}
+	}
+	persist(time.Now()) // 启动即先落一次历史已闭合分钟
+	tick := time.NewTicker(time.Minute)
+	defer tick.Stop()
+	purge := time.NewTicker(time.Hour)
+	defer purge.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-tick.C:
+			persist(now)
+		case <-purge.C:
+			if retentionDays <= 0 {
+				retentionDays = 7
+			}
+			cutoff := time.Now().UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour).
+				Truncate(time.Minute).Unix()
+			if err := store.DeleteTrendBucketsBefore(ctx, cutoff); err != nil {
+				slog.Warn("趋势清理失败", "error", err, "cutoff_minute", cutoff)
+			}
+		}
+	}
 }
 
 // runWithSignal 启动 HTTP 服务，并在收到退出信号时优雅关闭。

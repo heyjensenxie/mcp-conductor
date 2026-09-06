@@ -47,7 +47,9 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | Memory（令牌桶）/ Redis 限流，支持按 Key 独立配额 | ✅ 默认关闭 |
 | Request Logging + 基础 Metrics（P50/P95/P99） | ✅ 应用层聚合；`?scope=server` 按 Server 聚合 |
 | **实例级流量归属（多实例观测下沉）** | ✅ 每次调用把 `instance_id` 落调用日志（traffic_log，可按 `server_id+instance_id` 筛选）并按实例记内存指标（`?scope=instance&server_id=`）；Server 详情「实例」表直接展示每个实例的 Requests / P95 / Errors |
-| Traffic 调用筛选 + Observability | ✅ 日志按 Server/实例/状态/关键词/时间分页筛选（page/page_size，上限 200）；指标按 Tool/Server/实例查看；趋势为真时序分钟桶（近 30 分钟折线） |
+| **长程分钟桶趋势（持久化）** | ✅ 已闭合分钟桶每 60s 幂等落库 `trend_minute`（0001..0010）：跨重启可回溯、`?minutes` 可到保留天数（默认 7 天，`trend_retention_days`），支持 `?scope=instance&server_id=` 与 `?dim_key=` 单维聚焦；Console 观测页可切 30m~7d 窗口与维度 |
+| Traffic 调用筛选 + Observability | ✅ 日志按 Server/实例/状态/关键词/时间分页筛选（page/page_size，上限 200）；指标按 Tool/Server/实例查看；趋势为真时序分钟桶（默认近 30 分钟折线，可拉长窗） |
+| **Traffic Replay（按捕获入参回放）** | ✅ `record_args=true` 时捕获 tools/call **入参**（响应永不落库）到调用日志；Traffic 行「回放」把该调用重发到其命中的上游实例复现（直连实例、诊断流量不写 metrics/调用日志） |
 | Vue3 Console（Ant Design Vue + ECharts） | ✅ 构建后嵌入二进制 |
 | MCP Manual Test（Console 内联） | ✅ |
 | MCP 评测：Server 质量分（工具 Schema/描述/命名 + 协议 + 运行时指标）+ 回归用例集 | ✅ 无 LLM；即时计算不落库；现场拨测实例；quality/suite/meta 可 `?instance_id=` 定向某实例（缺省首个可拨测） |
@@ -121,7 +123,7 @@ CONDUCTOR_DB_PASSWORD=<你的本地 MySQL 密码> docker compose up --build
 # MCP 端点: http://localhost:8080/mcp
 ```
 
-- 数据库：默认 `mysql`，连宿主机 `host.docker.internal:3306` 的 `conductor` 库（库表需先执行 `migrations/0001..0009`，宿主机已有 MySQL 时用 `CONDUCTOR_DATABASE_DSN='root:***@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate`）。账号可用 `CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME` 覆盖；`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。
+- 数据库：默认 `mysql`，连宿主机 `host.docker.internal:3306` 的 `conductor` 库（库表需先执行 `migrations/0001..0011`，宿主机已有 MySQL 时用 `CONDUCTOR_DATABASE_DSN='root:***@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate`）。账号可用 `CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME` 覆盖；`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。
 - Redis：仅当同时开启 `CONDUCTOR_REDIS_ENABLED=true` 与 `CONDUCTOR_RATELIMIT_ENABLED=true` 时才用于分布式 per-key 限流，默认关闭（本机 Redis 若只监听 `127.0.0.1` 需放开监听才能被容器访问）。
 
 ### 方式二：一键构建（带真实 Console 的单二进制，推荐）
@@ -210,8 +212,10 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 | `GET/PATCH/DELETE /api/keys/{id}` · `POST /api/keys/{id}/rotate` | Key 详情 · 更新（白名单/配额/启停）· 删除 · 密钥轮换（新明文仅本响应一次） |
 | `POST /api/keys/{id}/invoke` | **按该 Key 身份试调用**（`{gateway_tool,arguments}`）：后台用已存 Key 跑完整数据面验证白名单授权；不写 metrics/调用日志、不经 per-key 限流。未授权/禁用 → 403 |
 | `GET /api/metrics` | 指标快照（p50/p95/p99、成功率）；`?scope=server` 按 Server、`?scope=instance&server_id=` 按某 Server 实例聚合 |
-| `GET /api/metrics/trend` | 近 N 分钟真时序（分钟桶，`?scope=tool\|server&minutes=30`） |
-| `GET /api/logs` | 调用日志分页（`page/page_size`，上限 200；`?server_id=&instance_id=&q=&status=&from=&to=` 筛选） |
+| `GET /api/metrics/trend` | 真时序趋势（分钟桶，已持久化、跨重启可回溯）：`?scope=tool\|server\|instance`（instance 须带 `server_id`）；`?minutes=` 默认 30、上限保留天数；`?dim_key=` 单维聚焦 |
+| `GET /api/logs` | 调用日志分页（`page/page_size`，上限 200；`?server_id=&instance_id=&q=&status=&from=&to=` 筛选；行带 `has_args` 标记是否可回放） |
+| `GET /api/logs/{id}` | 调用日志详情（含已捕获入参 `request_args`，供回放弹窗） |
+| `POST /api/logs/{id}/replay` | **Traffic Replay**（`{timeout_ms?}`）：把该调用捕获入参重发到其命中的上游实例（直连、诊断不写 metrics/调用日志）；is_error 以 200 返回，结构失败 4xx/5xx |
 | `GET /api/evaluations/servers/{id}` | 评测概况（拨测实例/工具数/是否有流量/平台覆盖数；`?instance_id=` 可选） |
 | `POST /api/evaluations/servers/{id}/quality` | 运行 Server 质量评测（`?instance_id=` 可选定向实例；现场拨测 initialize+tools/list，叠加运行时指标，即时返回分维度 MCP 分与建议） |
 | `POST /api/evaluations/servers/{id}/suite` | 运行回归用例集（`{"cases":[{name,gateway_tool,arguments,expected_substring,timeout_ms}]}`，`?instance_id=` 可选；直连上游判定，即时返回汇总 + 按工具分组） |
@@ -255,7 +259,7 @@ go run ./cmd/conductor
 | `auth` | session_ttl（登录会话有效期，默认 12h） | `CONDUCTOR_AUTH_SESSION_TTL_MINUTES=720` |
 | `credentials` | encryption_key（AES-256，64 位 hex） | `CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY=<hex>` |
 | `logging` | level / format | `CONDUCTOR_LOGGING_LEVEL=info` |
-| `observability` | record_body / sample_rate | `CONDUCTOR_OBSERVABILITY_SAMPLE_RATE=1.0` |
+| `observability` | record_args（捕获入参供回放，默认关）/ sample_rate / trend_retention_days（默认 7） | `CONDUCTOR_OBSERVABILITY_RECORD_ARGS=false` · `CONDUCTOR_OBSERVABILITY_SAMPLE_RATE=1.0` · `CONDUCTOR_OBSERVABILITY_TREND_RETENTION_DAYS=7` |
 
 完整说明见 [config.example.yaml](config.example.yaml) 与 [.env.example](.env.example)。
 
@@ -286,7 +290,8 @@ make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATA
 
 - **后端约定**：统一错误模型与结构化日志（不打印 Credential、Token 与完整敏感 MCP payload）；核心模块测试优先（Router / Balancer / Rate Limiter / Tool Namespace）。
 - **前端约定**：基础设施管理平台风格（现代、克制、高信息密度），Ant Design Vue + ECharts + Pinia，Payload 不可达时保持空态。
-- **测试**：`go test ./...` 覆盖 17 个包（含 Tool Name Collision 回归、真实 JSON-RPC 握手链路、metrics 单次计数/实例维度隔离、per-instance 评测与调用日志脱敏）。
+- **测试**：`go test ./...` 覆盖 17 个包（含 Tool Name Collision 回归、真实 JSON-RPC 握手链路、metrics 单次计数/实例维度隔离、per-instance 评测、调用日志脱敏、趋势持久化合并与回放直连）。
+- **前端约定**：基础设施管理平台风格（现代、克制、高信息密度），Ant Design Vue + ECharts + Pinia，Payload 不可达时保持空态。
 
 ## Examples
 
@@ -295,7 +300,7 @@ make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATA
 ## Roadmap
 
 - **v0.1（当前）**：最小闭环 + 运维基础（Registry / 聚合 / 路由 / 治理 / 观测 / Console / Docker）。其中 **MySQL 5.7+ 持久化驱动已先行落地**（`internal/storage/mysql`，实测通过）。
-- **v0.2 候选**：SSE/stdio 上游接入、Route 管理页完善、观测时间序列（Traffic Replay）、CI 接通（GitHub Actions 目前有意移除，需要时再加）。注：Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）已随 v0.1 落地；Server 多实例 + 健康感知 Round-Robin 随多实例化落地；**实例级流量归属（traffic/metrics 记 `instance_id`）+ 按实例定向评测已随本轮落地**。
+- **v0.2 候选**：SSE/stdio 上游接入、Route 管理页完善、观测时间序列（Traffic Replay，已完成雏形见上表）、CI 接通（GitHub Actions 目前有意移除，需要时再加）。注：Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）已随 v0.1 落地；Server 多实例 + 健康感知 Round-Robin 随多实例化落地；**实例级流量归属（traffic/metrics 记 `instance_id`）+ 按实例定向评测 + 长程分钟桶趋势持久化 + 按入参回放已随本轮落地**。
 - **v0.3 候选**：Evaluation 深化（本阶段已落地 Server 质量分 + 回归用例的 MCP Score 雏形，见上表；后续 Dataset/TestCase 落库、对比与 LLM Judge 另行列版）、协议/Schema/性能测试、CI Quality Gate。
 - **远期**：独立 Python Evaluation Worker、AI 优化建议、Traffic Replay、Route 灰度/分组转发。
 

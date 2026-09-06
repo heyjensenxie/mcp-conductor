@@ -108,7 +108,19 @@ export interface KeyInvokeResult {
   content?: string
 }
 
+// TrafficReplayResult 是「回放捕获调用」的诊断返回（POST /api/logs/{id}/replay）。
+export interface TrafficReplayResult {
+  server_id?: string
+  instance_id?: string
+  latency_ms: number
+  is_error?: boolean
+  error_code?: string
+  message?: string
+  content?: string
+}
+
 export interface TrafficSample {
+  id?: number
   request_id: string
   trace_id?: string
   server_id: string
@@ -119,6 +131,13 @@ export interface TrafficSample {
   latency_ms: number
   error?: string
   timestamp: string
+  // has_args 标记该行是否捕获了入参（启用「回放」的前置条件）。
+  has_args?: boolean
+}
+
+// TrafficDetail 是单条调用日志详情（含已捕获入参，供回放弹窗）。
+export interface TrafficDetail extends TrafficSample {
+  request_args?: Record<string, unknown>
 }
 
 export interface MetricSnapshot {

@@ -186,7 +186,7 @@ func (s *Store) QueryTraffic(_ context.Context, q query.TrafficQuery) ([]model.T
 		if !q.To.IsZero() && sample.Timestamp.After(q.To) {
 			continue
 		}
-		rows = append(rows, sample)
+		rows = append(rows, stripArgs(sample))
 	}
 	return applyPage(rows, q.Paging), len(rows), nil
 }

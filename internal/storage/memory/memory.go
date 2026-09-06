@@ -13,7 +13,14 @@ import (
 	"time"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/query"
 )
+
+// trendKey 是分钟桶趋势的唯一键（与 trend_minute PK (scope,dim_key,minute) 对齐）。
+type trendKey struct {
+	scope, serverID, dimKey string
+	minute                  int64
+}
 
 // Store 是基于进程内 map 的并发安全存储，实现 storage.Store 全部接口。
 type Store struct {
@@ -29,8 +36,10 @@ type Store struct {
 	keysByHash  map[string]model.AccessKey // key_hash -> key
 	keysBySubj  map[string]model.AccessKey // subject -> key
 	traffic     []model.TrafficSample
+	trend       map[trendKey]model.TrendMinute // 已闭合分钟桶（幂等覆盖）
 
-	seq int64
+	seq        int64 // nextID 字符串 id 递增源
+	trafficSeq int64 // traffic 数字流水主键递增源
 }
 
 // New 创建空的内存存储。
@@ -46,6 +55,7 @@ func New() *Store {
 		keysByHash:  make(map[string]model.AccessKey),
 		keysBySubj:  make(map[string]model.AccessKey),
 		traffic:     make([]model.TrafficSample, 0, 64),
+		trend:       make(map[trendKey]model.TrendMinute),
 	}
 }
 
@@ -627,12 +637,21 @@ func (s *Store) DeleteAccessKey(_ context.Context, id string) error {
 
 // ---- TrafficStore ----
 
-// AppendTraffic 追加一条调用采样。
+// AppendTraffic 追加一条调用采样并分配数字流水主键（列表/详情/回放按 id 寻址）。
 func (s *Store) AppendTraffic(_ context.Context, sample model.TrafficSample) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.trafficSeq++
+	sample.ID = s.trafficSeq
 	s.traffic = append(s.traffic, sample)
 	return nil
+}
+
+// stripArgs 返回去除入参体的副本并置 HasArgs，供列表类读取（入参只在详情显式下发）。
+func stripArgs(sample model.TrafficSample) model.TrafficSample {
+	sample.HasArgs = sample.RequestArgs != nil
+	sample.RequestArgs = nil
+	return sample
 }
 
 // RecentTraffic 返回最近 limit 条调用采样（按追加顺序倒序）。
@@ -644,7 +663,7 @@ func (s *Store) RecentTraffic(_ context.Context, limit int) ([]model.TrafficSamp
 	}
 	out := make([]model.TrafficSample, 0, limit)
 	for i := len(s.traffic) - 1; i >= 0 && len(out) < limit; i-- {
-		out = append(out, s.traffic[i])
+		out = append(out, stripArgs(s.traffic[i]))
 	}
 	return out, nil
 }
@@ -659,10 +678,81 @@ func (s *Store) RecentTrafficByServer(_ context.Context, serverID string, limit 
 	out := make([]model.TrafficSample, 0, limit)
 	for i := len(s.traffic) - 1; i >= 0 && len(out) < limit; i-- {
 		if s.traffic[i].ServerID == serverID {
-			out = append(out, s.traffic[i])
+			out = append(out, stripArgs(s.traffic[i]))
 		}
 	}
 	return out, nil
+}
+
+// GetTraffic 按主键读取单条调用采样（含已捕获入参，供详情/回放；不存在报错）。
+func (s *Store) GetTraffic(_ context.Context, id int64) (*model.TrafficSample, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := len(s.traffic) - 1; i >= 0; i-- {
+		sample := s.traffic[i]
+		if sample.ID != id {
+			continue
+		}
+		// 返回独立副本，避免调用方经 RequestArgs 修改存储内数据。
+		sample.HasArgs = sample.RequestArgs != nil
+		if sample.RequestArgs != nil {
+			args := make(map[string]any, len(sample.RequestArgs))
+			for k, v := range sample.RequestArgs {
+				args[k] = v
+			}
+			sample.RequestArgs = args
+		}
+		return &sample, nil
+	}
+	return nil, fmt.Errorf("traffic %d 不存在", id)
+}
+
+// ---- TrendStore ----
+
+// UpsertTrendBuckets 幂等写入已闭合分钟桶（同键覆盖，重复 flush 无害）。
+func (s *Store) UpsertTrendBuckets(_ context.Context, buckets []model.TrendMinute) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, b := range buckets {
+		s.trend[trendKey{scope: b.Scope, serverID: b.ServerID, dimKey: b.DimKey, minute: b.Minute}] = b
+	}
+	return nil
+}
+
+// QueryTrendBuckets 按 query.TrendQuery 读取窗口内的分钟桶（minute 升序）。
+func (s *Store) QueryTrendBuckets(_ context.Context, q query.TrendQuery) ([]model.TrendMinute, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.TrendMinute, 0)
+	for key, b := range s.trend {
+		if key.scope != q.Scope {
+			continue
+		}
+		if q.ServerID != "" && key.serverID != q.ServerID {
+			continue
+		}
+		if q.DimKey != "" && key.dimKey != q.DimKey {
+			continue
+		}
+		if b.Minute < q.From || b.Minute > q.To {
+			continue
+		}
+		out = append(out, b)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Minute < out[j].Minute })
+	return out, nil
+}
+
+// DeleteTrendBucketsBefore 清理 minute < before 的旧桶（保留天数收敛）。
+func (s *Store) DeleteTrendBucketsBefore(_ context.Context, beforeMinute int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key := range s.trend {
+		if key.minute < beforeMinute {
+			delete(s.trend, key)
+		}
+	}
+	return nil
 }
 
 // sortedKeys 返回 map 中按 key 排序的键，保证 List 结果稳定。

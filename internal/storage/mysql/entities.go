@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -645,14 +646,42 @@ func (s *Store) DeleteAccessKey(ctx context.Context, id string) error {
 
 // ---- TrafficStore ----
 
-// AppendTraffic 追加一条调用采样。请求/追踪标识、实例与错误文本仅在需要时写入。
+// trafficScanner 抽象 rows/row 的 Scan，供列表与详情共用扫描。
+type trafficScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanTrafficList 扫描一行 traffic_log（列序：id, request_id, …, ts，
+// 末尾 has_args 布尔由 (request_args IS NOT NULL) 派生）。列表不读入参大列。
+func scanTrafficList(s trafficScanner) (model.TrafficSample, error) {
+	var sample model.TrafficSample
+	var hasArgs int
+	if err := s.Scan(&sample.ID, &sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.InstanceID,
+		&sample.Tool, &sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error,
+		&hasArgs, &sample.Timestamp); err != nil {
+		return sample, err
+	}
+	sample.HasArgs = hasArgs != 0
+	return sample, nil
+}
+
+// trafficListColumns 是列表/分页 SELECT 的列（不读 request_args 大列）。
+const trafficListColumns = `id, request_id, COALESCE(trace_id,''), COALESCE(server_id,''), COALESCE(instance_id,''),
+	tool, COALESCE(client,''), status, latency_ms, COALESCE(error,''), (request_args IS NOT NULL), ts`
+
+// AppendTraffic 追加一条调用采样。入参体仅当已捕获（record_args 开启）时写入；
+// 请求/追踪标识、实例与错误文本仅在需要时写入。
 func (s *Store) AppendTraffic(ctx context.Context, sample model.TrafficSample) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO traffic_log (request_id, trace_id, server_id, instance_id, tool, client, status, latency_ms, error, ts)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+	argsJSON, err := marshalJSON(sample.RequestArgs)
+	if err != nil {
+		return fmt.Errorf("marshal traffic request_args: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO traffic_log (request_id, trace_id, server_id, instance_id, tool, client, status, latency_ms, error, request_args, ts)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		sample.RequestID, nullIfEmpty(sample.TraceID), nullIfEmpty(sample.ServerID),
 		nullIfEmpty(sample.InstanceID), sample.Tool, nullIfEmpty(sample.Client), sample.Status,
-		sample.LatencyMS, nullIfEmpty(sample.Error), fmtTimeUTC(sample.Timestamp),
+		sample.LatencyMS, nullIfEmpty(sample.Error), nullIfEmpty(argsJSON), fmtTimeUTC(sample.Timestamp),
 	)
 	if err != nil {
 		return fmt.Errorf("insert traffic_log: %w", err)
@@ -660,12 +689,10 @@ func (s *Store) AppendTraffic(ctx context.Context, sample model.TrafficSample) e
 	return nil
 }
 
-// RecentTraffic 返回最近 limit 条调用采样（按写入顺序倒序）。
+// RecentTraffic 返回最近 limit 条调用采样（按 id 倒序）。
 func (s *Store) RecentTraffic(ctx context.Context, limit int) ([]model.TrafficSample, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT request_id, COALESCE(trace_id,''), COALESCE(server_id,''), COALESCE(instance_id,''),
-		        tool, COALESCE(client,''), status, latency_ms, COALESCE(error,''), ts
-		 FROM traffic_log ORDER BY id DESC LIMIT ?`, limit)
+		`SELECT `+trafficListColumns+` FROM traffic_log ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -673,10 +700,8 @@ func (s *Store) RecentTraffic(ctx context.Context, limit int) ([]model.TrafficSa
 
 	out := make([]model.TrafficSample, 0)
 	for rows.Next() {
-		var sample model.TrafficSample
-		if err := rows.Scan(&sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.InstanceID,
-			&sample.Tool, &sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error,
-			&sample.Timestamp); err != nil {
+		sample, err := scanTrafficList(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, sample)
@@ -684,12 +709,10 @@ func (s *Store) RecentTraffic(ctx context.Context, limit int) ([]model.TrafficSa
 	return out, rows.Err()
 }
 
-// RecentTrafficByServer 返回指定 Server 最近 limit 条调用采样（按写入倒序）。
+// RecentTrafficByServer 返回指定 Server 最近 limit 条调用采样（按 id 倒序）。
 func (s *Store) RecentTrafficByServer(ctx context.Context, serverID string, limit int) ([]model.TrafficSample, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT request_id, COALESCE(trace_id,''), COALESCE(server_id,''), COALESCE(instance_id,''),
-		        tool, COALESCE(client,''), status, latency_ms, COALESCE(error,''), ts
-		 FROM traffic_log WHERE server_id = ? ORDER BY id DESC LIMIT ?`, serverID, limit)
+		`SELECT `+trafficListColumns+` FROM traffic_log WHERE server_id = ? ORDER BY id DESC LIMIT ?`, serverID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -697,13 +720,36 @@ func (s *Store) RecentTrafficByServer(ctx context.Context, serverID string, limi
 
 	out := make([]model.TrafficSample, 0)
 	for rows.Next() {
-		var sample model.TrafficSample
-		if err := rows.Scan(&sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.InstanceID,
-			&sample.Tool, &sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error,
-			&sample.Timestamp); err != nil {
+		sample, err := scanTrafficList(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, sample)
 	}
 	return out, rows.Err()
+}
+
+// GetTraffic 按主键读取单条调用采样（含已捕获入参，供详情/回放；不存在返回错误）。
+func (s *Store) GetTraffic(ctx context.Context, id int64) (*model.TrafficSample, error) {
+	var sample model.TrafficSample
+	var requestArgs string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, request_id, COALESCE(trace_id,''), COALESCE(server_id,''), COALESCE(instance_id,''),
+		        tool, COALESCE(client,''), status, latency_ms, COALESCE(error,''), COALESCE(request_args,''), ts
+		 FROM traffic_log WHERE id = ?`, id,
+	).Scan(&sample.ID, &sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.InstanceID,
+		&sample.Tool, &sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error,
+		&requestArgs, &sample.Timestamp)
+	if err != nil {
+		return nil, notExistError(err, "traffic", fmt.Sprintf("%d", id))
+	}
+	if requestArgs != "" {
+		args := make(map[string]any)
+		if err := json.Unmarshal([]byte(requestArgs), &args); err != nil {
+			return nil, fmt.Errorf("解析 traffic %d request_args: %w", id, err)
+		}
+		sample.RequestArgs = args
+	}
+	sample.HasArgs = requestArgs != ""
+	return &sample, nil
 }

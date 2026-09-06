@@ -69,10 +69,11 @@ Request
 ## 4. 观测
 
 - 每次 `tools/call`：`request_id / trace_id / server / instance / tool / client / status / latency / timestamp` 落调用日志并输出结构化日志。多实例 Server 会记录**命中实例**（`instance_id`，可配合 `server_id` 精确筛选，见 `traffic_log` 0009）。
-- 默认**不记录**完整参数与返回值（可能含隐私）。`observability.sample_rate` 已生效（采样即丢弃，降低高并发写放大）；`observability.record_body` 仍为预留（当前不落参数/返回值）。
+- 默认**不记录**完整参数与返回值（可能含隐私）。`observability.sample_rate` 已生效（采样即丢弃，降低高并发写放大，被丢弃的行无法回放）；`observability.record_args`（默认关）开启时只在调用日志捕获 **tools/call 入参**（供回放），响应**永不**落库。
+- 趋势为**分钟桶真时序**：进程内按维度聚合（`internal/observability/metrics.go`），已闭合分钟每 60s 由 app 幂等落库 `trend_minute`（迁移 0010），跨重启可回溯、按保留天数清理；`/api/metrics/trend` 读侧以存储为闭合分钟权威源、进程内热桶补当前 open 分钟（不双计）。支持 `?scope=tool|server|instance`（instance 须 `server_id`）与 `?dim_key=` 单维聚焦（读合并见 `internal/gateway/control_trend.go`）。
+- 控制面另有「以 API Key 身份试调用」`POST /api/keys/{id}/invoke` 与「调用回放」`POST /api/logs/{id}/replay`：前者以已存 Key 身份跑完整数据面验证授权；后者把捕获行直连其命中的上游实例复现（不写调用日志/metrics，诊断流量不污染真实观测）。
 - 指标维度：请求量、成功率、错误率、P50/P95/P99、Server Health、Tool Call Count（经 `/api/metrics` 读取）。维度三档：工具维（默认）、`?scope=server` 的 `server:<id>` 聚合、`?scope=instance&server_id=` 的 `instance:<sid>:<iid>` 实例维（`internal/gateway/mcp.go` 同一次调用三档各记一次，实例维仅进程内）。
-- 控制面另有「以 API Key 身份试调用」`POST /api/keys/{id}/invoke`：以已存 Key 身份跑完整数据面链路验证白名单授权，**不写调用日志/metrics**（诊断流量不污染真实观测）。
 
 ## 5. 明确不在 v0.1
 
-LLM Judge、Python Evaluation Worker、AI Optimization、Traffic Replay、复杂 ABAC、审批流、Kafka、ClickHouse、Kubernetes Operator、Service Mesh、微服务拆分。评估（Evaluation）已有「Server 质量分 + 回归用例集」的即时实现（见 `internal/eval`，无 LLM/不落库）；LLM Judge、Dataset/TestCase 落库与历史对比另行列版。
+LLM Judge、Python Evaluation Worker、AI Optimization、复杂 ABAC、审批流、Kafka、ClickHouse、Kubernetes Operator、Service Mesh、微服务拆分。评估（Evaluation）已有「Server 质量分 + 回归用例集」的即时实现（见 `internal/eval`，无 LLM/不落库）；LLM Judge、Dataset/TestCase 落库与历史对比另行列版。Traffic Replay 已落地雏形（`record_args` 捕获入参 + `POST /api/logs/{id}/replay` 直连复现，见上节）。

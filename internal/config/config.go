@@ -100,10 +100,15 @@ type LoggingConfig struct {
 
 // ObservabilityConfig 控制调用观测记录。
 type ObservabilityConfig struct {
-	// RecordBody 为 true 时记录工具调用参数与返回值（含脱敏配置时同时生效）。
-	RecordBody bool `yaml:"record_body"`
+	// RecordArgs 为 true 时在调用日志捕获 tools/call 入参（Traffic Replay 回放
+	// 用）。默认关（入参可能含隐私/敏感数据）；响应**永不**落库。受 sample_rate
+	// 采样影响：被采样丢弃的行连同入参一并丢弃，无法回放。
+	RecordArgs bool `yaml:"record_args"`
 	// SampleRate 为 0-1 之间的采样率，控制调用日志采样。
 	SampleRate float64 `yaml:"sample_rate"`
+	// TrendRetentionDays 控制分钟桶趋势（trend_minute）保留天数（1..365，默认 7）。
+	// 已闭合分钟每 60s 幂等落库，超过该天数由 app 每小时清理。
+	TrendRetentionDays int `yaml:"trend_retention_days"`
 }
 
 // Default 返回适合本地开发的最小配置，保证无外部依赖也可启动。
@@ -146,8 +151,9 @@ func Default() Config {
 			Format: "text",
 		},
 		Observability: ObservabilityConfig{
-			RecordBody: false,
-			SampleRate: 1.0,
+			RecordArgs:         false,
+			SampleRate:         1.0,
+			TrendRetentionDays: 7,
 		},
 	}
 }
@@ -262,12 +268,17 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.RateLimit.Burst = n
 		}
 	}
-	if v := lookupEnv("CONDUCTOR_OBSERVABILITY_RECORD_BODY"); v != "" {
-		cfg.Observability.RecordBody = parseBool(v)
+	if v := lookupEnv("CONDUCTOR_OBSERVABILITY_RECORD_ARGS"); v != "" {
+		cfg.Observability.RecordArgs = parseBool(v)
 	}
 	if v := lookupEnv("CONDUCTOR_OBSERVABILITY_SAMPLE_RATE"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			cfg.Observability.SampleRate = f
+		}
+	}
+	if v := lookupEnv("CONDUCTOR_OBSERVABILITY_TREND_RETENTION_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Observability.TrendRetentionDays = n
 		}
 	}
 }
@@ -321,6 +332,9 @@ func (c Config) validate() error {
 		if err != nil || len(key) != 32 {
 			return fmt.Errorf("credentials.encryption_key 必须是 64 位 hex（AES-256 的 32 字节）")
 		}
+	}
+	if c.Observability.TrendRetentionDays < 1 || c.Observability.TrendRetentionDays > 365 {
+		return fmt.Errorf("observability.trend_retention_days 须在 1..365，收到: %d", c.Observability.TrendRetentionDays)
 	}
 	return nil
 }
