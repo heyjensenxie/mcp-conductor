@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/storage/query"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/query"
 )
 
 func marker(t *testing.T) string {
@@ -33,7 +33,7 @@ func TestQueryServersFilterAndPage(t *testing.T) {
 	names := []string{m + "-Alpha", m + "-beta", m + "-Gamma"}
 	created := make([]*model.Server, 0, 3)
 	for i, name := range names {
-		srv := testServer(name, fmt.Sprintf("http://%s-%d/mcp", m, i))
+		srv := testServer(name)
 		if i == 1 {
 			srv.Enabled = false
 			srv.HealthStatus = model.ServerStatusUnhealthy
@@ -87,7 +87,7 @@ func TestQueryToolsByServer(t *testing.T) {
 	ctx := context.Background()
 	m := marker(t)
 
-	srv := testServer(m, "http://tools/mcp")
+	srv := testServer(m)
 	if err := store.CreateServer(ctx, srv); err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestQueryCredentialsMetadata(t *testing.T) {
 	ctx := context.Background()
 	m := marker(t)
 
-	srv := testServer(m, "http://cred/mcp")
+	srv := testServer(m)
 	if err := store.CreateServer(ctx, srv); err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}

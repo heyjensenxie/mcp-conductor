@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/storage/memory"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/memory"
 )
 
 // TestControlListServersPagedEnvelope 覆盖列表统一分页信封 + 全量模式（page_size<=0）。
@@ -19,7 +19,7 @@ func TestControlListServersPagedEnvelope(t *testing.T) {
 	ctrl := NewControl(nil, store, nil, nil)
 	ctx := context.Background()
 	for i, name := range []string{"A", "B", "C", "D", "E"} {
-		srv := &model.Server{Name: name, Endpoint: "http://e/mcp", Enabled: true}
+		srv := &model.Server{Name: name, Enabled: true}
 		if err := store.CreateServer(ctx, srv); err != nil {
 			t.Fatalf("CreateServer: %v", err)
 		}
@@ -66,10 +66,10 @@ func TestControlListFilters(t *testing.T) {
 	ctrl := NewControl(nil, store, nil, nil)
 	ctx := context.Background()
 
-	if err := store.CreateServer(ctx, &model.Server{Name: "Payment", Endpoint: "http://p/mcp", Enabled: true, HealthStatus: model.ServerStatusHealthy}); err != nil {
+	if err := store.CreateServer(ctx, &model.Server{Name: "Payment", Enabled: true, HealthStatus: model.ServerStatusHealthy}); err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
-	if err := store.CreateServer(ctx, &model.Server{Name: "Search", Endpoint: "http://s/mcp", Enabled: false, HealthStatus: model.ServerStatusUnhealthy}); err != nil {
+	if err := store.CreateServer(ctx, &model.Server{Name: "Search", Enabled: false, HealthStatus: model.ServerStatusUnhealthy}); err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
 	_ = store.UpsertTool(ctx, &model.Tool{ServerID: "s1", OriginalName: "search", GatewayName: "svc.search", Enabled: true})

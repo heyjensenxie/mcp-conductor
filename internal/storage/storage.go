@@ -7,17 +7,35 @@ package storage
 import (
 	"context"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/storage/query"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/query"
 )
 
-// ServerStore 管理 MCP Server 元数据。
+// ServerStore 管理 MCP Server（逻辑实体）元数据。
+//
+// 注意：Server 不承载 Endpoint/Transport——具体上游端点属于 InstanceStore 的
+// Instance。本接口只持久化逻辑字段（含聚合 HealthStatus，见模型注释）。
 type ServerStore interface {
 	CreateServer(ctx context.Context, server *model.Server) error
 	GetServer(ctx context.Context, id string) (*model.Server, error)
 	ListServers(ctx context.Context) ([]model.Server, error)
 	UpdateServer(ctx context.Context, server *model.Server) error
 	DeleteServer(ctx context.Context, id string) error
+}
+
+// InstanceStore 管理 Server 下的具体上游实例。
+//
+// 列表按 (created_at, id) 稳定升序返回（首条即"主实例"，用于展示与默认发现
+// 拨测）；DeleteServer 须级联删除其全部实例（MySQL 由 FK ON DELETE CASCADE
+// 承担，memory 实现需手动删除，二者保持一致）。
+type InstanceStore interface {
+	CreateInstance(ctx context.Context, instance *model.Instance) error
+	GetInstance(ctx context.Context, id string) (*model.Instance, error)
+	ListInstances(ctx context.Context) ([]model.Instance, error)
+	ListInstancesByServer(ctx context.Context, serverID string) ([]model.Instance, error)
+	UpdateInstance(ctx context.Context, instance *model.Instance) error
+	DeleteInstance(ctx context.Context, id string) error
+	DeleteInstancesByServer(ctx context.Context, serverID string) error
 }
 
 // ToolStore 管理聚合后的 Tool 注册表。
@@ -114,6 +132,7 @@ type TrafficQueryStore interface {
 // Store 聚合全部实体存储接口，作为组合注入的入口。
 type Store interface {
 	ServerStore
+	InstanceStore
 	ToolStore
 	RouteStore
 	CredentialStore

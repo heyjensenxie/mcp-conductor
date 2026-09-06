@@ -7,15 +7,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/access"
-	"github.com/xmj128/mcp-conductor/internal/auth"
-	"github.com/xmj128/mcp-conductor/internal/balancer"
-	"github.com/xmj128/mcp-conductor/internal/errs"
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/observability"
-	"github.com/xmj128/mcp-conductor/internal/registry"
-	"github.com/xmj128/mcp-conductor/internal/router"
-	"github.com/xmj128/mcp-conductor/internal/storage/memory"
+	"github.com/heyjensenxie/mcp-conductor/internal/access"
+	"github.com/heyjensenxie/mcp-conductor/internal/auth"
+	"github.com/heyjensenxie/mcp-conductor/internal/balancer"
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/observability"
+	"github.com/heyjensenxie/mcp-conductor/internal/registry"
+	"github.com/heyjensenxie/mcp-conductor/internal/router"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/memory"
 )
 
 // fakeCaller 记录上游调用参数，验证 Grant 的 default_args/Headers 生效。
@@ -24,7 +24,7 @@ type fakeCaller struct {
 	capturedHdrs map[string]string
 }
 
-func (f *fakeCaller) Call(_ context.Context, _ model.Server, _ string, args map[string]any, hdrs map[string]string) ([]registry.CallContent, error) {
+func (f *fakeCaller) Call(_ context.Context, _ model.Server, _ model.Instance, _ string, args map[string]any, hdrs map[string]string) ([]registry.CallContent, error) {
 	f.capturedArgs = args
 	f.capturedHdrs = hdrs
 	return []registry.CallContent{{Type: "text", Text: "ok"}}, nil
@@ -33,28 +33,35 @@ func (f *fakeCaller) Call(_ context.Context, _ model.Server, _ string, args map[
 // errCaller 返回固定上游错误，用于验证失败观测只记一次。
 type errCaller struct{ err error }
 
-func (f *errCaller) Call(context.Context, model.Server, string, map[string]any, map[string]string) ([]registry.CallContent, error) {
+func (f *errCaller) Call(context.Context, model.Server, model.Instance, string, map[string]any, map[string]string) ([]registry.CallContent, error) {
 	return nil, f.err
 }
 
-// seedGatewayFull 构造带单 Server + 两工具的内存网关，并返回网关与其所用
-// 的 store/metrics，便于断言观测结果（指标快照、调用日志）。
+// seedGatewayFull 构造带单 Server（一条 healthy 实例）+ 两工具的内存网关，
+// 并返回网关与其所用的 store/metrics，便于断言观测结果（指标快照、调用日志）。
 func seedGatewayFull(t *testing.T, caller registry.ToolCaller) (*MCPGateway, *memory.Store, *observability.Metrics) {
 	t.Helper()
 	store := memory.New()
+	ctx := context.Background()
 	now := time.Now().UTC()
-	if err := store.CreateServer(context.Background(), &model.Server{
-		ID: "srv-1", Name: "mock", Endpoint: "http://localhost:9000/mcp",
-		Transport: model.TransportStreamableHTTP, Enabled: true,
+	if err := store.CreateServer(ctx, &model.Server{
+		ID: "srv-1", Name: "mock", Enabled: true,
 		HealthStatus: model.ServerStatusHealthy, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("CreateServer: %v", err)
+	}
+	if err := store.CreateInstance(ctx, &model.Instance{
+		ID: "inst-1", ServerID: "srv-1", Endpoint: "http://localhost:9000/mcp",
+		Transport: model.TransportStreamableHTTP, Enabled: true,
+		HealthStatus: model.ServerStatusHealthy, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateInstance: %v", err)
 	}
 	for _, spec := range []struct{ id, name string }{
 		{"tool-1", "search"},
 		{"tool-2", "detail"},
 	} {
-		if err := store.UpsertTool(context.Background(), &model.Tool{
+		if err := store.UpsertTool(ctx, &model.Tool{
 			ID: spec.id, ServerID: "srv-1", OriginalName: spec.name,
 			GatewayName: "mock." + spec.name, Enabled: true, CreatedAt: now, UpdatedAt: now,
 		}); err != nil {
@@ -67,8 +74,9 @@ func seedGatewayFull(t *testing.T, caller registry.ToolCaller) (*MCPGateway, *me
 	}
 	metrics := observability.NewMetrics()
 	authz := access.NewAuthorizer()
+	resolver := router.NewResolver(store, store).WithInstances(store)
 	g := NewMCPGateway(
-		store, router.NewResolver(store, store), balancer.NewRoundRobin(),
+		store, resolver, balancer.NewRoundRobin(),
 		caller, authz, metrics,
 		observability.NewRecorder(store, false, 1.0),
 	)

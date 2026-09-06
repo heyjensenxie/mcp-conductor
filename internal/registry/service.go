@@ -1,7 +1,11 @@
-// Package registry 提供 MCP Server 管理、Tool 自动发现与 Tool Registry 服务。
+// Package registry 提供 MCP Server 管理、实例管理、Tool 自动发现与 Tool Registry 服务。
 //
 // 面向客户的 Tool 名采用 Server 命名空间（如 university.search_policy），
 // 解决多 Server 聚合后的 Tool Name Collision，并维护 对外名 → (Server, 原名) 映射。
+//
+// 模型：Server 是逻辑实体（聚合工具/凭证/命名空间），其上可挂多个实例
+// （endpoint+transport）；工具发现/健康探测作用于某个具体实例，负载均衡在
+// 实例维度展开。Server 级 HealthStatus 由实例集合聚合推导（见模型注释）。
 package registry
 
 import (
@@ -11,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/errs"
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/storage"
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage"
 )
 
 // DiscoveredTool 是上游发现到的工具定义。
@@ -23,15 +27,21 @@ type DiscoveredTool struct {
 	InputSchema map[string]any
 }
 
-// ToolDiscoverer 连接上游 MCP Server 并发现其工具。
+// ToolDiscoverer 连接上游某个实例并发现其工具。
 type ToolDiscoverer interface {
-	Discover(ctx context.Context, server model.Server) ([]DiscoveredTool, error)
+	Discover(ctx context.Context, server model.Server, instance model.Instance) ([]DiscoveredTool, error)
 }
 
-// ToolCaller 调用上游 MCP Server 的某个工具。
+// ToolCaller 调用上游某个实例的某个工具。
 // extraHeaders 是按工具附加的请求头（per-tool 鉴权），可为 nil。
 type ToolCaller interface {
-	Call(ctx context.Context, server model.Server, tool string, arguments map[string]any, extraHeaders map[string]string) ([]CallContent, error)
+	Call(ctx context.Context, server model.Server, instance model.Instance, tool string, arguments map[string]any, extraHeaders map[string]string) ([]CallContent, error)
+}
+
+// InstanceProber 对单个实例执行一次健康探测（initialize 握手），
+// 用于"实例测试"即时回写；健康周期巡检由 health.Monitor 负责。
+type InstanceProber interface {
+	Check(ctx context.Context, server model.Server, instance model.Instance) (model.ServerStatus, error)
 }
 
 // CallContent 是工具调用的文本结果片段（对标 MCP content 结构）。
@@ -40,9 +50,10 @@ type CallContent struct {
 	Text string
 }
 
-// Stores 是 Service 依赖的 Server 与 Tool 存储。
+// Stores 是 Service 依赖的存储能力。
 type Stores interface {
 	storage.ServerStore
+	storage.InstanceStore
 	storage.ToolStore
 	storage.CredentialStore
 	storage.RouteStore
@@ -51,10 +62,11 @@ type Stores interface {
 
 var gatewayToolNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$`)
 
-// Service 是控制面对 Server/Tool 的服务门面。
+// Service 是控制面对 Server/实例/Tool 的服务门面。
 type Service struct {
 	stores     Stores
 	discoverer ToolDiscoverer
+	prober     InstanceProber // nil 表示"实例测试"不可用（未装配）
 }
 
 // NewService 创建 Registry 服务。
@@ -62,33 +74,71 @@ func NewService(stores Stores, discoverer ToolDiscoverer) *Service {
 	return &Service{stores: stores, discoverer: discoverer}
 }
 
-// CreateServer 新增 Server 并立即触发健康检查与工具发现。
-func (s *Service) CreateServer(ctx context.Context, server *model.Server) (*model.Server, error) {
-	if strings.TrimSpace(server.Name) == "" {
+// WithProber 装配实例健康探针（通常为同一个 mcpclient.Adapter）。
+func (s *Service) WithProber(prober InstanceProber) *Service {
+	s.prober = prober
+	return s
+}
+
+// CreateServerInput 是新增 Server 的入参；Endpoint/Transport 属于首个（seed）实例。
+type CreateServerInput struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Endpoint    string          `json:"endpoint"`
+	Transport   model.Transport `json:"transport"`
+}
+
+// CreateServer 新增逻辑 Server 及其 seed 实例，并立即触发工具发现。
+//
+// 非原子：先建 Server 行再建实例行，实例失败时 best-effort 回滚删除 Server。
+func (s *Service) CreateServer(ctx context.Context, in CreateServerInput) (*model.Server, error) {
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
 		return nil, errs.New(errs.CodeInvalidArgument, "server.name 不能为空")
 	}
-	if strings.TrimSpace(server.Endpoint) == "" {
+	endpoint := strings.TrimSpace(in.Endpoint)
+	if endpoint == "" {
 		return nil, errs.New(errs.CodeInvalidArgument, "server.endpoint 不能为空")
 	}
-	if server.Transport == "" {
-		server.Transport = model.TransportStreamableHTTP
+	transport, err := normalizeTransport(in.Transport)
+	if err != nil {
+		return nil, err
 	}
-	// 注册即启用；后续通过 toggle 操作禁用。
-	server.Enabled = true
 	now := time.Now().UTC()
-	server.CreatedAt = now
-	server.UpdatedAt = now
-	server.HealthStatus = model.ServerStatusUnknown
 
+	// 注册即启用；后续通过 toggle 操作禁用。
+	server := &model.Server{
+		Name:         name,
+		Description:  strings.TrimSpace(in.Description),
+		Enabled:      true,
+		HealthStatus: model.ServerStatusUnknown,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
 	if err := s.stores.CreateServer(ctx, server); err != nil {
 		return nil, errs.Wrap(errs.CodeInternal, err, "保存 Server 失败")
 	}
-
+	seed := &model.Instance{
+		ServerID:     server.ID,
+		Endpoint:     endpoint,
+		Transport:    transport,
+		Enabled:      true,
+		HealthStatus: model.ServerStatusUnknown,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := s.stores.CreateInstance(ctx, seed); err != nil {
+		// 回滚已创建的 Server 行，避免孤儿 Server；再失败仅记录。
+		if delErr := s.stores.DeleteServer(ctx, server.ID); delErr != nil {
+			return nil, errs.Wrap(errs.CodeInternal, delErr, "创建实例失败且回滚 Server 失败")
+		}
+		return nil, errs.Wrap(errs.CodeInternal, err, "保存 seed 实例失败")
+	}
 	s.discoverServer(ctx, server.ID)
 	return server, nil
 }
 
-// GetServer 读取 Server。
+// GetServer 读取逻辑 Server（不含实例列表；由控制面水合）。
 func (s *Service) GetServer(ctx context.Context, id string) (*model.Server, error) {
 	server, err := s.stores.GetServer(ctx, id)
 	if err != nil {
@@ -97,14 +147,25 @@ func (s *Service) GetServer(ctx context.Context, id string) (*model.Server, erro
 	return server, nil
 }
 
-// ListServers 列出全部 Server。
+// ListServers 列出全部逻辑 Server。
 func (s *Service) ListServers(ctx context.Context) ([]model.Server, error) {
 	return s.stores.ListServers(ctx)
 }
 
-// ToggleServer 启用/禁用 Server；禁用时标记健康状态为 Disabled，
-// 重新启用时复位为 Unknown，让健康巡检能够重新接管探活（否则会停留在
-// Disabled 永远无法恢复）。
+// ListInstances 列出指定 Server 的实例（按 (created_at, id) 升序）。
+func (s *Service) ListInstances(ctx context.Context, serverID string) ([]model.Instance, error) {
+	if _, err := s.stores.GetServer(ctx, serverID); err != nil {
+		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
+	}
+	instances, err := s.stores.ListInstancesByServer(ctx, serverID)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeInternal, err, "读取实例失败")
+	}
+	return instances, nil
+}
+
+// ToggleServer 启用/禁用逻辑 Server；禁用时聚合状态标为 Disabled，
+// 重新启用时复位为 Unknown，让健康巡检重新接管探活。
 func (s *Service) ToggleServer(ctx context.Context, id string, enabled bool) (*model.Server, error) {
 	server, err := s.stores.GetServer(ctx, id)
 	if err != nil {
@@ -123,7 +184,7 @@ func (s *Service) ToggleServer(ctx context.Context, id string, enabled bool) (*m
 	return server, nil
 }
 
-// DeleteServer 删除 Server 及其聚合的 Tool 与凭证（含上游注入凭据）。
+// DeleteServer 删除逻辑 Server 及其实例、聚合的 Tool 与凭证。
 func (s *Service) DeleteServer(ctx context.Context, id string) error {
 	if _, err := s.stores.GetServer(ctx, id); err != nil {
 		return errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
@@ -134,44 +195,30 @@ func (s *Service) DeleteServer(ctx context.Context, id string) error {
 	if err := s.stores.DeleteCredentialsByServer(ctx, id); err != nil {
 		return errs.Wrap(errs.CodeInternal, err, "删除 Server 凭证失败")
 	}
+	if err := s.stores.DeleteInstancesByServer(ctx, id); err != nil {
+		return errs.Wrap(errs.CodeInternal, err, "删除 Server 实例失败")
+	}
 	if err := s.stores.DeleteServer(ctx, id); err != nil {
 		return errs.Wrap(errs.CodeInternal, err, "删除 Server 失败")
 	}
 	return nil
 }
 
-// UpdateServerPatch 是 Server 可编辑字段（name 不可改：改名会重建对外工具
-// 命名空间，涉及删除/重发现，v0.1 不在线支持）。
+// UpdateServerPatch 是逻辑 Server 可编辑字段（name 不可改：改名会重建对外工具
+// 命名空间，涉及删除/重发现，v0.1 不在线支持；endpoint/transport 属于实例，
+// 请编辑实例）。
 type UpdateServerPatch struct {
 	Description *string `json:"description,omitempty"`
-	Endpoint    *string `json:"endpoint,omitempty"`
-	Transport   *string `json:"transport,omitempty"`
 }
 
-// UpdateServer 按补丁更新 Server 的可编辑字段；name/enabled/health 不受影响。
+// UpdateServer 按补丁更新逻辑 Server 的可编辑字段；name/enabled/health 不受影响。
 func (s *Service) UpdateServer(ctx context.Context, id string, patch UpdateServerPatch) (*model.Server, error) {
 	server, err := s.stores.GetServer(ctx, id)
 	if err != nil {
 		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
 	}
 	if patch.Description != nil {
-		server.Description = *patch.Description
-	}
-	if patch.Endpoint != nil {
-		if strings.TrimSpace(*patch.Endpoint) == "" {
-			return nil, errs.New(errs.CodeInvalidArgument, "server.endpoint 不能为空")
-		}
-		server.Endpoint = *patch.Endpoint
-	}
-	if patch.Transport != nil {
-		t := model.Transport(strings.TrimSpace(*patch.Transport))
-		if t == "" {
-			t = model.TransportStreamableHTTP
-		}
-		if t != model.TransportStreamableHTTP && t != model.TransportSSE && t != model.TransportStdio {
-			return nil, errs.New(errs.CodeInvalidArgument, "transport 仅支持 https / sse / stdio")
-		}
-		server.Transport = t
+		server.Description = strings.TrimSpace(*patch.Description)
 	}
 	server.UpdatedAt = time.Now().UTC()
 	if err := s.stores.UpdateServer(ctx, server); err != nil {
@@ -180,13 +227,247 @@ func (s *Service) UpdateServer(ctx context.Context, id string, patch UpdateServe
 	return server, nil
 }
 
-// Rediscover 重新发现指定 Server 的工具（测试连接/刷新 Registry 用）。
+// AddInstance 为 Server 新增一个实例（启用、健康 unknown）并重算聚合。
+func (s *Service) AddInstance(ctx context.Context, serverID string, endpoint string, transport model.Transport) (*model.Instance, error) {
+	server, err := s.stores.GetServer(ctx, serverID)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
+	}
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "instance.endpoint 不能为空")
+	}
+	transport, err = normalizeTransport(transport)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	instance := &model.Instance{
+		ServerID:     server.ID,
+		Endpoint:     endpoint,
+		Transport:    transport,
+		Enabled:      true,
+		HealthStatus: model.ServerStatusUnknown,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := s.stores.CreateInstance(ctx, instance); err != nil {
+		return nil, errs.Wrap(errs.CodeInternal, err, "保存实例失败")
+	}
+	if err := s.syncAggregate(ctx, serverID); err != nil {
+		return nil, err
+	}
+	return instance, nil
+}
+
+// UpdateInstancePatch 是实例可编辑字段；Endpoint/Transport 变更会使该实例
+// 健康复位为 unknown 并交由巡检重新探活。
+type UpdateInstancePatch struct {
+	Endpoint  *string `json:"endpoint,omitempty"`
+	Transport *string `json:"transport,omitempty"`
+}
+
+// UpdateInstance 更新实例可编辑字段并重算 Server 聚合。
+func (s *Service) UpdateInstance(ctx context.Context, serverID, instanceID string, patch UpdateInstancePatch) (*model.Instance, error) {
+	instance, err := s.getServerInstance(ctx, serverID, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	changed := false
+	if patch.Endpoint != nil {
+		endpoint := strings.TrimSpace(*patch.Endpoint)
+		if endpoint == "" {
+			return nil, errs.New(errs.CodeInvalidArgument, "instance.endpoint 不能为空")
+		}
+		if instance.Endpoint != endpoint {
+			instance.Endpoint, changed = endpoint, true
+		}
+	}
+	if patch.Transport != nil {
+		transport, tErr := normalizeTransport(model.Transport(strings.TrimSpace(*patch.Transport)))
+		if tErr != nil {
+			return nil, tErr
+		}
+		if instance.Transport != transport {
+			instance.Transport, changed = transport, true
+		}
+	}
+	if !changed {
+		return instance, nil
+	}
+	// 端点/传输变更后旧健康结论失效，复位待探。
+	instance.HealthStatus = model.ServerStatusUnknown
+	instance.UpdatedAt = time.Now().UTC()
+	if err := s.stores.UpdateInstance(ctx, instance); err != nil {
+		return nil, errs.Wrap(errs.CodeInternal, err, "更新实例失败")
+	}
+	if err := s.syncAggregate(ctx, serverID); err != nil {
+		return nil, err
+	}
+	return instance, nil
+}
+
+// ToggleInstance 启用/禁用实例并重算聚合；禁用即摘除（不进探测与负载均衡）。
+func (s *Service) ToggleInstance(ctx context.Context, serverID, instanceID string, enabled bool) (*model.Instance, error) {
+	instance, err := s.getServerInstance(ctx, serverID, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	if instance.Enabled == enabled {
+		return instance, nil
+	}
+	instance.Enabled = enabled
+	instance.UpdatedAt = time.Now().UTC()
+	if err := s.stores.UpdateInstance(ctx, instance); err != nil {
+		return nil, errs.Wrap(errs.CodeInternal, err, "更新实例失败")
+	}
+	if err := s.syncAggregate(ctx, serverID); err != nil {
+		return nil, err
+	}
+	return instance, nil
+}
+
+// DeleteInstance 删除单个实例；Server 必须至少保留一个实例。
+func (s *Service) DeleteInstance(ctx context.Context, serverID, instanceID string) error {
+	instance, err := s.getServerInstance(ctx, serverID, instanceID)
+	if err != nil {
+		return err
+	}
+	instances, err := s.stores.ListInstancesByServer(ctx, serverID)
+	if err != nil {
+		return errs.Wrap(errs.CodeInternal, err, "读取实例失败")
+	}
+	if len(instances) <= 1 {
+		return errs.New(errs.CodeInvalidArgument, "Server 至少保留一个实例（如需下线请删除整个 Server）")
+	}
+	if err := s.stores.DeleteInstance(ctx, instance.ID); err != nil {
+		return errs.Wrap(errs.CodeInternal, err, "删除实例失败")
+	}
+	if err := s.syncAggregate(ctx, serverID); err != nil {
+		return err
+	}
+	return nil
+}
+
+// TestInstance 对单个实例执行一次同步健康探测（initialize 握手）并回写健康
+// 与聚合；用于"实例测试"。失败时实例标记 unhealthy 并返回错误。
+func (s *Service) TestInstance(ctx context.Context, serverID, instanceID string) (*model.Instance, error) {
+	if s.prober == nil {
+		return nil, errs.New(errs.CodeInternal, "实例探针未装配")
+	}
+	server, err := s.stores.GetServer(ctx, serverID)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
+	}
+	instance, err := s.getServerInstance(ctx, serverID, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	status, probeErr := s.prober.Check(ctx, *server, *instance)
+	instance.HealthStatus = status
+	if probeErr != nil {
+		instance.HealthStatus = model.ServerStatusUnhealthy
+	}
+	instance.UpdatedAt = time.Now().UTC()
+	if err := s.stores.UpdateInstance(ctx, instance); err != nil {
+		return nil, errs.Wrap(errs.CodeInternal, err, "更新实例失败")
+	}
+	if err := s.syncAggregate(ctx, serverID); err != nil {
+		return nil, err
+	}
+	if probeErr != nil {
+		return instance, errs.Wrap(errs.CodeUpstream, probeErr, "实例 %q 探测失败", instance.Endpoint)
+	}
+	return instance, nil
+}
+
+// Rediscover 重新发现逻辑 Server 的工具（测试连接/刷新 Registry 用），
+// 拨测其主（首个可用）实例；成功后把该实例标 healthy、失败标 unhealthy。
 func (s *Service) Rediscover(ctx context.Context, serverID string) error {
 	server, err := s.stores.GetServer(ctx, serverID)
 	if err != nil {
 		return errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
 	}
 	return s.discover(ctx, *server)
+}
+
+// RediscoverChange 描述一次重新发现预演中对单个工具的变更（advisory）。
+// Kind 取 add（上游新增）或 update（已有工具将有字段变化）。update 下：
+// DescChanged / SchemaChanged 表示"对外门面"（未被覆盖保护）字段会被更新；
+// SourceChanged 表示上游源元数据与最近一次登记不同（覆盖保护下仅源值刷新）；
+// *Protected 表示对应门面当前有平台覆盖，实际不会被动覆盖。
+type RediscoverChange struct {
+	Kind            string `json:"kind"` // add | update
+	OriginalName    string `json:"original_name"`
+	GatewayName     string `json:"gateway_name"`
+	Enabled         bool   `json:"enabled"`
+	DescChanged     bool   `json:"desc_changed"`
+	SchemaChanged   bool   `json:"schema_changed"`
+	SourceChanged   bool   `json:"source_changed"`
+	DescProtected   bool   `json:"desc_protected"`
+	SchemaProtected bool   `json:"schema_protected"`
+	NameProtected   bool   `json:"name_protected"`
+}
+
+// RediscoverPlan 是一次"重新发现"的只读预演结果：调用方据此人工确认后再真正落库。
+type RediscoverPlan struct {
+	ServerID string             `json:"server_id"`
+	Added    int                `json:"added"`
+	Updated  int                `json:"updated"`
+	Changes  []RediscoverChange `json:"changes"`
+}
+
+// PlanRediscover 连接主实例执行一次上游发现并计算相对当前登记的变更，但不写库、
+// 不改实例健康状态。变更判断与 discover() 的合并语义一致：门面字段仅在未覆盖时
+// 才会被更新，覆盖字段始终保留当前值。
+func (s *Service) PlanRediscover(ctx context.Context, serverID string) (*RediscoverPlan, error) {
+	server, err := s.stores.GetServer(ctx, serverID)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
+	}
+	instance, err := s.pickDiscoveryInstance(ctx, *server)
+	if err != nil {
+		return nil, err
+	}
+	namespace := namespaceFor(server.Name)
+	upstream, err := s.discoverer.Discover(ctx, *server, *instance)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeUpstream, err, "发现 Server %q 工具失败", server.Name)
+	}
+
+	// Changes 显式初始化为空切片（而非 nil），保证序列化输出 [] 而不是 null，
+	// 避免前端对 plan.changes.length 读 null 报错。
+	plan := &RediscoverPlan{ServerID: server.ID, Changes: []RediscoverChange{}}
+	for _, dt := range upstream {
+		gw := namespace + "." + dt.Name
+		existing, foundErr := s.stores.GetToolBySource(ctx, server.ID, dt.Name)
+		if foundErr != nil {
+			// 未登记过的上游工具 → 新增（默认启用，与 discover 一致）。
+			plan.Added++
+			plan.Changes = append(plan.Changes, RediscoverChange{
+				Kind: "add", OriginalName: dt.Name, GatewayName: gw, Enabled: true,
+			})
+			continue
+		}
+		sourceChanged := existing.SourceDescription != dt.Description ||
+			!reflect.DeepEqual(existing.SourceInputSchema, dt.InputSchema)
+		descChanged := !existing.DescriptionOverridden && existing.Description != dt.Description
+		schemaChanged := !existing.InputSchemaOverridden &&
+			!reflect.DeepEqual(existing.InputSchema, dt.InputSchema)
+		if !sourceChanged && !descChanged && !schemaChanged {
+			continue
+		}
+		plan.Updated++
+		plan.Changes = append(plan.Changes, RediscoverChange{
+			Kind: "update", OriginalName: dt.Name, GatewayName: existing.GatewayName,
+			Enabled:     existing.Enabled,
+			DescChanged: descChanged, SchemaChanged: schemaChanged, SourceChanged: sourceChanged,
+			DescProtected:   existing.DescriptionOverridden,
+			SchemaProtected: existing.InputSchemaOverridden,
+			NameProtected:   existing.NameOverridden,
+		})
+	}
+	return plan, nil
 }
 
 // ListTools 列出全部聚合后的工具。
@@ -315,22 +596,114 @@ func (s *Service) renameReferences(ctx context.Context, oldName, newName string)
 	return nil
 }
 
-// discoverServer 后台执行一次工具发现，失败仅记录（不阻塞写操作）。
+// ---- 内部辅助 ----
+
+// normalizeTransport 空值默认 streamable HTTP 并校验枚举白名单。
+func normalizeTransport(t model.Transport) (model.Transport, error) {
+	if t == "" {
+		t = model.TransportStreamableHTTP
+	}
+	switch t {
+	case model.TransportStreamableHTTP, model.TransportSSE, model.TransportStdio:
+		return t, nil
+	default:
+		return t, errs.New(errs.CodeInvalidArgument, "transport 仅支持 https / sse / stdio")
+	}
+}
+
+// getServerInstance 校验实例归属后返回实例副本。
+func (s *Service) getServerInstance(ctx context.Context, serverID, instanceID string) (*model.Instance, error) {
+	instance, err := s.stores.GetInstance(ctx, instanceID)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeNotFound, err, "读取实例失败")
+	}
+	if instance.ServerID != serverID {
+		return nil, errs.New(errs.CodeNotFound, "实例 %q 不属于 Server %q", instanceID, serverID)
+	}
+	return instance, nil
+}
+
+// pickDiscoveryInstance 返回首个"启用且非 unhealthy"的实例用于发现拨测；
+// 全不可用时返回错误（调用方不应回退到禁用实例）。
+func (s *Service) pickDiscoveryInstance(ctx context.Context, server model.Server) (*model.Instance, error) {
+	instances, err := s.stores.ListInstancesByServer(ctx, server.ID)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeInternal, err, "读取实例失败")
+	}
+	for i := range instances {
+		if instances[i].IsCallable() {
+			return &instances[i], nil
+		}
+	}
+	return nil, errs.New(errs.CodeRoute, "Server %q 没有可用的启用实例用于发现", server.Name)
+}
+
+// syncAggregate 读取实例集合、推导聚合健康并写回 Server（仅在变化时更新）。
+func (s *Service) syncAggregate(ctx context.Context, serverID string) error {
+	server, err := s.stores.GetServer(ctx, serverID)
+	if err != nil {
+		return errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
+	}
+	instances, err := s.stores.ListInstancesByServer(ctx, serverID)
+	if err != nil {
+		return errs.Wrap(errs.CodeInternal, err, "读取实例失败")
+	}
+	agg := model.AggregateServerHealth(server.Enabled, instances)
+	if agg == server.HealthStatus {
+		return nil
+	}
+	server.HealthStatus = agg
+	server.UpdatedAt = time.Now().UTC()
+	if err := s.stores.UpdateServer(ctx, server); err != nil {
+		return errs.Wrap(errs.CodeInternal, err, "更新 Server 聚合状态失败")
+	}
+	return nil
+}
+
+// markInstanceHealth 直写某个实例的健康并重算聚合（发现成功/失败即反馈健康）。
+func (s *Service) markInstanceHealth(ctx context.Context, instanceID string, status model.ServerStatus) {
+	instance, err := s.stores.GetInstance(ctx, instanceID)
+	if err != nil {
+		return
+	}
+	if instance.HealthStatus == status {
+		return
+	}
+	instance.HealthStatus = status
+	instance.UpdatedAt = time.Now().UTC()
+	if err := s.stores.UpdateInstance(ctx, instance); err != nil {
+		return
+	}
+	_ = s.syncAggregate(ctx, instance.ServerID)
+}
+
+// discoverServer 后台执行一次工具发现（写路径调用），失败仅记录。
 func (s *Service) discoverServer(ctx context.Context, serverID string) {
 	server, err := s.stores.GetServer(ctx, serverID)
 	if err != nil {
 		return
 	}
+	if !server.Enabled {
+		return
+	}
 	_ = s.discover(ctx, *server)
 }
 
-// discover 发现并落库指定 Server 的工具；同一对外名重复时覆盖。
+// discover 拨测 Server 的主实例发现并落库工具；成功后把该实例标 healthy、
+// 失败标 unhealthy 并重算聚合。同一对外名重复时覆盖（保留运维启停/覆盖）。
 func (s *Service) discover(ctx context.Context, server model.Server) error {
-	namespace := namespaceFor(server.Name)
-	tools, err := s.discoverer.Discover(ctx, server)
+	instance, err := s.pickDiscoveryInstance(ctx, server)
 	if err != nil {
+		return err
+	}
+	namespace := namespaceFor(server.Name)
+	tools, err := s.discoverer.Discover(ctx, server, *instance)
+	if err != nil {
+		s.markInstanceHealth(ctx, instance.ID, model.ServerStatusUnhealthy)
 		return errs.Wrap(errs.CodeUpstream, err, "发现 Server %q 工具失败", server.Name)
 	}
+	s.markInstanceHealth(ctx, instance.ID, model.ServerStatusHealthy)
+
 	now := time.Now().UTC()
 	for _, dt := range tools {
 		gw := namespace + "." + dt.Name

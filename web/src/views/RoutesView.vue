@@ -61,7 +61,7 @@
         </a-form-item>
         <a-form-item :label="t('routes.serverId')" :required="true">
           <a-select v-model:value="form.server_id" :placeholder="t('routes.selectServerPlaceholder')" show-search option-filter-prop="label">
-            <a-select-option v-for="s in servers" :key="s.id" :value="s.id" :label="s.name">{{ s.name }} ({{ s.endpoint }})</a-select-option>
+            <a-select-option v-for="s in servers" :key="s.id" :value="s.id" :label="s.name">{{ s.name }} ({{ primaryEndpoint(s) }})</a-select-option>
           </a-select>
         </a-form-item>
         <a-form-item :label="t('routes.toolNames')">
@@ -79,7 +79,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
-import { createRoute, deleteRoute, listAllServers, listAllTools, listRoutes, toggleRoute, updateRoute } from '@/api'
+import { createRoute, deleteRoute, listAllServers, listAllTools, listRoutes, primaryEndpoint, toggleRoute, updateRoute } from '@/api'
 import type { MCPServer, Route } from '@/types'
 
 const { t } = useI18n()

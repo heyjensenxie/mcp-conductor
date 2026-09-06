@@ -10,9 +10,9 @@ package access
 import (
 	"context"
 
-	"github.com/xmj128/mcp-conductor/internal/auth"
-	"github.com/xmj128/mcp-conductor/internal/errs"
-	"github.com/xmj128/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/auth"
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
 )
 
 // Authorizer 裁定调用主体对工具（GatewayName）的访问：受管 Key 走白名单，

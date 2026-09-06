@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/errs"
-	"github.com/xmj128/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
 )
 
 // 管理面列表分页/筛选的共享参数解析与统一分页信封。

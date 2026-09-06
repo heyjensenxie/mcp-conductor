@@ -15,8 +15,10 @@
           <a-descriptions-item :label="t('serverDetail.status')">
             <a-tag :color="server.enabled ? 'green' : 'default'">{{ server.enabled ? t('servers.enabled') : t('servers.disabled') }}</a-tag>
           </a-descriptions-item>
-          <a-descriptions-item :label="t('serverDetail.endpoint')">{{ server.endpoint }}</a-descriptions-item>
-          <a-descriptions-item :label="t('serverDetail.transport')">{{ server.transport }}</a-descriptions-item>
+          <a-descriptions-item :label="t('serverDetail.endpoint')">
+            <span class="mono">{{ primaryEndpoint(server) }}</span>
+          </a-descriptions-item>
+          <a-descriptions-item :label="t('serverDetail.transport')">{{ primaryTransport(server) }}</a-descriptions-item>
           <a-descriptions-item :label="t('serverDetail.instancesCount')">{{ instanceCount }}</a-descriptions-item>
           <a-descriptions-item :label="t('common.updated')">{{ server.updated_at }}</a-descriptions-item>
           <a-descriptions-item :label="t('common.description')" :span="2">{{ server.description || '-' }}</a-descriptions-item>
@@ -32,10 +34,15 @@
 
       <!-- Tools -->
       <a-tab-pane :key="'tools'" :tab="t('serverDetail.tools')">
-        <div class="filters">
-          <a-input v-model:value="toolFilters.q" allow-clear :placeholder="t('filter.keyword')" style="width: 240px" @press-enter="onToolFilter">
-            <template #prefix><SearchOutlined /></template>
-          </a-input>
+        <div class="toolbar">
+          <a-space wrap :size="8">
+            <a-input v-model:value="toolFilters.q" allow-clear :placeholder="t('filter.keyword')" style="width: 240px" @press-enter="onToolFilter">
+              <template #prefix><SearchOutlined /></template>
+            </a-input>
+            <a-button size="small" :loading="rediscovering" @click="openRediscoverPreview">
+              <template #icon><ReloadOutlined /></template>{{ t('serverDetail.rediscover') }}
+            </a-button>
+          </a-space>
         </div>
         <a-table
           :data-source="toolRows"
@@ -48,22 +55,49 @@
         />
       </a-tab-pane>
 
-      <!-- Instances：MVP 单实例承载，预留多实例 -->
+      <!-- Instances：真实多实例管理（endpoint/transport/健康/启停/删除） -->
       <a-tab-pane :key="'instances'" :tab="t('serverDetail.instances')">
-        <a-table :data-source="instanceRows" :columns="instanceColumns" :pagination="false" size="small" :row-key="(r: any) => r.endpoint" />
-        <a-alert type="info" :message="t('serverDetail.instancesNote')" banner class="mb" />
-      </a-tab-pane>
-
-      <!-- Testing：内联工具调用（需要全量工具集，独立于分页表） -->
-      <a-tab-pane :key="'testing'" :tab="t('serverDetail.testing')">
         <div class="toolbar">
           <a-space>
-            <a-button size="small" :loading="testing" @click="testAndReloadTools">
-              <template #icon><ReloadOutlined /></template>{{ t('serverDetail.rediscover') }}
+            <a-button type="primary" size="small" @click="openInstance()">
+              <template #icon><PlusOutlined /></template>{{ t('serverDetail.addInstance') }}
+            </a-button>
+            <a-button size="small" @click="loadInstances">
+              <template #icon><ReloadOutlined /></template>{{ t('common.refresh') }}
             </a-button>
           </a-space>
         </div>
-        <ToolInvoker :tools="tools" />
+        <a-table
+          :data-source="instanceRows"
+          :columns="instanceColumns"
+          :loading="instancesLoading"
+          :pagination="false"
+          size="small"
+          :row-key="(r: any) => r.id"
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'health_status'">
+              <a-tag :color="healthColor(record.health_status)" :bordered="false">{{ record.health_status }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'enabled'">
+              <a-tag :color="record.enabled ? 'green' : 'default'">
+                {{ record.enabled ? t('servers.enabled') : t('servers.disabled') }}
+              </a-tag>
+            </template>
+            <template v-else-if="column.key === 'actions'">
+              <a-space :size="4">
+                <a-button size="small" @click="openInstance(record)">{{ t('common.edit') }}</a-button>
+                <a-button size="small" :loading="testingInst === record.id" @click="testInstance(record)">{{ t('servers.test') }}</a-button>
+                <a-button size="small" :danger="record.enabled" @click="toggleInstance(record)">
+                  {{ record.enabled ? t('servers.disable') : t('servers.enable') }}
+                </a-button>
+                <a-popconfirm :title="t('serverDetail.deleteInstanceConfirm')" @confirm="removeInstance(record)">
+                  <a-button size="small" danger>{{ t('common.delete') }}</a-button>
+                </a-popconfirm>
+              </a-space>
+            </template>
+          </template>
+        </a-table>
       </a-tab-pane>
 
       <!-- Logs：该 Server 的调用记录 -->
@@ -107,18 +141,9 @@
                 <a-form-item :label="t('common.description')">
                   <a-textarea v-model:value="editForm.description" :rows="2" />
                 </a-form-item>
-                <a-form-item :label="t('servers.endpoint')">
-                  <a-input v-model:value="editForm.endpoint" />
-                </a-form-item>
-                <a-form-item :label="t('servers.transport')">
-                  <a-select v-model:value="editForm.transport">
-                    <a-select-option value="https">{{ t('servers.transportStreamable') }}</a-select-option>
-                    <a-select-option value="sse">{{ t('servers.transportSSE') }}</a-select-option>
-                    <a-select-option value="stdio">{{ t('servers.transportStdio') }}</a-select-option>
-                  </a-select>
-                </a-form-item>
                 <a-form-item :wrapper-col="{ offset: 6, span: 18 }">
                   <a-button type="primary" :loading="savingServer" @click="saveServerEdit">{{ t('serverDetail.saveServer') }}</a-button>
+                  <span class="endpoint-edit-hint">{{ t('serverDetail.endpointEditGoesToInstances') }}</span>
                 </a-form-item>
               </a-form>
             </a-card>
@@ -194,6 +219,77 @@
         </a-form-item>
       </a-form>
     </a-modal>
+    <!-- 实例创建/编辑弹窗（endpoint/transport 编辑后健康复位待探活） -->
+    <a-modal
+      v-model:open="instVisible"
+      :title="instEditId ? t('serverDetail.editInstance') : t('serverDetail.addInstance')"
+      :ok-text="t('serverDetail.saveInstance')"
+      :cancel-text="t('common.cancel')"
+      :confirm-loading="instSaving"
+      @ok="saveInstance"
+    >
+      <a-form :label-col="{ span: 6 }" :wrapper-col="{ span: 18 }">
+        <a-form-item :label="t('serverDetail.instanceEndpoint')" :required="true">
+          <a-input v-model:value="instForm.endpoint" :placeholder="t('servers.endpointPlaceholder')" />
+        </a-form-item>
+        <a-form-item :label="t('serverDetail.instanceTransport')">
+          <a-select v-model:value="instForm.transport">
+            <a-select-option value="https">{{ t('servers.transportStreamable') }}</a-select-option>
+            <a-select-option value="sse">{{ t('servers.transportSSE') }}</a-select-option>
+            <a-select-option value="stdio">{{ t('servers.transportStdio') }}</a-select-option>
+          </a-select>
+        </a-form-item>
+      </a-form>
+    </a-modal>
+    <!-- 重新发现 Tools：只读预演 → 变更对比 → 人工确认后再真正应用 -->
+    <a-modal
+      v-model:open="planVisible"
+      :title="t('serverDetail.rediscoverPreviewTitle')"
+      :width="760"
+      :ok-text="t('serverDetail.rediscoverApply')"
+      :cancel-text="t('common.cancel')"
+      :ok-button-props="{ disabled: !(plan?.changes?.length ?? 0) }"
+      :confirm-loading="applying"
+      @ok="applyRediscover"
+    >
+      <a-alert
+        v-if="plan && !(plan.changes?.length ?? 0)"
+        type="info"
+        show-icon
+        class="mb"
+        :message="t('serverDetail.rediscoverNoChange')"
+      />
+      <template v-else-if="plan && (plan.changes?.length ?? 0) > 0">
+        <div class="plan-summary">
+          <a-tag color="green">{{ t('serverDetail.rediscoverAdd') }} {{ plan.added }}</a-tag>
+          <a-tag color="orange">{{ t('serverDetail.rediscoverUpdate') }} {{ plan.updated }}</a-tag>
+        </div>
+        <a-table
+          size="small"
+          :data-source="plan.changes"
+          :columns="planColumns"
+          :pagination="false"
+          :row-key="(r: RediscoverChange) => `${r.kind}:${r.original_name}`"
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'kind'">
+              <a-tag :color="record.kind === 'add' ? 'green' : 'orange'" :bordered="false">
+                {{ record.kind === 'add' ? t('serverDetail.rediscoverAdd') : t('serverDetail.rediscoverUpdate') }}
+              </a-tag>
+            </template>
+            <template v-else-if="column.key === 'tool'">
+              <div class="mono">{{ record.original_name }}</div>
+              <div class="muted plan-gw">{{ record.gateway_name }}</div>
+            </template>
+            <template v-else-if="column.key === 'change'">
+              <span v-if="record.kind === 'add'">{{ t('serverDetail.rediscoverAddDetail') }}</span>
+              <span v-else>{{ changeText(record) }}</span>
+            </template>
+          </template>
+        </a-table>
+        <div class="plan-hint muted">{{ t('serverDetail.rediscoverConfirmHint') }}</div>
+      </template>
+    </a-modal>
   </a-spin>
 </template>
 
@@ -205,28 +301,36 @@ import { useI18n } from 'vue-i18n'
 import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import {
   createCredential,
+  createServerInstance,
   deleteCredential,
+  deleteServerInstance,
   getLogs,
   getServer,
   listServerCredentials,
+  listServerInstances,
   listServerTools,
-  listServerToolsAll,
+  previewRediscover,
+  primaryEndpoint,
+  primaryTransport,
   testServer,
+  testServerInstance,
   toggleServer,
+  toggleServerInstance,
   updateCredential,
   updateServer,
+  updateServerInstance,
 } from '@/api'
-import type { Credential, MCPServer, Tool, TrafficSample } from '@/types'
-import ToolInvoker from '@/components/ToolInvoker.vue'
+import type { Credential, MCPServer, RediscoverChange, RediscoverPlan, ServerInstance, Tool, TrafficSample, Transport } from '@/types'
 
 const { t } = useI18n()
 const route = useRoute()
 const id = computed(() => String(route.params.id))
 const server = ref<MCPServer>()
-// tools = 该 Server 全量工具集（供 Testing 页 ToolInvoker 与 rediscover 后回填）。
-const tools = ref<Tool[]>([])
 const loading = ref(false)
-const testing = ref(false)
+const rediscovering = ref(false)
+const planVisible = ref(false)
+const applying = ref(false)
+const plan = ref<RediscoverPlan | null>(null)
 const tab = ref('overview')
 
 // 列表错误状态（除 success 外，后端落 status=errs.Code 字符串）。
@@ -249,16 +353,100 @@ const toolColumns = computed<any[]>(() => [
   { title: t('tools.description'), key: 'description', dataIndex: 'description', ellipsis: true },
 ])
 
-// MVP 单实例承载：Instances 页展示该 Server 的"唯一实例"（endpoint）。
-const instanceRows = computed(() =>
-  server.value ? [{ endpoint: server.value.endpoint, transport: server.value.transport, health_status: server.value.health_status }] : [],
-)
+// ---- Instances tab：真实多实例管理 ----
+const instanceRows = ref<ServerInstance[]>([])
+const instancesLoading = ref(false)
+const testingInst = ref('')
 const instanceColumns = computed<any[]>(() => [
-  { title: t('serverDetail.endpoint'), key: 'endpoint', dataIndex: 'endpoint' },
-  { title: t('serverDetail.transport'), key: 'transport', dataIndex: 'transport', width: 120 },
-  { title: t('servers.health'), key: 'health_status', dataIndex: 'health_status', width: 120 },
+  { title: t('serverDetail.endpoint'), key: 'endpoint', dataIndex: 'endpoint', ellipsis: true },
+  { title: t('serverDetail.transport'), key: 'transport', dataIndex: 'transport', width: 100 },
+  { title: t('servers.health'), key: 'health_status', dataIndex: 'health_status', width: 110 },
+  { title: t('common.status'), key: 'enabled', dataIndex: 'enabled', width: 90 },
+  { title: t('common.updated'), key: 'updated_at', dataIndex: 'updated_at', width: 170 },
+  { title: t('common.actions'), key: 'actions', width: 270 },
 ])
-const instanceCount = computed(() => (server.value ? 1 : 0))
+const instanceCount = computed(() => instanceRows.value.length)
+
+const instVisible = ref(false)
+const instSaving = ref(false)
+const instEditId = ref('')
+const instForm = reactive<{ endpoint: string; transport: Transport }>({ endpoint: '', transport: 'https' })
+
+async function loadInstances() {
+  instancesLoading.value = true
+  try {
+    instanceRows.value = await listServerInstances(id.value)
+  } catch (e) {
+    message.error(String(e))
+  } finally {
+    instancesLoading.value = false
+  }
+}
+
+function openInstance(record?: ServerInstance) {
+  if (record) {
+    instEditId.value = record.id
+    Object.assign(instForm, { endpoint: record.endpoint, transport: record.transport })
+  } else {
+    instEditId.value = ''
+    Object.assign(instForm, { endpoint: '', transport: 'https' })
+  }
+  instVisible.value = true
+}
+
+async function saveInstance() {
+  if (!instForm.endpoint.trim()) {
+    message.warning(t('servers.fillRequired'))
+    return
+  }
+  instSaving.value = true
+  try {
+    if (instEditId.value) {
+      await updateServerInstance(id.value, instEditId.value, { ...instForm })
+    } else {
+      await createServerInstance(id.value, { ...instForm })
+    }
+    message.success(t('serverDetail.instanceSaved'))
+    instVisible.value = false
+    await loadInstances()
+  } catch (e) {
+    message.error(String(e))
+  } finally {
+    instSaving.value = false
+  }
+}
+
+async function toggleInstance(record: ServerInstance) {
+  try {
+    await toggleServerInstance(id.value, record.id, !record.enabled)
+    await loadInstances()
+  } catch (e) {
+    message.error(String(e))
+  }
+}
+
+async function testInstance(record: ServerInstance) {
+  testingInst.value = record.id
+  try {
+    const updated = await testServerInstance(id.value, record.id)
+    message.success(`${t('serverDetail.testOk')} · ${updated.health_status}`)
+    await loadInstances()
+  } catch (e) {
+    message.error(`${t('serverDetail.connectFail')}: ${e}`)
+  } finally {
+    testingInst.value = ''
+  }
+}
+
+async function removeInstance(record: ServerInstance) {
+  try {
+    await deleteServerInstance(id.value, record.id)
+    message.success(t('serverDetail.instanceDeleted'))
+    await loadInstances()
+  } catch (e) {
+    message.error(String(e))
+  }
+}
 
 const logColumns = computed<any[]>(() => [
   { title: t('traffic.tool'), key: 'tool', dataIndex: 'tool' },
@@ -375,12 +563,8 @@ function onLogTableChange(p: { current?: number; pageSize?: number }) {
   void loadLogsPage()
 }
 
-// ---- Configuration：Server 可编辑字段 + 凭证管理（分页）----
-const editForm = reactive<{ description: string; endpoint: string; transport: MCPServer['transport'] }>({
-  description: '',
-  endpoint: '',
-  transport: 'https',
-})
+// ---- Configuration：Server 逻辑字段（description；端点编辑在 Instances 页）----
+const editForm = reactive<{ description: string }>({ description: '' })
 const savingServer = ref(false)
 
 const credentials = ref<Credential[]>([])
@@ -437,16 +621,15 @@ onMounted(load)
 async function load() {
   loading.value = true
   try {
-    const [srv, fullTools] = await Promise.all([getServer(id.value), listServerToolsAll(id.value)])
+    const srv = await getServer(id.value)
     server.value = srv
-    tools.value = fullTools
     syncEditForm(srv)
   } catch (e) {
     message.error(String(e))
   } finally {
     loading.value = false
   }
-  await Promise.allSettled([loadToolPage(), loadLogsPage(), loadCredentialsPage()])
+  await Promise.allSettled([loadToolPage(), loadLogsPage(), loadCredentialsPage(), loadInstances()])
 }
 
 async function test() {
@@ -459,19 +642,52 @@ async function test() {
   }
 }
 
-// Testing 页：重新发现并刷新工具（全量 + 分页表同步刷新）。
-async function testAndReloadTools() {
-  testing.value = true
+// Tools 列表页「重新发现」：先只读预演拿变更，弹窗对比后由人工确认再应用。
+async function openRediscoverPreview() {
+  rediscovering.value = true
+  plan.value = null
+  try {
+    plan.value = await previewRediscover(id.value)
+    planVisible.value = true
+  } catch (e) {
+    message.error(`${t('serverDetail.rediscoverPlanFail')}: ${e}`)
+  } finally {
+    rediscovering.value = false
+  }
+}
+
+// 人工确认后真正应用（与 POST /servers/:id/test 语义一致：落库并按覆盖保护刷新）。
+async function applyRediscover() {
+  applying.value = true
   try {
     await testServer(id.value)
-    tools.value = await listServerToolsAll(id.value)
+    planVisible.value = false
     await loadToolPage()
-    message.success(t('serverDetail.testOk'))
+    server.value = await getServer(id.value)
+    message.success(t('serverDetail.rediscovered'))
   } catch (e) {
     message.error(`${t('serverDetail.connectFail')}: ${e}`)
   } finally {
-    testing.value = false
+    applying.value = false
   }
+}
+
+const planColumns = computed<any[]>(() => [
+  { title: t('serverDetail.rediscoverColType'), key: 'kind', width: 76 },
+  { title: t('serverDetail.rediscoverColTool'), key: 'tool' },
+  { title: t('serverDetail.rediscoverColChange'), key: 'change' },
+])
+
+// 把服务端给出的结构化变更压缩成一行可读说明（update 用；add 走固定文案）。
+function changeText(c: RediscoverChange): string {
+  const parts: string[] = []
+  if (c.desc_changed) parts.push(`${t('serverDetail.rediscoverFieldDesc')}${t('serverDetail.rediscoverWillChange')}`)
+  if (c.schema_changed) parts.push(`${t('serverDetail.rediscoverFieldSchema')}${t('serverDetail.rediscoverWillChange')}`)
+  if (c.source_changed) parts.push(t('serverDetail.rediscoverSourceRefresh'))
+  if (!parts.length) parts.push(t('serverDetail.rediscoverNoChangeRow'))
+  let text = parts.join(' · ')
+  if (c.desc_protected || c.schema_protected || c.name_protected) text += `（${t('serverDetail.rediscoverProtected')}）`
+  return text
 }
 
 async function toggle() {
@@ -486,22 +702,12 @@ async function toggle() {
 
 function syncEditForm(srv: MCPServer) {
   editForm.description = srv.description ?? ''
-  editForm.endpoint = srv.endpoint
-  editForm.transport = srv.transport
 }
 
 async function saveServerEdit() {
-  if (!editForm.endpoint.trim()) {
-    message.warning(t('servers.fillRequired'))
-    return
-  }
   savingServer.value = true
   try {
-    const updated = await updateServer(id.value, {
-      description: editForm.description,
-      endpoint: editForm.endpoint,
-      transport: editForm.transport,
-    })
+    const updated = await updateServer(id.value, { description: editForm.description })
     server.value = updated
     syncEditForm(updated)
     message.success(t('servers.updatedOk'))
@@ -587,5 +793,23 @@ const healthColor = (s?: string) => (s === 'healthy' ? 'green' : s === 'unhealth
 }
 .filters {
   margin-bottom: 12px;
+}
+.endpoint-edit-hint {
+  margin-left: 8px;
+  color: #999;
+  font-size: 12px;
+}
+.muted {
+  color: var(--mc-ink-3);
+}
+.plan-summary {
+  margin-bottom: 12px;
+}
+.plan-gw {
+  font-size: 12px;
+}
+.plan-hint {
+  margin-top: 12px;
+  font-size: 12px;
 }
 </style>

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
 )
 
 func healthyTarget(id string) Target {

@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/auth"
-	"github.com/xmj128/mcp-conductor/internal/errs"
-	"github.com/xmj128/mcp-conductor/internal/mcp"
-	"github.com/xmj128/mcp-conductor/internal/ratelimit"
+	"github.com/heyjensenxie/mcp-conductor/internal/auth"
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/mcp"
+	"github.com/heyjensenxie/mcp-conductor/internal/ratelimit"
 )
 
 // Middleware 是 HTTP 中间件类型。

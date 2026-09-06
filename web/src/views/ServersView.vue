@@ -39,6 +39,13 @@
           <template v-if="column.key === 'name'">
             <router-link :to="`/servers/${record.id}`" class="link">{{ record.name }}</router-link>
           </template>
+          <template v-else-if="column.key === 'endpoint'">
+            <span class="mono">{{ primaryEndpoint(record) }}</span>
+          </template>
+          <template v-else-if="column.key === 'transport'">{{ primaryTransport(record) }}</template>
+          <template v-else-if="column.key === 'instances'">
+            <a-tag :bordered="false" color="blue">{{ record.instances?.length ?? 0 }}</a-tag>
+          </template>
           <template v-else-if="column.key === 'health'">
             <a-tag :color="healthColor(record.health_status)" :bordered="false">{{ record.health_status }}</a-tag>
           </template>
@@ -69,15 +76,18 @@
         <a-form-item :label="t('common.name')" :required="!editing">
           <a-input v-model:value="form.name" :disabled="editing" :placeholder="editing ? t('servers.nameReadonlyHint') : 'University MCP'" />
         </a-form-item>
-        <a-form-item :label="t('servers.endpoint')" :required="true">
+        <a-form-item v-if="!editing" :label="t('servers.endpoint')" :required="true">
           <a-input v-model:value="form.endpoint" :placeholder="t('servers.endpointPlaceholder')" />
         </a-form-item>
-        <a-form-item :label="t('servers.transport')">
+        <a-form-item v-if="!editing" :label="t('servers.transport')">
           <a-select v-model:value="form.transport">
             <a-select-option value="https">{{ t('servers.transportStreamable') }}</a-select-option>
             <a-select-option value="sse">{{ t('servers.transportSSE') }}</a-select-option>
             <a-select-option value="stdio">{{ t('servers.transportStdio') }}</a-select-option>
           </a-select>
+        </a-form-item>
+        <a-form-item v-if="editing" class="edit-hint">
+          <span>{{ t('servers.endpointsInDetailHint') }}</span>
         </a-form-item>
         <a-form-item :label="t('common.description')">
           <a-textarea v-model:value="form.description" :rows="2" />
@@ -115,7 +125,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { PlusOutlined, DeleteOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
-import { createCredential, createServer, deleteServer, getServerMetrics, listServers, listServerToolsAll, testServer, toggleServer, updateServer } from '@/api'
+import { createCredential, createServer, deleteServer, getServerMetrics, listServers, listServerToolsAll, primaryEndpoint, primaryTransport, testServer, toggleServer, updateServer } from '@/api'
 import type { MCPServer, MetricSnapshot, Transport } from '@/types'
 
 const { t } = useI18n()
@@ -167,8 +177,9 @@ const metricByID = computed<Record<string, MetricSnapshot>>(() => {
 
 const columns = computed<any[]>(() => [
   { title: t('common.name'), key: 'name', dataIndex: 'name' },
-  { title: t('servers.endpoint'), key: 'endpoint', dataIndex: 'endpoint', ellipsis: true },
-  { title: t('servers.transport'), key: 'transport', dataIndex: 'transport', width: 110 },
+  { title: t('servers.endpoint'), key: 'endpoint', ellipsis: true },
+  { title: t('servers.transport'), key: 'transport', width: 110 },
+  { title: t('servers.instances'), key: 'instances', width: 90 },
   { title: t('servers.tools'), key: 'tools', width: 70 },
   { title: t('servers.requests'), key: 'requests', width: 90 },
   { title: t('servers.p95'), key: 'p95', width: 80 },
@@ -243,13 +254,13 @@ function openCreate() {
   dialogVisible.value = true
 }
 
-// 编辑：name 不可改（后端会拒绝改名），仅携带可编辑字段。
+// 编辑：name 不可改（后端会拒绝改名）；端点/传输属于实例，编辑只更新 description。
 function openEdit(row: MCPServer) {
   editing.value = true
   editingId.value = row.id
   form.name = row.name
-  form.endpoint = row.endpoint
-  form.transport = row.transport
+  form.endpoint = ''
+  form.transport = 'https'
   form.description = row.description ?? ''
   reqHeaders.value = []
   dialogVisible.value = true
@@ -276,19 +287,15 @@ function buildAuthCredentials() {
 }
 
 async function submit() {
-  if (!form.name || !form.endpoint) {
+  if (!form.name || (!editing.value && !form.endpoint)) {
     message.warning(t('servers.fillRequired'))
     return
   }
   submitting.value = true
-  // 编辑态：name 不可改，仅提交可编辑字段。
+  // 编辑态：name 不可改，仅提交逻辑字段（description）；端点编辑走 Server 详情页。
   if (editing.value) {
     try {
-      await updateServer(editingId.value, {
-        description: form.description,
-        endpoint: form.endpoint,
-        transport: form.transport,
-      })
+      await updateServer(editingId.value, { description: form.description })
       message.success(t('servers.updatedOk'))
       dialogVisible.value = false
       await load()
@@ -404,5 +411,9 @@ const healthColor = (s: string) => (s === 'healthy' ? 'green' : s === 'unhealthy
   color: #999;
   font-size: 12px;
   padding: 2px 0 8px;
+}
+.edit-hint {
+  color: #999;
+  font-size: 12px;
 }
 </style>

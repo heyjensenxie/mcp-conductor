@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/xmj128/mcp-conductor/internal/auth"
-	"github.com/xmj128/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/auth"
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
 )
 
 // handleLogin 校验管理令牌并签发会话令牌。

@@ -1,21 +1,22 @@
-// Package router 负责把客户端调用的对外工具名解析为具体上游 Server 与实例。
+// Package router 负责把客户端调用的对外工具名解析为具体上游 Server 与其实例集合。
 //
-// Resolver 与具体 MCP Server 解耦，只依赖 Tool/Server/Route 存储的查询能力。
-// 语义：默认把工具解析到其所属 Server；当存在启用的 Route 且其 tool_names
-// 命中该工具时，Route 把「调用目标 Server」覆盖为 route.server_id（恒等即
-// 原样；目标不可调用则 route_error，不回退原 Server）。未来可扩展分组、灰度。
+// Resolver 与具体 MCP Server 解耦，只依赖 Tool/Server/Route/Instance 存储的查询能力。
+// 语义：默认把工具解析到其所属 Server 的实例集合；当存在启用的 Route 且其
+// tool_names 命中该工具时，Route 把「调用目标 Server」覆盖为 route.server_id
+// （恒等即原样；目标不可调用则 route_error，不回退原 Server）。负载均衡在
+// 目标 Server 的实例维度展开（balancer 只选 healthy 的实例）。
 package router
 
 import (
 	"context"
 	"slices"
 
-	"github.com/xmj128/mcp-conductor/internal/balancer"
-	"github.com/xmj128/mcp-conductor/internal/errs"
-	"github.com/xmj128/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/balancer"
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
 )
 
-// Resolved 是一次工具解析的完整结果：对外 Tool、目标 Server 与可选实例。
+// Resolved 是一次工具解析的完整结果：对外 Tool、目标逻辑 Server 与其实例候选。
 type Resolved struct {
 	Tool    model.Tool
 	Server  model.Server
@@ -27,9 +28,14 @@ type ToolLookup interface {
 	GetToolByGatewayName(ctx context.Context, gatewayName string) (*model.Tool, error)
 }
 
-// ServerLookup 是 Resolver 需要的 Server 查询能力。
+// ServerLookup 是 Resolver 需要的逻辑 Server 查询能力。
 type ServerLookup interface {
 	GetServer(ctx context.Context, id string) (*model.Server, error)
+}
+
+// InstanceLookup 是 Resolver 需要的实例查询能力（目标 Server 的候选端点）。
+type InstanceLookup interface {
+	ListInstancesByServer(ctx context.Context, serverID string) ([]model.Instance, error)
 }
 
 // RouteLookup 是 Route 参与转发所需的全部启用路由读取能力。
@@ -43,14 +49,15 @@ type Resolver interface {
 	Resolve(ctx context.Context, gatewayTool string) (*Resolved, error)
 }
 
-// DefaultResolver 是基于 Tool Registry 的默认解析器，可选配 Route 覆盖。
+// DefaultResolver 是基于 Tool Registry 的默认解析器，可选配 Route 覆盖与实例维度。
 type DefaultResolver struct {
-	tools   ToolLookup
-	servers ServerLookup
-	routes  RouteLookup // nil 表示不启用 Route 覆盖
+	tools     ToolLookup
+	servers   ServerLookup
+	instances InstanceLookup // nil 表示未启用实例维度（解析会失败）
+	routes    RouteLookup    // nil 表示不启用 Route 覆盖
 }
 
-// NewResolver 创建默认解析器（未启用 Route 覆盖；需要时链式调用 WithRoutes）。
+// NewResolver 创建默认解析器（未启用 Route 覆盖与实例维度；需要时链式调用）。
 func NewResolver(tools ToolLookup, servers ServerLookup) *DefaultResolver {
 	return &DefaultResolver{tools: tools, servers: servers}
 }
@@ -61,10 +68,18 @@ func (r *DefaultResolver) WithRoutes(routes RouteLookup) *DefaultResolver {
 	return r
 }
 
-// Resolve 校验工具可调用性，并按需应用 Route 覆盖后构造实例候选列表。
+// WithInstances 让 Resolver 从实例存储构造候选端点（Server 多实例负载均衡）。
+func (r *DefaultResolver) WithInstances(instances InstanceLookup) *DefaultResolver {
+	r.instances = instances
+	return r
+}
+
+// Resolve 校验工具可调用性，按需应用 Route 覆盖后从目标 Server 的实例集合
+// 构造负载均衡候选。
 //
-// 状态规则：目标 Server 处于 UNKNOWN（尚未健康检查）或 HEALTHY 时允许调用；
-// UNHEALTHY / DISABLED 一律拒绝。
+// 状态规则：工具与目标 Server 必须启用；单实例是否入选由 IsCallable 决定
+// （unknown 乐观可调，unhealthy/disabled 剔除），不再以 Server 聚合健康做整机
+// 门禁——只要还有可用实例，Server 即被视为可服务。
 func (r *DefaultResolver) Resolve(ctx context.Context, gatewayTool string) (*Resolved, error) {
 	tool, err := r.tools.GetToolByGatewayName(ctx, gatewayTool)
 	if err != nil {
@@ -99,10 +114,28 @@ func (r *DefaultResolver) Resolve(ctx context.Context, gatewayTool string) (*Res
 	if !server.Enabled {
 		return nil, unavailableMsg(*server, routeName, "已被禁用")
 	}
-	if !isCallable(server.HealthStatus) {
-		return nil, unavailableMsg(*server, routeName, "当前不可用（"+string(server.HealthStatus)+"）")
+	if r.instances == nil {
+		return nil, errs.New(errs.CodeRoute, "实例查找未配置")
 	}
-	return buildResolved(*tool, *server), nil
+	instances, err := r.instances.ListInstancesByServer(ctx, server.ID)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeRoute, err, "读取 Server %q 实例失败", server.ID)
+	}
+	if len(instances) == 0 {
+		return nil, unavailableMsg(*server, routeName, "没有配置实例")
+	}
+	targets := buildTargets(instances)
+	alive := false
+	for _, t := range targets {
+		if t.Healthy {
+			alive = true
+			break
+		}
+	}
+	if !alive {
+		return nil, unavailableMsg(*server, routeName, "没有可调用的启用实例")
+	}
+	return &Resolved{Tool: *tool, Server: *server, Targets: targets}, nil
 }
 
 // pickRouteOverride 从启用 Route 中找出命中工具且指向其它 Server 的最早一条；
@@ -141,22 +174,19 @@ func unavailableMsg(server model.Server, routeName, reason string) error {
 	return errs.New(errs.CodeRoute, "Server %q %s", server.Name, reason)
 }
 
-// buildResolved 由工具与目标 Server 构造解析结果（单实例候选）。
-func buildResolved(tool model.Tool, server model.Server) *Resolved {
-	targets := []balancer.Target{
-		{
-			ID:        server.ID,
-			ServerID:  server.ID,
-			Endpoint:  server.Endpoint,
-			Transport: server.Transport,
+// buildTargets 把 Server 的实例集合映射为负载均衡候选（每实例一个 Target，
+// Healthy 由实例自身启停与健康决定）。
+func buildTargets(instances []model.Instance) []balancer.Target {
+	targets := make([]balancer.Target, 0, len(instances))
+	for _, inst := range instances {
+		targets = append(targets, balancer.Target{
+			ID:        inst.ID,
+			ServerID:  inst.ServerID,
+			Endpoint:  inst.Endpoint,
+			Transport: inst.Transport,
 			Weight:    1,
-			Healthy:   isCallable(server.HealthStatus),
-		},
+			Healthy:   inst.IsCallable(),
+		})
 	}
-	return &Resolved{Tool: tool, Server: server, Targets: targets}
-}
-
-// isCallable 报告某健康状态是否允许发起调用。
-func isCallable(status model.ServerStatus) bool {
-	return status != model.ServerStatusUnhealthy && status != model.ServerStatusDisabled
+	return targets
 }

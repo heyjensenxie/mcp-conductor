@@ -8,15 +8,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/registry"
-	"github.com/xmj128/mcp-conductor/internal/storage/memory"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/registry"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/memory"
 )
 
 // noopDiscoverer 返回空工具集，避免注册时后台发现 NPE。
 type noopDiscoverer struct{}
 
-func (noopDiscoverer) Discover(context.Context, model.Server) ([]registry.DiscoveredTool, error) {
+func (noopDiscoverer) Discover(context.Context, model.Server, model.Instance) ([]registry.DiscoveredTool, error) {
 	return nil, nil
 }
 

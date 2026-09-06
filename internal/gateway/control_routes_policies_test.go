@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/registry"
-	"github.com/xmj128/mcp-conductor/internal/storage/memory"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/registry"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/memory"
 )
 
 // rpFixture 预置一个带两工具的 Server，返回 store / control / server。
@@ -18,7 +18,7 @@ func rpFixture(t *testing.T) (*memory.Store, *Control, *model.Server) {
 	t.Helper()
 	store := memory.New()
 	ctx := context.Background()
-	srv := &model.Server{Name: "A", Endpoint: "http://a:9000/mcp", Enabled: true, HealthStatus: model.ServerStatusHealthy}
+	srv := &model.Server{Name: "A", Enabled: true, HealthStatus: model.ServerStatusHealthy}
 	if err := store.CreateServer(ctx, srv); err != nil {
 		t.Fatal(err)
 	}

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/storage/memory"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/memory"
 )
 
 // fakeDiscoverer 返回固定的工具定义，用于验证发现与命名空间逻辑。
@@ -15,7 +15,7 @@ type fakeDiscoverer struct {
 	err   error
 }
 
-func (f *fakeDiscoverer) Discover(_ context.Context, _ model.Server) ([]DiscoveredTool, error) {
+func (f *fakeDiscoverer) Discover(_ context.Context, _ model.Server, _ model.Instance) ([]DiscoveredTool, error) {
 	return f.tools, f.err
 }
 
@@ -43,10 +43,10 @@ func TestToolNameCollisionNamespaced(t *testing.T) {
 		tools: []DiscoveredTool{{Name: "search", Description: "查询"}, {Name: "detail", Description: "详情"}},
 	})
 
-	if _, err := svc.CreateServer(ctx, &model.Server{Name: "University", Endpoint: "http://a:9000"}); err != nil {
+	if _, err := svc.CreateServer(ctx, CreateServerInput{Name: "University", Endpoint: "http://a:9000", Transport: model.TransportStreamableHTTP}); err != nil {
 		t.Fatalf("创建 University 失败: %v", err)
 	}
-	if _, err := svc.CreateServer(ctx, &model.Server{Name: "Course", Endpoint: "http://b:9000"}); err != nil {
+	if _, err := svc.CreateServer(ctx, CreateServerInput{Name: "Course", Endpoint: "http://b:9000", Transport: model.TransportStreamableHTTP}); err != nil {
 		t.Fatalf("创建 Course 失败: %v", err)
 	}
 
@@ -79,7 +79,7 @@ func TestToggleServerEnableResetsHealth(t *testing.T) {
 	store := memory.New()
 	svc := NewService(store, &fakeDiscoverer{})
 
-	created, err := svc.CreateServer(ctx, &model.Server{Name: "U", Endpoint: "http://a:9000"})
+	created, err := svc.CreateServer(ctx, CreateServerInput{Name: "U", Endpoint: "http://a:9000", Transport: model.TransportStreamableHTTP})
 	if err != nil {
 		t.Fatalf("创建 Server 失败: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestDeleteServerCascadesCredentials(t *testing.T) {
 	store := memory.New()
 	svc := NewService(store, &fakeDiscoverer{})
 
-	created, err := svc.CreateServer(ctx, &model.Server{Name: "Del", Endpoint: "http://a:9000"})
+	created, err := svc.CreateServer(ctx, CreateServerInput{Name: "Del", Endpoint: "http://a:9000", Transport: model.TransportStreamableHTTP})
 	if err != nil {
 		t.Fatalf("创建 Server 失败: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestToggleToolAndRediscoverPreservesDisabled(t *testing.T) {
 		tools: []DiscoveredTool{{Name: "search", Description: "查询"}, {Name: "detail", Description: "详情"}},
 	})
 
-	created, err := svc.CreateServer(ctx, &model.Server{Name: "Mock", Endpoint: "http://x:9000"})
+	created, err := svc.CreateServer(ctx, CreateServerInput{Name: "Mock", Endpoint: "http://x:9000", Transport: model.TransportStreamableHTTP})
 	if err != nil {
 		t.Fatalf("创建 Server 失败: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestUpdateToolMetadataSurvivesRediscovery(t *testing.T) {
 		Name: "search", Description: "upstream v1", InputSchema: map[string]any{"type": "object"},
 	}}}
 	svc := NewService(store, discoverer)
-	server, err := svc.CreateServer(ctx, &model.Server{Name: "Mock", Endpoint: "http://x:9000"})
+	server, err := svc.CreateServer(ctx, CreateServerInput{Name: "Mock", Endpoint: "http://x:9000", Transport: model.TransportStreamableHTTP})
 	if err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestRenameToolUpdatesExactReferences(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
 	svc := NewService(store, &fakeDiscoverer{tools: []DiscoveredTool{{Name: "search"}}})
-	server, err := svc.CreateServer(ctx, &model.Server{Name: "Mock", Endpoint: "http://x:9000"})
+	server, err := svc.CreateServer(ctx, CreateServerInput{Name: "Mock", Endpoint: "http://x:9000", Transport: model.TransportStreamableHTTP})
 	if err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
@@ -262,4 +262,97 @@ func findTool(tools []model.Tool, gateway string) *model.Tool {
 		}
 	}
 	return nil
+}
+
+// TestPlanRediscoverReportAndApply 验证"重新发现预演"是只读报告，且与确认后的
+// 真正应用结果一致：有覆盖的门面字段保持当前值、仅源元数据刷新；未覆盖的字段
+// 才会被更新；新工具在预演阶段不落库、确认后才落库。
+func TestPlanRediscoverReportAndApply(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	discoverer := &fakeDiscoverer{tools: []DiscoveredTool{{
+		Name: "search", Description: "v1",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}},
+	}}}
+	svc := NewService(store, discoverer)
+
+	created, err := svc.CreateServer(ctx, CreateServerInput{Name: "Plan", Endpoint: "http://x:9000", Transport: model.TransportStreamableHTTP})
+	if err != nil {
+		t.Fatalf("创建 Server 失败: %v", err)
+	}
+	if len(waitTools(t, svc, 1)) != 1 {
+		t.Fatal("初始发现应登记 1 个工具")
+	}
+
+	// 无变更时 Changes 应为空切片（[]）而非 nil —— 序列化 null 会让前端
+	// 对 plan.changes.length 读 null 抛错（曾出现于“重新发现 Tools”点击后）。
+	noop, err := svc.PlanRediscover(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("PlanRediscover(无变更): %v", err)
+	}
+	if noop.Changes == nil {
+		t.Error("无变更时 Changes 应初始化为空切片而非 nil")
+	}
+
+	// 运维覆盖 search 的描述；上游随后：search 描述/schema 变化 + 新增 detail。
+	search := findTool(waitTools(t, svc, 1), "plan.search")
+	custom := "custom facade"
+	if _, err := svc.UpdateTool(ctx, search.ID, UpdateToolPatch{Description: &custom}); err != nil {
+		t.Fatalf("UpdateTool(覆盖描述): %v", err)
+	}
+	discoverer.tools = []DiscoveredTool{
+		{Name: "search", Description: "v2", InputSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"q": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer"}},
+		}},
+		{Name: "detail", Description: "detail tool"},
+	}
+
+	plan, err := svc.PlanRediscover(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("PlanRediscover: %v", err)
+	}
+	if plan.Added != 1 || plan.Updated != 1 {
+		t.Fatalf("预演应报告 1 新增 + 1 更新，得到 added=%d updated=%d", plan.Added, plan.Updated)
+	}
+	var upd *RediscoverChange
+	for i := range plan.Changes {
+		if plan.Changes[i].Kind == "update" {
+			upd = &plan.Changes[i]
+		}
+	}
+	if upd == nil {
+		t.Fatal("缺少 update 变更项")
+	}
+	if upd.DescChanged || !upd.DescProtected || !upd.SourceChanged {
+		t.Errorf("search 描述被覆盖：应 DescChanged=false、DescProtected=true、SourceChanged=true，实际 %+v", *upd)
+	}
+	if !upd.SchemaChanged {
+		t.Error("search 入参 Schema 未覆盖：应 SchemaChanged=true")
+	}
+
+	// 预演只读：detail 未落库，search 描述仍是覆盖值。
+	tools := waitTools(t, svc, 1)
+	if findTool(tools, "plan.detail") != nil {
+		t.Fatal("预演不应落库上游新增工具")
+	}
+
+	// 人工确认后真正应用。
+	if err := svc.Rediscover(ctx, created.ID); err != nil {
+		t.Fatalf("Rediscover(应用): %v", err)
+	}
+	tools, _ = svc.ListTools(ctx)
+	if len(tools) != 2 {
+		t.Fatalf("应用后应有 2 个工具，得到 %d", len(tools))
+	}
+	got := findTool(tools, "plan.search")
+	if got.Description != custom || !got.DescriptionOverridden {
+		t.Errorf("覆盖的描述在 Rediscover 后应保留，得到 %q / overridden=%v", got.Description, got.DescriptionOverridden)
+	}
+	if got.SourceDescription != "v2" {
+		t.Errorf("源描述应刷新为上游 v2，得到 %q", got.SourceDescription)
+	}
+	if findTool(tools, "plan.detail") == nil {
+		t.Fatal("确认后 detail 工具应落库")
+	}
 }

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xmj128/mcp-conductor/internal/registry"
-	"github.com/xmj128/mcp-conductor/internal/storage/memory"
+	"github.com/heyjensenxie/mcp-conductor/internal/registry"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/memory"
 )
 
 // seedControlServer 注册一个 Server 并返回其 id。
@@ -29,14 +29,15 @@ func seedControlServer(t *testing.T, ctrl *Control) string {
 	return srv.ID
 }
 
-// TestUpdateServerEditsAllowedFields 验证 PATCH Server 更新可编辑字段且 name 不变。
-func TestUpdateServerEditsAllowedFields(t *testing.T) {
+// TestUpdateServerEditsDescription 验证 PATCH Server 只更新逻辑字段（description），
+// name 不可改、endpoint/transport 属于实例不受影响。
+func TestUpdateServerEditsDescription(t *testing.T) {
 	store := memory.New()
 	ctrl := NewControl(registry.NewService(store, noopDiscoverer{}), store, nil, nil)
 	id := seedControlServer(t, ctrl)
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/servers/"+id,
-		strings.NewReader(`{"description":"说明","endpoint":"http://new-host:9001/mcp","transport":"sse"}`))
+		strings.NewReader(`{"description":"说明"}`))
 	req.SetPathValue("id", id)
 	rec := httptest.NewRecorder()
 	ctrl.handleUpdateServer(rec, req)
@@ -45,15 +46,20 @@ func TestUpdateServerEditsAllowedFields(t *testing.T) {
 	var srv struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
-		Endpoint    string `json:"endpoint"`
-		Transport   string `json:"transport"`
+		Instances   []struct {
+			Endpoint  string `json:"endpoint"`
+			Transport string `json:"transport"`
+		} `json:"instances"`
 	}
 	if err := json.Unmarshal(e.Data, &srv); err != nil {
 		t.Fatalf("解析更新响应失败: %v", err)
 	}
-	if srv.Name != "Mock" || srv.Endpoint != "http://new-host:9001/mcp" ||
-		srv.Description != "说明" || srv.Transport != "sse" {
+	if srv.Name != "Mock" || srv.Description != "说明" {
 		t.Fatalf("更新字段不一致: %+v", srv)
+	}
+	if len(srv.Instances) != 1 || srv.Instances[0].Endpoint != "http://localhost:9000/mcp" ||
+		srv.Instances[0].Transport != "https" {
+		t.Fatalf("seed 实例应不受 Server 更新影响: %+v", srv.Instances)
 	}
 }
 

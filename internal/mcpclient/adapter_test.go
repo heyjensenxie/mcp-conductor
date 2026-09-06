@@ -9,9 +9,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/errs"
-	"github.com/xmj128/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
 )
+
+// instanceFor 构造挂在逻辑 Server "srv-1" 下的一个启用实例。
+func instanceFor(endpoint string) model.Instance {
+	return model.Instance{
+		ServerID:     "srv-1",
+		Endpoint:     endpoint,
+		Transport:    model.TransportStreamableHTTP,
+		Enabled:      true,
+		HealthStatus: model.ServerStatusUnknown,
+	}
+}
 
 // mockMCPServer 实现 initialize / tools/list / tools/call 的最小模拟上游，
 // 用于验证 Adapter 的握手、发现与调用链路。
@@ -49,14 +60,11 @@ func TestAdapter_DiscoverAndCall(t *testing.T) {
 	defer upstream.Close()
 
 	adapter := New()
-	server := model.Server{
-		Name:      "Mock",
-		Endpoint:  upstream.URL,
-		Transport: model.TransportStreamableHTTP,
-	}
+	server := model.Server{ID: "srv-1", Name: "Mock"}
+	instance := instanceFor(upstream.URL)
 	ctx := context.Background()
 
-	tools, err := adapter.Discover(ctx, server)
+	tools, err := adapter.Discover(ctx, server, instance)
 	if err != nil {
 		t.Fatalf("Discover 失败: %v", err)
 	}
@@ -64,7 +72,7 @@ func TestAdapter_DiscoverAndCall(t *testing.T) {
 		t.Fatalf("Discover 结果错误: %+v", tools)
 	}
 
-	contents, err := adapter.Call(ctx, server, "search", map[string]any{"q": "x"}, nil)
+	contents, err := adapter.Call(ctx, server, instance, "search", map[string]any{"q": "x"}, nil)
 	if err != nil {
 		t.Fatalf("Call 失败: %v", err)
 	}
@@ -95,10 +103,8 @@ func TestAdapter_ExtraHeadersOfferedPerTool(t *testing.T) {
 		return map[string]string{"X-Upstream-Key": "k-abcd", "X-Tenant": "server-tenant"}
 	})
 
-	if _, err := adapter.Call(context.Background(), model.Server{
-		Endpoint:  upstream.URL,
-		Transport: model.TransportStreamableHTTP,
-	}, "search", map[string]any{"q": "x"}, map[string]string{"X-Tenant": "tool-tenant"}); err != nil {
+	if _, err := adapter.Call(context.Background(), model.Server{ID: "srv-1"}, instanceFor(upstream.URL),
+		"search", map[string]any{"q": "x"}, map[string]string{"X-Tenant": "tool-tenant"}); err != nil {
 		t.Fatalf("Call 失败: %v", err)
 	}
 	if gotServerHeader != "k-abcd" {
@@ -114,11 +120,7 @@ func TestAdapter_HealthByInitialize(t *testing.T) {
 	defer upstream.Close()
 
 	adapter := New()
-	status, err := adapter.Check(context.Background(), model.Server{
-		Name:      "Mock",
-		Endpoint:  upstream.URL,
-		Transport: model.TransportStreamableHTTP,
-	})
+	status, err := adapter.Check(context.Background(), model.Server{ID: "srv-1", Name: "Mock"}, instanceFor(upstream.URL))
 	if err != nil {
 		t.Fatalf("Check 失败: %v", err)
 	}
@@ -144,20 +146,41 @@ func TestAdapter_InjectsCredentialHeaders(t *testing.T) {
 	defer upstream.Close()
 
 	adapter := New().WithHeaderFor(func(_ context.Context, server model.Server) map[string]string {
-		if server.Endpoint == upstream.URL {
+		if server.ID == "srv-1" {
 			return map[string]string{"X-Upstream-Key": "k-abcd"}
 		}
 		return nil
 	})
 
-	if _, err := adapter.Discover(context.Background(), model.Server{
-		Endpoint:  upstream.URL,
-		Transport: model.TransportStreamableHTTP,
-	}); err != nil {
+	if _, err := adapter.Discover(context.Background(), model.Server{ID: "srv-1"}, instanceFor(upstream.URL)); err != nil {
 		t.Fatalf("Discover 失败: %v", err)
 	}
 	if gotHeader != "k-abcd" {
 		t.Fatalf("上游应收到注入的凭据 header，得到 %q", gotHeader)
+	}
+}
+
+// TestAdapter_Probe 验证评测探测返回协议握手结果 + 上游工具定义。
+func TestAdapter_Probe(t *testing.T) {
+	upstream := mockMCPServer(t)
+	defer upstream.Close()
+
+	adapter := New()
+	res, err := adapter.Probe(context.Background(), model.Server{ID: "srv-1", Name: "Mock"}, instanceFor(upstream.URL))
+	if err != nil {
+		t.Fatalf("Probe 失败: %v", err)
+	}
+	if res.ProtocolVersion != "2025-11-24" {
+		t.Fatalf("应返回协商后的协议版本，得到 %q", res.ProtocolVersion)
+	}
+	if res.ServerInfo.Name != "mock" || res.ServerInfo.Version != "1.0" {
+		t.Fatalf("serverInfo 不正确: %+v", res.ServerInfo)
+	}
+	if res.Capabilities.Tools == nil {
+		t.Fatal("应声明 tools 能力位")
+	}
+	if len(res.Tools) != 2 || res.Tools[0].Name != "search" {
+		t.Fatalf("应返回 2 个上游工具定义: %+v", res.Tools)
 	}
 }
 
@@ -180,10 +203,7 @@ func TestAdapter_CallTimeoutMapsToCodeTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	_, err := adapter.Call(ctx, model.Server{
-		Endpoint:  upstream.URL,
-		Transport: model.TransportStreamableHTTP,
-	}, "search", map[string]any{}, nil)
+	_, err := adapter.Call(ctx, model.Server{ID: "srv-1"}, instanceFor(upstream.URL), "search", map[string]any{}, nil)
 	if err == nil {
 		t.Fatal("慢上游应返回错误")
 	}
@@ -191,4 +211,3 @@ func TestAdapter_CallTimeoutMapsToCodeTimeout(t *testing.T) {
 		t.Fatalf("错误码应归类为 timeout_error，得到 %s", code)
 	}
 }
-

@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/xmj128/mcp-conductor/internal/auth"
-	"github.com/xmj128/mcp-conductor/internal/errs"
-	"github.com/xmj128/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/auth"
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
 )
 
 func managedKey(grants ...model.ToolGrant) *auth.Identity {

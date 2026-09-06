@@ -8,13 +8,14 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/auth"
-	"github.com/xmj128/mcp-conductor/internal/config"
-	"github.com/xmj128/mcp-conductor/internal/mcp"
-	"github.com/xmj128/mcp-conductor/internal/observability"
-	"github.com/xmj128/mcp-conductor/internal/ratelimit"
-	"github.com/xmj128/mcp-conductor/internal/registry"
-	"github.com/xmj128/mcp-conductor/internal/storage"
+	"github.com/heyjensenxie/mcp-conductor/internal/auth"
+	"github.com/heyjensenxie/mcp-conductor/internal/config"
+	"github.com/heyjensenxie/mcp-conductor/internal/eval"
+	"github.com/heyjensenxie/mcp-conductor/internal/mcp"
+	"github.com/heyjensenxie/mcp-conductor/internal/observability"
+	"github.com/heyjensenxie/mcp-conductor/internal/ratelimit"
+	"github.com/heyjensenxie/mcp-conductor/internal/registry"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage"
 )
 
 // Deps 是构成 HTTP 服务器所需的全部服务依赖。
@@ -31,6 +32,8 @@ type Deps struct {
 	// ProbeNow 非阻塞触发对指定 Server 的即时健康巡检（注册/启用 Server 时
 	// 调用，nil 表示不触发，交由周期巡检兜底）。
 	ProbeNow func(serverID string)
+	// Eval 是 MCP 评测服务（质量分 + 回归用例；nil 表示评测未启用）。
+	Eval *eval.Service
 }
 
 // NewServer 组装 HTTP 服务器：统一 MCP 端点 + 控制面 REST API + 健康探针，
@@ -72,6 +75,7 @@ func registerControlRoutes(mux *http.ServeMux, deps Deps) {
 	control := NewControl(deps.Registry, deps.Store, deps.Metrics, deps.KeyHash)
 	// 注册/启用 Server 后即时触发健康巡检（nil 安全，测试可不注入）。
 	control.probeNow = deps.ProbeNow
+	control.eval = deps.Eval
 
 	mux.HandleFunc("GET /api/servers", control.handleListServers)
 	mux.HandleFunc("POST /api/servers", control.handleCreateServer)
@@ -80,13 +84,21 @@ func registerControlRoutes(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("PATCH /api/servers/{id}/toggle", control.handleToggleServer)
 	mux.HandleFunc("DELETE /api/servers/{id}", control.handleDeleteServer)
 	mux.HandleFunc("POST /api/servers/{id}/test", control.handleTestServer)
+	mux.HandleFunc("POST /api/servers/{id}/rediscover/plan", control.handleServerRediscoverPlan)
 	mux.HandleFunc("GET /api/servers/{id}/tools", control.handleListServerTools)
 	mux.HandleFunc("POST /api/servers/{id}/credentials", control.handleCreateCredential)
 	mux.HandleFunc("GET /api/servers/{id}/credentials", control.handleListCredentials)
 	mux.HandleFunc("PATCH /api/servers/{id}/credentials/{credId}", control.handleUpdateCredential)
 	mux.HandleFunc("DELETE /api/servers/{id}/credentials/{credId}", control.handleDeleteCredential)
+	mux.HandleFunc("GET /api/servers/{id}/instances", control.handleListInstances)
+	mux.HandleFunc("POST /api/servers/{id}/instances", control.handleCreateInstance)
+	mux.HandleFunc("PATCH /api/servers/{id}/instances/{iid}", control.handleUpdateInstance)
+	mux.HandleFunc("PATCH /api/servers/{id}/instances/{iid}/toggle", control.handleToggleInstance)
+	mux.HandleFunc("POST /api/servers/{id}/instances/{iid}/test", control.handleTestInstance)
+	mux.HandleFunc("DELETE /api/servers/{id}/instances/{iid}", control.handleDeleteInstance)
 
 	mux.HandleFunc("GET /api/tools", control.handleListTools)
+	mux.HandleFunc("GET /api/tools/{id}", control.handleGetTool)
 	mux.HandleFunc("PATCH /api/tools/{id}", control.handleUpdateTool)
 	mux.HandleFunc("PATCH /api/tools/{id}/toggle", control.handleToggleTool)
 	mux.HandleFunc("GET /api/routes", control.handleListRoutes)
@@ -105,6 +117,10 @@ func registerControlRoutes(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("GET /api/metrics", control.handleMetrics)
 	mux.HandleFunc("GET /api/metrics/trend", control.handleMetricsTrend)
 	mux.HandleFunc("GET /api/logs", control.handleLogs)
+
+	mux.HandleFunc("GET /api/evaluations/servers/{id}", control.handleEvalMeta)
+	mux.HandleFunc("POST /api/evaluations/servers/{id}/quality", control.handleEvalQuality)
+	mux.HandleFunc("POST /api/evaluations/servers/{id}/suite", control.handleEvalSuite)
 }
 
 // registerHealthRoutes 注册存活/就绪探针，供容器编排使用。

@@ -24,9 +24,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/config"
-	"github.com/xmj128/mcp-conductor/internal/errs"
-	"github.com/xmj128/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/config"
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
 )
 
 // Identity 是认证通过后的调用主体。

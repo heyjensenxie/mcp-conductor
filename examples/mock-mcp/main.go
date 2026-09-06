@@ -14,7 +14,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/xmj128/mcp-conductor/internal/mcp"
+	"github.com/heyjensenxie/mcp-conductor/internal/mcp"
 )
 
 // mockService 以固定工具列表模拟上游 MCP Server，并对 tools/call 做回显。

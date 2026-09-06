@@ -20,7 +20,7 @@ import (
 	// 注册 MySQL 驱动。
 	_ "github.com/go-sql-driver/mysql"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
 )
 
 // Store 是基于 database/sql 的 MySQL 存储实现。
@@ -135,6 +135,10 @@ func notExistError(err error, kind, id string) error {
 }
 
 // ---- ServerStore ----
+//
+// Server 只持久化逻辑字段（name/description/enabled/聚合 health_status）；
+// Endpoint/Transport 由 server_instances 表承载（见 instances.go）。servers 表
+// 遗留的 endpoint/transport/version 列已改可空且不再读写（0008 起）。
 
 // CreateServer 新增 Server；id 为空时自动生成。
 func (s *Store) CreateServer(ctx context.Context, server *model.Server) error {
@@ -145,10 +149,9 @@ func (s *Store) CreateServer(ctx context.Context, server *model.Server) error {
 	server.CreatedAt = now
 	server.UpdatedAt = nowOr(server.UpdatedAt)
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO servers (id, name, description, endpoint, transport, version, enabled, health_status, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		server.ID, server.Name, nullIfEmpty(server.Description), server.Endpoint,
-		server.Transport, nullIfEmpty(server.Version), server.Enabled, server.HealthStatus,
+		`INSERT INTO servers (id, name, description, enabled, health_status, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?)`,
+		server.ID, server.Name, nullIfEmpty(server.Description), server.Enabled, server.HealthStatus,
 		fmtTimeUTC(server.CreatedAt), fmtTimeUTC(server.UpdatedAt),
 	)
 	if err != nil {
@@ -161,10 +164,10 @@ func (s *Store) CreateServer(ctx context.Context, server *model.Server) error {
 func (s *Store) GetServer(ctx context.Context, id string) (*model.Server, error) {
 	var server model.Server
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, COALESCE(description,''), endpoint, transport, COALESCE(version,''), enabled, health_status, created_at, updated_at
+		`SELECT id, name, COALESCE(description,''), enabled, health_status, created_at, updated_at
 		 FROM servers WHERE id = ?`, id,
-	).Scan(&server.ID, &server.Name, &server.Description, &server.Endpoint, &server.Transport,
-		&server.Version, &server.Enabled, &server.HealthStatus, &server.CreatedAt, &server.UpdatedAt)
+	).Scan(&server.ID, &server.Name, &server.Description,
+		&server.Enabled, &server.HealthStatus, &server.CreatedAt, &server.UpdatedAt)
 	if err != nil {
 		return nil, notExistError(err, "server", id)
 	}
@@ -174,7 +177,7 @@ func (s *Store) GetServer(ctx context.Context, id string) (*model.Server, error)
 // ListServers 返回全部 Server（按 id 排序，保证输出稳定）。
 func (s *Store) ListServers(ctx context.Context) ([]model.Server, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, COALESCE(description,''), endpoint, transport, COALESCE(version,''), enabled, health_status, created_at, updated_at
+		`SELECT id, name, COALESCE(description,''), enabled, health_status, created_at, updated_at
 		 FROM servers ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -184,8 +187,8 @@ func (s *Store) ListServers(ctx context.Context) ([]model.Server, error) {
 	out := make([]model.Server, 0)
 	for rows.Next() {
 		var server model.Server
-		if err := rows.Scan(&server.ID, &server.Name, &server.Description, &server.Endpoint, &server.Transport,
-			&server.Version, &server.Enabled, &server.HealthStatus, &server.CreatedAt, &server.UpdatedAt); err != nil {
+		if err := rows.Scan(&server.ID, &server.Name, &server.Description,
+			&server.Enabled, &server.HealthStatus, &server.CreatedAt, &server.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, server)
@@ -193,15 +196,15 @@ func (s *Store) ListServers(ctx context.Context) ([]model.Server, error) {
 	return out, rows.Err()
 }
 
-// UpdateServer 覆盖更新 Server 字段。
+// UpdateServer 覆盖更新 Server 的逻辑字段（不写 endpoint/transport/version）。
 func (s *Store) UpdateServer(ctx context.Context, server *model.Server) error {
 	server.UpdatedAt = nowOr(server.UpdatedAt)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE servers
-		 SET name=?, description=?, endpoint=?, transport=?, version=?, enabled=?, health_status=?, updated_at=?
+		 SET name=?, description=?, enabled=?, health_status=?, updated_at=?
 		 WHERE id=?`,
-		server.Name, nullIfEmpty(server.Description), server.Endpoint, server.Transport,
-		nullIfEmpty(server.Version), server.Enabled, server.HealthStatus, fmtTimeUTC(server.UpdatedAt), server.ID,
+		server.Name, nullIfEmpty(server.Description), server.Enabled, server.HealthStatus,
+		fmtTimeUTC(server.UpdatedAt), server.ID,
 	)
 	if err != nil {
 		return err

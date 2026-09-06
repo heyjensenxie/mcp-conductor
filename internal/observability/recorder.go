@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
 )
 
 // TrafficWriter 是调用日志必需的最小存储能力。

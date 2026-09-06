@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/storage"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage"
 )
 
 // openTest 从环境变量打开被测 Store；未配置 DSN 时跳过。
@@ -29,15 +29,17 @@ func openTest(t *testing.T) storage.Store {
 	return store
 }
 
-func testServer(name, endpoint string) *model.Server {
-	return &model.Server{Name: name, Description: "集成测试", Endpoint: endpoint, Transport: model.TransportStreamableHTTP}
+// testServer 构造一个逻辑 Server（不含 Endpoint/Transport——它们属于实例，
+// 见 model.Server / Instance 注释）。
+func testServer(name string) *model.Server {
+	return &model.Server{Name: name, Description: "集成测试"}
 }
 
 func TestServerCRUD(t *testing.T) {
 	store := openTest(t)
 	ctx := context.Background()
 
-	srv := testServer("集成-Server", "http://localhost:9000/mcp")
+	srv := testServer("集成-Server")
 	if err := store.CreateServer(ctx, srv); err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
@@ -49,8 +51,21 @@ func TestServerCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetServer: %v", err)
 	}
-	if got.Name != srv.Name || got.Transport != model.TransportStreamableHTTP || got.Enabled {
+	if got.Name != srv.Name || got.Enabled {
 		t.Fatalf("Server 字段回读不一致: %+v", got)
+	}
+
+	// Endpoint/Transport 属于实例层：seed 一条并断言其回读。
+	inst := &model.Instance{ServerID: srv.ID, Endpoint: "http://localhost:9000/mcp", Transport: model.TransportStreamableHTTP, Enabled: true, HealthStatus: model.ServerStatusUnknown}
+	if err := store.CreateInstance(ctx, inst); err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	insts, err := store.ListInstancesByServer(ctx, srv.ID)
+	if err != nil || len(insts) != 1 {
+		t.Fatalf("ListInstancesByServer: %v / %d", err, len(insts))
+	}
+	if insts[0].Endpoint != "http://localhost:9000/mcp" || insts[0].Transport != model.TransportStreamableHTTP {
+		t.Fatalf("实例 endpoint/transport 回读不一致: %+v", insts[0])
 	}
 
 	got.Enabled = true
@@ -78,6 +93,76 @@ func TestServerCRUD(t *testing.T) {
 	}
 }
 
+// TestServerInstanceCascadeMySQL 验证删除 Server 级联删除其实例（FK CASCADE）。
+func TestServerInstanceCascadeMySQL(t *testing.T) {
+	store := openTest(t)
+	ctx := context.Background()
+
+	srv := testServer("实例级联")
+	if err := store.CreateServer(ctx, srv); err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+	for _, ep := range []string{"http://a:9000/mcp", "http://b:9000/mcp"} {
+		if err := store.CreateInstance(ctx, &model.Instance{ServerID: srv.ID, Endpoint: ep, Transport: model.TransportStreamableHTTP, Enabled: true, HealthStatus: model.ServerStatusUnknown}); err != nil {
+			t.Fatalf("CreateInstance(%s): %v", ep, err)
+		}
+	}
+	if insts, _ := store.ListInstancesByServer(ctx, srv.ID); len(insts) != 2 {
+		t.Fatalf("应有两实例，得到 %d", len(insts))
+	}
+	if err := store.DeleteServer(ctx, srv.ID); err != nil {
+		t.Fatalf("DeleteServer: %v", err)
+	}
+	if insts, _ := store.ListInstancesByServer(ctx, srv.ID); len(insts) != 0 {
+		t.Fatalf("删除 Server 后实例应被级联清理，得到 %d", len(insts))
+	}
+}
+
+// TestInstanceCRUDMySQL 验证实例 创建/读取/更新/删除 与按 Server 整组删除。
+func TestInstanceCRUDMySQL(t *testing.T) {
+	store := openTest(t)
+	ctx := context.Background()
+
+	srv := testServer("实例CRUD")
+	if err := store.CreateServer(ctx, srv); err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+	defer func() { _ = store.DeleteServer(ctx, srv.ID) }()
+
+	inst := &model.Instance{ServerID: srv.ID, Endpoint: "http://a:9000/mcp", Transport: model.TransportStreamableHTTP, Enabled: true, HealthStatus: model.ServerStatusUnknown}
+	if err := store.CreateInstance(ctx, inst); err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	if inst.ID == "" {
+		t.Fatal("CreateInstance 应生成 id")
+	}
+	got, err := store.GetInstance(ctx, inst.ID)
+	if err != nil || got.Endpoint != "http://a:9000/mcp" {
+		t.Fatalf("GetInstance 回读不一致: %+v / %v", got, err)
+	}
+
+	got.Endpoint = "http://b:9000/mcp"
+	got.HealthStatus = model.ServerStatusHealthy
+	if err := store.UpdateInstance(ctx, got); err != nil {
+		t.Fatalf("UpdateInstance: %v", err)
+	}
+	again, _ := store.GetInstance(ctx, inst.ID)
+	if again.Endpoint != "http://b:9000/mcp" || again.HealthStatus != model.ServerStatusHealthy {
+		t.Fatalf("UpdateInstance 未生效: %+v", again)
+	}
+
+	// 加第二条后 DeleteInstancesByServer 整组清理。
+	if err := store.CreateInstance(ctx, &model.Instance{ServerID: srv.ID, Endpoint: "http://c:9000/mcp", Transport: model.TransportStreamableHTTP}); err != nil {
+		t.Fatalf("CreateInstance 2nd: %v", err)
+	}
+	if err := store.DeleteInstancesByServer(ctx, srv.ID); err != nil {
+		t.Fatalf("DeleteInstancesByServer: %v", err)
+	}
+	if insts, _ := store.ListInstancesByServer(ctx, srv.ID); len(insts) != 0 {
+		t.Fatalf("整组删除后应无实例，得到 %d", len(insts))
+	}
+}
+
 func TestServerUpdateMissing(t *testing.T) {
 	store := openTest(t)
 	if err := store.UpdateServer(context.Background(), &model.Server{ID: "no-such-id", UpdatedAt: time.Now().UTC()}); err == nil {
@@ -89,7 +174,7 @@ func TestToolUpsertIdempotent(t *testing.T) {
 	store := openTest(t)
 	ctx := context.Background()
 
-	srv := testServer("工具-Server", "http://localhost:9000/mcp")
+	srv := testServer("工具-Server")
 	_ = store.CreateServer(ctx, srv)
 
 	tool := &model.Tool{
@@ -141,7 +226,7 @@ func TestServerCascadeDeletesTools(t *testing.T) {
 	store := openTest(t)
 	ctx := context.Background()
 
-	srv := testServer("级联-Server", "http://localhost:9000/mcp")
+	srv := testServer("级联-Server")
 	_ = store.CreateServer(ctx, srv)
 	tool := &model.Tool{ServerID: srv.ID, OriginalName: "search", GatewayName: "cascade.search", Enabled: true}
 	_ = store.UpsertTool(ctx, tool)
@@ -156,7 +241,7 @@ func TestRouteAndCredential(t *testing.T) {
 	store := openTest(t)
 	ctx := context.Background()
 
-	srv := testServer("支撑-Server", "http://localhost:9000/mcp")
+	srv := testServer("支撑-Server")
 	_ = store.CreateServer(ctx, srv)
 
 	route := &model.Route{Name: "默认路由", ServerID: srv.ID, ToolNames: []string{"a.foo", "b.bar"}, Enabled: true}
@@ -205,7 +290,7 @@ func TestCredentialEncryptedRoundTrip(t *testing.T) {
 	store := openTestKeyed(t)
 	ctx := context.Background()
 
-	srv := testServer("密钥-Server", "http://localhost:9000/mcp")
+	srv := testServer("密钥-Server")
 	_ = store.CreateServer(ctx, srv)
 
 	cred := &model.Credential{ServerID: srv.ID, Name: "上游密钥", Kind: model.CredentialAPIKey, Header: "X-Upstream-Key", Value: "plain-secret"}
@@ -230,7 +315,7 @@ func TestCredentialCreateWithoutKeyRejectsValue(t *testing.T) {
 	store := openTest(t)
 	ctx := context.Background()
 
-	srv := testServer("无密钥-Server", "http://localhost:9000/mcp")
+	srv := testServer("无密钥-Server")
 	_ = store.CreateServer(ctx, srv)
 
 	err := store.CreateCredential(ctx, &model.Credential{ServerID: srv.ID, Name: "x", Kind: model.CredentialAPIKey, Header: "X", Value: "secret"})
@@ -244,7 +329,7 @@ func TestCredentialLifecycleMySQL(t *testing.T) {
 	store := openTestKeyed(t)
 	ctx := context.Background()
 
-	srv := testServer("凭证生命周期", "http://localhost:9000/mcp")
+	srv := testServer("凭证生命周期")
 	if err := store.CreateServer(ctx, srv); err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
@@ -288,7 +373,7 @@ func TestToolSetEnabledMySQL(t *testing.T) {
 	store := openTest(t)
 	ctx := context.Background()
 
-	srv := testServer("工具启停", "http://localhost:9000/mcp")
+	srv := testServer("工具启停")
 	if err := store.CreateServer(ctx, srv); err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
@@ -318,7 +403,7 @@ func TestRouteLifecycleMySQL(t *testing.T) {
 	store := openTest(t)
 	ctx := context.Background()
 
-	srv := testServer("路由生命周期", "http://localhost:9000/mcp")
+	srv := testServer("路由生命周期")
 	if err := store.CreateServer(ctx, srv); err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}

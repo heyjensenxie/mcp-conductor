@@ -6,7 +6,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/xmj128/mcp-conductor/internal/console"
+	"github.com/heyjensenxie/mcp-conductor/internal/console"
 )
 
 // spaHandler 服务内嵌的前端静态资源，并对非文件路径回退到 index.html。

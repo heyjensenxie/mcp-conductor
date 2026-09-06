@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
 )
 
 // Store 是基于进程内 map 的并发安全存储，实现 storage.Store 全部接口。
@@ -20,6 +20,7 @@ type Store struct {
 	mu sync.RWMutex
 
 	servers     map[string]model.Server
+	instances   map[string]model.Instance
 	tools       map[string]model.Tool
 	toolsByName map[string]model.Tool // gateway_name -> tool
 	routes      map[string]model.Route
@@ -36,6 +37,7 @@ type Store struct {
 func New() *Store {
 	return &Store{
 		servers:     make(map[string]model.Server),
+		instances:   make(map[string]model.Instance),
 		tools:       make(map[string]model.Tool),
 		toolsByName: make(map[string]model.Tool),
 		routes:      make(map[string]model.Route),
@@ -102,7 +104,7 @@ func (s *Store) UpdateServer(_ context.Context, server *model.Server) error {
 	return nil
 }
 
-// DeleteServer 删除 Server，并级联清理其凭证（与 MySQL 外键 CASCADE 对齐）；
+// DeleteServer 删除 Server，并级联清理其实例与凭证（与 MySQL 外键 CASCADE 对齐）；
 // Tool 由调用方（registry）按 DeleteToolsByServer 另行清理。
 func (s *Store) DeleteServer(_ context.Context, id string) error {
 	s.mu.Lock()
@@ -111,6 +113,11 @@ func (s *Store) DeleteServer(_ context.Context, id string) error {
 		return fmt.Errorf("server %q 不存在", id)
 	}
 	delete(s.servers, id)
+	for _, iid := range sortedKeys(s.instances) {
+		if s.instances[iid].ServerID == id {
+			delete(s.instances, iid)
+		}
+	}
 	for _, cid := range sortedKeys(s.credentials) {
 		if s.credentials[cid].ServerID == id {
 			delete(s.credentials, cid)
@@ -122,6 +129,103 @@ func (s *Store) DeleteServer(_ context.Context, id string) error {
 		}
 	}
 	return nil
+}
+
+// ---- InstanceStore ----
+
+// CreateInstance 新增实例；重复 id 返回冲突错误。
+func (s *Store) CreateInstance(_ context.Context, instance *model.Instance) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if instance.ID == "" {
+		instance.ID = s.nextID("inst")
+	}
+	if _, ok := s.instances[instance.ID]; ok {
+		return errors.New("instance 已存在")
+	}
+	s.instances[instance.ID] = *instance
+	return nil
+}
+
+// GetInstance 按 id 读取实例。
+func (s *Store) GetInstance(_ context.Context, id string) (*model.Instance, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	instance, ok := s.instances[id]
+	if !ok {
+		return nil, fmt.Errorf("instance %q 不存在", id)
+	}
+	return &instance, nil
+}
+
+// ListInstances 返回全部实例（按 (created_at, id) 升序，保证输出稳定）。
+func (s *Store) ListInstances(_ context.Context) ([]model.Instance, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.Instance, 0, len(s.instances))
+	for _, instance := range s.instances {
+		out = append(out, instance)
+	}
+	sortInstances(out)
+	return out, nil
+}
+
+// ListInstancesByServer 返回指定 Server 的实例（按 (created_at, id) 升序）。
+func (s *Store) ListInstancesByServer(_ context.Context, serverID string) ([]model.Instance, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.Instance, 0)
+	for _, instance := range s.instances {
+		if instance.ServerID == serverID {
+			out = append(out, instance)
+		}
+	}
+	sortInstances(out)
+	return out, nil
+}
+
+// UpdateInstance 覆盖实例字段。
+func (s *Store) UpdateInstance(_ context.Context, instance *model.Instance) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.instances[instance.ID]; !ok {
+		return fmt.Errorf("instance %q 不存在", instance.ID)
+	}
+	s.instances[instance.ID] = *instance
+	return nil
+}
+
+// DeleteInstance 删除单个实例。
+func (s *Store) DeleteInstance(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.instances[id]; !ok {
+		return fmt.Errorf("instance %q 不存在", id)
+	}
+	delete(s.instances, id)
+	return nil
+}
+
+// DeleteInstancesByServer 删除指定 Server 的全部实例（不存在时视为成功）。
+func (s *Store) DeleteInstancesByServer(_ context.Context, serverID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, iid := range sortedKeys(s.instances) {
+		if s.instances[iid].ServerID == serverID {
+			delete(s.instances, iid)
+		}
+	}
+	return nil
+}
+
+// sortInstances 按 (created_at, id) 稳定升序排列（"主实例"为升序首条）。
+func sortInstances(instances []model.Instance) {
+	sort.Slice(instances, func(i, j int) bool {
+		if !instances[i].CreatedAt.Equal(instances[j].CreatedAt) {
+			return instances[i].CreatedAt.Before(instances[j].CreatedAt)
+		}
+		return instances[i].ID < instances[j].ID
+	})
 }
 
 // ---- ToolStore ----
@@ -330,7 +434,6 @@ func (s *Store) ListRoutes(_ context.Context) ([]model.Route, error) {
 	}
 	return out, nil
 }
-
 
 // CreateCredential 新增凭证元数据与进程内值（memory 不落盘，重启即失）。
 func (s *Store) CreateCredential(_ context.Context, credential *model.Credential) error {

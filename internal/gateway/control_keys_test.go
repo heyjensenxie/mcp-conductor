@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/storage/memory"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/memory"
 )
 
 // env 是控制面信封响应，仅用于测试解码。

@@ -4,16 +4,16 @@ import (
 	"context"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/access"
-	"github.com/xmj128/mcp-conductor/internal/auth"
-	"github.com/xmj128/mcp-conductor/internal/balancer"
-	"github.com/xmj128/mcp-conductor/internal/errs"
-	"github.com/xmj128/mcp-conductor/internal/mcp"
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/observability"
-	"github.com/xmj128/mcp-conductor/internal/registry"
-	"github.com/xmj128/mcp-conductor/internal/router"
-	"github.com/xmj128/mcp-conductor/internal/storage"
+	"github.com/heyjensenxie/mcp-conductor/internal/access"
+	"github.com/heyjensenxie/mcp-conductor/internal/auth"
+	"github.com/heyjensenxie/mcp-conductor/internal/balancer"
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/mcp"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/observability"
+	"github.com/heyjensenxie/mcp-conductor/internal/registry"
+	"github.com/heyjensenxie/mcp-conductor/internal/router"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage"
 )
 
 // ToolLister 是聚合 tools/list 所需的最小存储能力。
@@ -22,8 +22,9 @@ type ToolLister interface {
 }
 
 // ToolCaller 是工具调用能力（由 registry.ToolCaller 满足）。
+// server 是逻辑 Server（凭证按 Server 组装），instance 是本次拨测的具体实例。
 type ToolCaller interface {
-	Call(ctx context.Context, server model.Server, tool string, arguments map[string]any, extraHeaders map[string]string) ([]registry.CallContent, error)
+	Call(ctx context.Context, server model.Server, instance model.Instance, tool string, arguments map[string]any, extraHeaders map[string]string) ([]registry.CallContent, error)
 }
 
 // Authorizer 裁定主体对工具的访问权限（managed key 白名单 / 非管理回退遗留规则）。
@@ -134,12 +135,17 @@ func (g *MCPGateway) CallTool(ctx context.Context, name string, arguments map[st
 		return g.fail(name, start, err)
 	}
 
-	// 3. 负载均衡
+	// 3. 负载均衡（从健康实例中选一个做本次拨测目标）
 	target, err := g.balancer.Pick(ctx, resolved.Targets)
 	if err != nil {
 		return g.fail(name, start, errs.Wrap(errs.CodeRoute, err, "无可用上游实例"))
 	}
-	_ = target // MVP 单实例；多实例时 target 决定调用端点
+	dialInstance := model.Instance{
+		ID:        target.ID,
+		ServerID:  target.ServerID,
+		Endpoint:  target.Endpoint,
+		Transport: target.Transport,
+	}
 
 	// 4. 并发上限（可选）
 	if g.sem != nil {
@@ -161,10 +167,10 @@ func (g *MCPGateway) CallTool(ctx context.Context, name string, arguments map[st
 		}
 	}
 
-	// 6. 上游调用（带超时）
+	// 6. 上游调用（带超时；实际拨测被均衡选中的实例）
 	callCtx, cancel := context.WithTimeout(ctx, g.upstreamTimeout)
 	defer cancel()
-	contents, callErr := g.caller.Call(callCtx, resolved.Server, resolved.Tool.OriginalName, targetArgs, extraHeaders)
+	contents, callErr := g.caller.Call(callCtx, resolved.Server, dialInstance, resolved.Tool.OriginalName, targetArgs, extraHeaders)
 
 	// 7. 观测（唯一观测点：成功/失败各记一次指标与调用日志）
 	g.record(ctx, resolved, name, identity.Subject, start, callErr)

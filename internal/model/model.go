@@ -35,21 +35,76 @@ const (
 	ServerStatusDisabled ServerStatus = "disabled"
 )
 
-// Server 代表一个逻辑 MCP Server。
+// Server 代表一个逻辑 MCP Server（一组共享同一命名空间、聚合工具与上游凭证
+// 的具体实例集合）。
 //
-// 逻辑 Server 不等于 Server Instance：未来同一逻辑 Server 可能对应多个实例，
-// 负载均衡将作用于实例维度，当前 MVP 使用 endpoint 单实例承载。
+// Server 不等于 Server Instance：一个逻辑 Server 下可挂多个实例，负载均衡与
+// 健康探测作用于实例维度（见 Instance），Endpoint/Transport 只属于实例。
+// HealthStatus 是由实例健康集合推导出的聚合值（见 AggregateServerHealth），
+// 供列表筛选与展示；对外 API 响应还在 Server 上附带 instances 列表（由控制面
+// 水合，不落库）。
 type Server struct {
 	ID           string       `json:"id"`
 	Name         string       `json:"name"`
 	Description  string       `json:"description,omitempty"`
+	Enabled      bool         `json:"enabled"`
+	HealthStatus ServerStatus `json:"health_status"`
+	// Instances 是对外 API 响应水合出来的实例列表（endpoint/transport/健康展示
+	// 与实例管理入口）。存储层不读写本字段（不落库），仅控制面在序列化前填充。
+	Instances []Instance `json:"instances,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+}
+
+// Instance 代表一个逻辑 Server 下的具体上游实例（endpoint + transport 的承载单位）。
+//
+// Enabled=false 表示实例被摘除/停用（不进探测、不进负载均衡），与 Server 级
+// Enabled 相互独立。HealthStatus 取值 unknown/healthy/unhealthy；disabled 只
+// 出现在 Server 聚合层（见 AggregateServerHealth）。
+type Instance struct {
+	ID           string       `json:"id"`
+	ServerID     string       `json:"server_id"`
 	Endpoint     string       `json:"endpoint"`
 	Transport    Transport    `json:"transport"`
-	Version      string       `json:"version,omitempty"`
 	Enabled      bool         `json:"enabled"`
 	HealthStatus ServerStatus `json:"health_status"`
 	CreatedAt    time.Time    `json:"created_at"`
 	UpdatedAt    time.Time    `json:"updated_at"`
+}
+
+// IsCallable 报告该实例是否可作为调用目标：启用且未被探测为 unhealthy。
+// unknown 乐观可调（尚未探活时允许尝试，避免新注册实例一上来就不可用）。
+func (i Instance) IsCallable() bool {
+	return i.Enabled && i.HealthStatus != ServerStatusUnhealthy
+}
+
+// AggregateServerHealth 由实例集合推导 Server 级聚合健康（写回 servers 行供列表
+// 筛选与展示）：
+//   - 禁用 → disabled；
+//   - 任一启用实例 healthy → healthy；
+//   - 存在启用实例但都还没探出 healthy（含 unknown）→ unknown；
+//   - 其余（启用实例全 unhealthy，或没有启用实例）→ unhealthy。
+func AggregateServerHealth(enabled bool, instances []Instance) ServerStatus {
+	if !enabled {
+		return ServerStatusDisabled
+	}
+	hasUnknown := false
+	for i := range instances {
+		inst := &instances[i]
+		if !inst.Enabled {
+			continue
+		}
+		switch inst.HealthStatus {
+		case ServerStatusHealthy:
+			return ServerStatusHealthy
+		case ServerStatusUnknown:
+			hasUnknown = true
+		}
+	}
+	if hasUnknown {
+		return ServerStatusUnknown
+	}
+	return ServerStatusUnhealthy
 }
 
 // Tool 代表某个 Server 暴露的 MCP Tool。

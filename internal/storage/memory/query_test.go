@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/storage/query"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/query"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -16,9 +16,9 @@ func seedQueryServers(t *testing.T, st *Store) {
 	t.Helper()
 	ctx := context.Background()
 	servers := []model.Server{
-		{Name: "Alpha", Endpoint: "http://a/mcp", Enabled: true, HealthStatus: model.ServerStatusHealthy},
-		{Name: "beta-search", Endpoint: "http://b/mcp", Enabled: false, HealthStatus: model.ServerStatusUnhealthy},
-		{Name: "Gamma", Endpoint: "http://g/mcp", Enabled: true, HealthStatus: model.ServerStatusDisabled},
+		{Name: "Alpha", Enabled: true, HealthStatus: model.ServerStatusHealthy},
+		{Name: "beta-search", Enabled: false, HealthStatus: model.ServerStatusUnhealthy},
+		{Name: "Gamma", Enabled: true, HealthStatus: model.ServerStatusDisabled},
 	}
 	for _, s := range servers {
 		if err := st.CreateServer(ctx, &s); err != nil {

@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/storage/query"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/query"
 )
 
 // ---- 管理面列表查询（memory 实现）----

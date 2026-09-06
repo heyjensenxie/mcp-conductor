@@ -17,22 +17,23 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/xmj128/mcp-conductor/internal/access"
-	"github.com/xmj128/mcp-conductor/internal/auth"
-	"github.com/xmj128/mcp-conductor/internal/balancer"
-	"github.com/xmj128/mcp-conductor/internal/config"
-	"github.com/xmj128/mcp-conductor/internal/errs"
-	"github.com/xmj128/mcp-conductor/internal/gateway"
-	"github.com/xmj128/mcp-conductor/internal/health"
-	"github.com/xmj128/mcp-conductor/internal/mcpclient"
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/observability"
-	"github.com/xmj128/mcp-conductor/internal/ratelimit"
-	"github.com/xmj128/mcp-conductor/internal/registry"
-	"github.com/xmj128/mcp-conductor/internal/router"
-	"github.com/xmj128/mcp-conductor/internal/storage"
-	"github.com/xmj128/mcp-conductor/internal/storage/memory"
-	mysqlstore "github.com/xmj128/mcp-conductor/internal/storage/mysql"
+	"github.com/heyjensenxie/mcp-conductor/internal/access"
+	"github.com/heyjensenxie/mcp-conductor/internal/auth"
+	"github.com/heyjensenxie/mcp-conductor/internal/balancer"
+	"github.com/heyjensenxie/mcp-conductor/internal/config"
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/eval"
+	"github.com/heyjensenxie/mcp-conductor/internal/gateway"
+	"github.com/heyjensenxie/mcp-conductor/internal/health"
+	"github.com/heyjensenxie/mcp-conductor/internal/mcpclient"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/observability"
+	"github.com/heyjensenxie/mcp-conductor/internal/ratelimit"
+	"github.com/heyjensenxie/mcp-conductor/internal/registry"
+	"github.com/heyjensenxie/mcp-conductor/internal/router"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/memory"
+	mysqlstore "github.com/heyjensenxie/mcp-conductor/internal/storage/mysql"
 )
 
 // Run 启动后端并阻塞直到退出信号或服务错误。
@@ -58,11 +59,27 @@ func Run(ctx context.Context) error {
 
 	adapter := mcpclient.New().WithHeaderFor(credentialHeaders(store))
 
-	registrySvc := registry.NewService(store, adapter)
-	resolver := router.NewResolver(store, store).WithRoutes(store)
+	registrySvc := registry.NewService(store, adapter).WithProber(adapter)
+	resolver := router.NewResolver(store, store).WithRoutes(store).WithInstances(store)
 	authorizer := access.NewAuthorizer()
 	metrics := observability.NewMetrics()
 	recorder := observability.NewRecorder(store, cfg.Observability.RecordBody, cfg.Observability.SampleRate)
+
+	// MCP 评测：现场拨测（复用带凭据注入的 adapter）+ 进程内运行时指标。
+	evalSvc := eval.NewService(store, adapter, adapter, func(serverID string) (eval.RuntimeStats, bool) {
+		for _, s := range metrics.SnapshotAll() {
+			if s.Key == observability.ServerDimPrefix+serverID {
+				return eval.RuntimeStats{
+					Available:   s.Totals > 0,
+					Totals:      s.Totals,
+					SuccessRate: s.SuccessRate,
+					P95:         s.P95,
+					Errors:      s.Errors,
+				}, true
+			}
+		}
+		return eval.RuntimeStats{}, false
+	})
 
 	mcpGateway := gateway.NewMCPGateway(
 		store,
@@ -108,6 +125,7 @@ func Run(ctx context.Context) error {
 			return auth.KeyHash(cfg.Auth.TokenSecret, token)
 		},
 		ProbeNow: monitor.TriggerCheck,
+		Eval:     evalSvc,
 	})
 
 	return runWithSignal(ctx, server)

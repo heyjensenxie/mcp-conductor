@@ -1,4 +1,4 @@
-module github.com/xmj128/mcp-conductor
+module github.com/heyjensenxie/mcp-conductor
 
 go 1.25.5
 

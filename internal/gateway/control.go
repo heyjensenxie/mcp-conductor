@@ -10,11 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/errs"
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/observability"
-	"github.com/xmj128/mcp-conductor/internal/registry"
-	"github.com/xmj128/mcp-conductor/internal/storage"
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/eval"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/observability"
+	"github.com/heyjensenxie/mcp-conductor/internal/registry"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage"
 )
 
 // envelope 是控制面 API 的统一响应结构（PRD：code + message + request_id）。
@@ -59,6 +60,9 @@ type Control struct {
 	// probeNow 由 registerControlRoutes 注入：注册/启用 Server 后触发即时健康
 	// 巡检；nil（如单测直接构造）则不触发，交由周期巡检兜底。
 	probeNow func(serverID string)
+	// eval 由 registerControlRoutes 注入：MCP 评测服务（质量分 + 回归用例）；
+	// nil（如单测直接构造且未注入）表示评测未启用。
+	eval *eval.Service
 }
 
 // NewControl 创建控制面处理器。
@@ -68,7 +72,7 @@ func NewControl(registry *registry.Service, store storage.Store, metrics *observ
 	return &Control{registry: registry, store: store, metrics: metrics, keyHash: keyHash}
 }
 
-// handleListServers 分页列出 Server，支持 q/enabled/health_status 筛选。
+// handleListServers 分页列出 Server（含水合实例），支持 q/enabled/health_status 筛选。
 func (c *Control) handleListServers(w http.ResponseWriter, r *http.Request) {
 	q, err := bindServerQuery(r)
 	if err != nil {
@@ -80,17 +84,26 @@ func (c *Control) handleListServers(w http.ResponseWriter, r *http.Request) {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
-	writeOK(w, RequestIDFrom(r.Context()), pageData[model.Server]{Items: servers, Total: total, Page: q.Page, PageSize: q.PageSize})
+	hydrated := make([]model.Server, 0, len(servers))
+	for i := range servers {
+		h, hErr := c.hydrateServer(r.Context(), servers[i])
+		if hErr != nil {
+			writeGatewayError(w, r, http.StatusInternalServerError, hErr)
+			return
+		}
+		hydrated = append(hydrated, h)
+	}
+	writeOK(w, RequestIDFrom(r.Context()), pageData[model.Server]{Items: hydrated, Total: total, Page: q.Page, PageSize: q.PageSize})
 }
 
-// handleCreateServer 注册 Server 并触发工具发现。
+// handleCreateServer 注册逻辑 Server（含 seed 实例）并触发工具发现。
 func (c *Control) handleCreateServer(w http.ResponseWriter, r *http.Request) {
-	var server model.Server
-	if err := decodeBody(r, &server); err != nil {
+	var in registry.CreateServerInput
+	if err := decodeBody(r, &in); err != nil {
 		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
 		return
 	}
-	created, err := c.registry.CreateServer(r.Context(), &server)
+	created, err := c.registry.CreateServer(r.Context(), in)
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
@@ -99,20 +112,31 @@ func (c *Control) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	if c.probeNow != nil {
 		c.probeNow(created.ID)
 	}
-	writeEnvelope(w, http.StatusCreated, "ok", "success", RequestIDFrom(r.Context()), created)
+	hydrated, err := c.hydrateServer(r.Context(), *created)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	writeEnvelope(w, http.StatusCreated, "ok", "success", RequestIDFrom(r.Context()), hydrated)
 }
 
-// handleGetServer 读取单个 Server。
+// handleGetServer 读取单个逻辑 Server（含实例）。
 func (c *Control) handleGetServer(w http.ResponseWriter, r *http.Request) {
 	server, err := c.registry.GetServer(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
-	writeOK(w, RequestIDFrom(r.Context()), server)
+	hydrated, err := c.hydrateServer(r.Context(), *server)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), hydrated)
 }
 
-// handleUpdateServer 更新 Server 的可编辑字段（name 不可改，见 registry.UpdateServer）。
+// handleUpdateServer 更新 Server 的可编辑字段（name/endpoint/transport 不可改，
+// endpoint/transport 属于实例，见 handleUpdateInstance）。
 func (c *Control) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 	var patch registry.UpdateServerPatch
 	if err := decodeBody(r, &patch); err != nil {
@@ -124,7 +148,12 @@ func (c *Control) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
-	writeOK(w, RequestIDFrom(r.Context()), server)
+	hydrated, err := c.hydrateServer(r.Context(), *server)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), hydrated)
 }
 
 // handleToggleServer 启用/禁用 Server。
@@ -145,7 +174,12 @@ func (c *Control) handleToggleServer(w http.ResponseWriter, r *http.Request) {
 	if *body.Enabled && c.probeNow != nil {
 		c.probeNow(server.ID)
 	}
-	writeOK(w, RequestIDFrom(r.Context()), server)
+	hydrated, err := c.hydrateServer(r.Context(), *server)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), hydrated)
 }
 
 // handleDeleteServer 删除 Server。
@@ -164,6 +198,17 @@ func (c *Control) handleTestServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, RequestIDFrom(r.Context()), map[string]string{"status": "ok"})
+}
+
+// handleServerRediscoverPlan 只读预演重新发现：返回相对当前登记的变更清单，
+// 不落库、不改健康；由前端弹窗展示，人工确认后调用 handleTestServer 真正应用。
+func (c *Control) handleServerRediscoverPlan(w http.ResponseWriter, r *http.Request) {
+	plan, err := c.registry.PlanRediscover(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), plan)
 }
 
 // handleListTools 分页列出全部聚合工具，支持 q/server_id/enabled 筛选

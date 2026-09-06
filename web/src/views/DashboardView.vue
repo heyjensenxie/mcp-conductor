@@ -17,7 +17,7 @@
       <a-col :span="14">
         <section class="mc-panel panel">
           <header class="panel-head mono">{{ t('dashboard.recentCalls') }}</header>
-          <a-table :data-source="logs" :columns="logColumns" :pagination="false" size="small">
+          <a-table :data-source="logs" :columns="logColumns" :pagination="{ pageSize: 10 }" size="small">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'status'">
                 <span class="mc-dot" :class="record.status === 'success' ? 'mc-dot--ok' : 'mc-dot--bad'"></span>
@@ -119,13 +119,13 @@ onMounted(async () => {
   try {
     const [serverList, logRes, metricList, trendRes] = await Promise.all([
       listAllServers(),
-      getLogs({ page_size: 500 }),
+      getLogs({ page_size: 200 }),
       getMetrics(),
       getMetricsTrend('tool', 30),
     ])
-    const logList = logRes.items // 近 500 条（page_size=500 取整页，非分页浏览）
+    const logList = logRes.items // 近 200 条（服务端上限；表格以 10 条/页浏览，不全量渲染）
     servers.value = serverList
-    logs.value = logList.slice(0, 100)
+    logs.value = logList
     metrics.value = metricList
     trendData.value = trendRes.series
 
@@ -151,7 +151,7 @@ onMounted(async () => {
     cards.value[3].value = reqSum
     cards.value[4].value = reqSum ? `${Math.round((okSum / reqSum) * 100)}%` : '-'
 
-    // P95 延迟与流量趋势同源：近 500 条调用日志的 P95（注明口径）。
+    // P95 延迟与流量趋势同源：近 200 条调用日志的 P95（注明口径）。
     if (logList.length) {
       const lat = logList.map((l) => l.latency_ms).sort((a, b) => a - b)
       cards.value[5].value = `${lat[Math.floor(lat.length * 0.95)] ?? 0}ms`

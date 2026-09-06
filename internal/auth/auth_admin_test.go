@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/config"
-	"github.com/xmj128/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/config"
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
 )
 
 // adminService 返回启用管理员账号的认证服务（admin / root-pass-123）。

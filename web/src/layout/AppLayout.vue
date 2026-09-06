@@ -26,11 +26,11 @@
         <a-menu-item key="access">
           <template #icon><SafetyCertificateOutlined /></template>{{ t('menu.access') }}
         </a-menu-item>
-        <a-menu-item key="testing">
-          <template #icon><ExperimentOutlined /></template>{{ t('menu.testing') }}
-        </a-menu-item>
         <a-menu-item key="observability">
           <template #icon><BarChartOutlined /></template>{{ t('menu.observability') }}
+        </a-menu-item>
+        <a-menu-item key="evaluation">
+          <template #icon><AuditOutlined /></template>{{ t('menu.evaluation') }}
         </a-menu-item>
         <a-menu-item key="settings">
           <template #icon><SettingOutlined /></template>{{ t('menu.settings') }}
@@ -76,10 +76,10 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
+  AuditOutlined,
   BarChartOutlined,
   CloudServerOutlined,
   DashboardOutlined,
-  ExperimentOutlined,
   FundOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
@@ -111,14 +111,14 @@ function onLogout() {
 // 菜单高亮：按路径首段推导，使 `/servers/:id` 等子页保持所属菜单选中。
 const selectedKeys = computed(() => {
   const path = route.path
-  for (const key of ['dashboard', 'servers', 'tools', 'routes', 'traffic', 'access', 'testing', 'observability', 'settings']) {
+  for (const key of ['dashboard', 'servers', 'tools', 'routes', 'traffic', 'access', 'observability', 'evaluation', 'settings']) {
     if (path === `/${key}` || path.startsWith(`/${key}/`)) return [key]
   }
   return ['dashboard']
 })
 
 const pageTitle = computed(() => t(`page.${route.meta.titleKey ?? 'dashboard'}`))
-const crumb = computed(() => route.name === 'server-detail' ? t('page.servers') : route.name === 'access-key-detail' ? t('page.access') : '')
+const crumb = computed(() => route.name === 'server-detail' ? t('page.servers') : route.name === 'tool-detail' ? t('page.tools') : route.name === 'access-key-detail' ? t('page.access') : '')
 
 function onMenuClick({ key }: { key: string }) {
   router.push(`/${key}`)

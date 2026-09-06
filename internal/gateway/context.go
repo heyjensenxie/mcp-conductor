@@ -3,7 +3,7 @@ package gateway
 import (
 	"context"
 
-	"github.com/xmj128/mcp-conductor/internal/auth"
+	"github.com/heyjensenxie/mcp-conductor/internal/auth"
 )
 
 // 请求上下文键：跨中间件传递调用主体与请求标识。

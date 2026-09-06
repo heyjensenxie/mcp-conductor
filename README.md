@@ -36,8 +36,10 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | 自动发现 MCP Tools + Tool Namespace | ✅ |
 | 平台工具目录与元数据覆盖 | ✅ 可重命名对外 Tool，维护描述与入参 JSON Schema；重新发现保留人工覆盖并支持恢复上游定义 |
 | 统一 MCP Endpoint（`tools/list` 聚合、`tools/call` 路由） | ✅ streamable HTTP 无状态模式 |
-| 健康检查（initialize 握手 + 周期巡检） | ✅ |
+| 健康检查按实例（initialize 握手 + 周期巡检；Server 级状态由实例聚合） | ✅ |
 | 路由解析 + Round Robin 负载均衡（健康感知） | ✅ |
+| **Server 多实例**：实例 CRUD · 启停 · 单实例测试 · 列表/详情水合 | ✅ |
+| **tools/call 多实例健康感知 Round-Robin 真实生效**（拨测被选实例；故障/停用实例剔除） | ✅ |
 | Tool/Route 管理闭环 + Route 覆盖转发 | ✅ Tool 启停；Route 编辑·启停·删除；启用 Route 命中 `tool_names` 时把该工具调用目标 Server 覆盖为 route 指向的 Server（恒等即原样；目标不可调用返回 `route_error`） |
 | 鉴权（默认开启） | ✅ Console 用管理员账号（`admin`/`admin_password`）登录换会话；/api 接受会话或 `operator_token`；/mcp 数据面用 API Key（HMAC 哈希落库、按 key×工具白名单），与登录分离 |
 | Gateway→上游 Credential 管理（API Key / Static Token） | ✅ 值 AES-256-GCM 加密落库；经 `json:"-"` 不下发 API、不入日志；按 Server 注入上游请求头 |
@@ -47,6 +49,8 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | Traffic 调用筛选 + Observability 双维度 | ✅ 日志按 Server/状态筛选（近 500 条）；指标按 Tool/Server 查看；趋势为真时序分钟桶（近 30 分钟折线） |
 | Vue3 Console（Ant Design Vue + ECharts） | ✅ 构建后嵌入二进制 |
 | MCP Manual Test（Console 内联） | ✅ |
+| MCP 评测：Server 质量分（工具 Schema/描述/命名 + 协议 + 运行时指标）+ 回归用例集 | ✅ 无 LLM；即时计算不落库；现场拨测实例 |
+| 评测报告导出（浏览器打印为 PDF） | ✅ |
 | Docker / Docker Compose / Makefile | ✅ |
 
 **明确不属于 v0.1**：LLM Judge、Python Evaluation Worker、AI Optimization、Traffic Replay、复杂 ABAC、Kafka、ClickHouse、Kubernetes Operator、Service Mesh、微服务拆分。
@@ -185,11 +189,14 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 
 | 方法 / 路径 | 说明 |
 | --- | --- |
-| `GET/POST /api/servers` | 列表 / 注册（注册即发现 Tools） |
-| `GET /api/servers/{id}` | 详情 |
-| `PATCH /api/servers/{id}/toggle` | 启用 / 禁用 |
-| `DELETE /api/servers/{id}` | 删除（级联删 Tools） |
-| `POST /api/servers/{id}/test` | 测试连接并重新发现 Tools |
+| `GET/POST /api/servers` | 列表 / 注册（注册建逻辑 Server + seed 实例并发现 Tools；返回含 `instances`） |
+| `GET /api/servers/{id}` | 详情（含 `instances`） |
+| `PATCH /api/servers/{id}` | 更新逻辑字段（description；name/endpoint/transport 不可改） |
+| `PATCH /api/servers/{id}/toggle` | 启用 / 禁用（禁用即摘除整个 Server） |
+| `DELETE /api/servers/{id}` | 删除（级联删实例/Tools/凭证） |
+| `POST /api/servers/{id}/test` | 测试连接（拨主实例）并重新发现 Tools |
+| `GET/POST /api/servers/{id}/instances` | 实例列表 / 新增实例（endpoint/transport） |
+| `PATCH .../instances/{iid}` · `.../toggle` · `.../test` · `DELETE .../instances/{iid}` | 实例编辑 · 启停 · 单实例测试 · 删除（Server 至少保留一个实例） |
 | `GET /api/servers/{id}/tools` · `.../credentials` | Server 下的 Tools / 凭证 |
 | `GET /api/tools` · `PATCH /api/tools/{id}/toggle` | 聚合工具 / 工具启停 |
 | `PATCH /api/tools/{id}` | 更新工具对外名称、描述、入参 Schema；支持 `reset_name/reset_description/reset_input_schema` 恢复上游定义 |
@@ -197,9 +204,19 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 | `GET /api/metrics` | 指标快照（p50/p95/p99、成功率；`?scope=server` 返回按 Server 聚合） |
 | `GET /api/metrics/trend` | 近 N 分钟真时序（分钟桶，`?scope=tool\|server&minutes=30`） |
 | `GET /api/logs` | 最近调用日志（`?server_id=` 过滤、`?limit=` 上限 500） |
+| `GET /api/evaluations/servers/{id}` | 评测概况（拨测实例/工具数/是否有流量/平台覆盖数） |
+| `POST /api/evaluations/servers/{id}/quality` | 运行 Server 质量评测（现场拨测 initialize+tools/list，叠加运行时指标，即时返回分维度 MCP 分与建议） |
+| `POST /api/evaluations/servers/{id}/suite` | 运行回归用例集（`{"cases":[{name,gateway_tool,arguments,expected_substring}]}`，直连上游判定，即时返回汇总） |
 | `POST /api/auth/login` | 管理员账号登录（`admin` + 密码）换 `mc1.` 会话 |
 | `GET /api/auth/status` | 鉴权是否开启（`auth_required`） |
 | `GET /healthz` · `/readyz` | 存活 / 就绪探针 |
+
+> **破坏性变更（Server 多实例化）**：Server 顶层不再返回 `endpoint/transport`——端点与传输
+> 已下沉到 `instances`（每实例独立 `endpoint/transport/enabled/health_status`），
+> `GET /api/servers` 列表与 `GET /api/servers/{id}` 详情的每行都附带 `instances`
+> 数组（`instances[0]` 为主实例，用于列表展示与默认发现拨测）。注册入参仍为
+> `{name, description, endpoint, transport}`，其中 endpoint/transport 创建该
+> Server 的 seed 实例。
 
 ### 错误码
 
@@ -269,9 +286,9 @@ make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATA
 ## Roadmap
 
 - **v0.1（当前）**：最小闭环 + 运维基础（Registry / 聚合 / 路由 / 治理 / 观测 / Console / Docker）。其中 **MySQL 5.7+ 持久化驱动已先行落地**（`internal/storage/mysql`，实测通过）。
-- **v0.2 候选**：SSE/stdio 上游接入、Route 管理页完善、Server 多实例负载均衡真正生效、观测时间序列（Traffic Replay）、CI 接通（GitHub Actions 目前有意移除，需要时再加）。注：Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）已随 v0.1 落地。
-- **v0.3 候选**：Evaluation 边界（Dataset / TestCase / MCP Score 接口）、协议/Schema/性能测试、CI Quality Gate。
-- **远期**：独立 Python Evaluation Worker、AI 优化建议、Traffic Replay、单逻辑 Server 多实例负载均衡。
+- **v0.2 候选**：SSE/stdio 上游接入、Route 管理页完善、观测时间序列（Traffic Replay）、实例级流量归属（traffic/metrics 记 `instance_id`）、CI 接通（GitHub Actions 目前有意移除，需要时再加）。注：Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）已随 v0.1 落地；Server 多实例 + 健康感知 Round-Robin 已随多实例化落地。
+- **v0.3 候选**：Evaluation 深化（本阶段已落地 Server 质量分 + 回归用例的 MCP Score 雏形，见上表；后续 Dataset/TestCase 落库、对比与 LLM Judge 另行列版）、协议/Schema/性能测试、CI Quality Gate。
+- **远期**：独立 Python Evaluation Worker、AI 优化建议、Traffic Replay、Route 灰度/分组转发。
 
 ## Contributing
 

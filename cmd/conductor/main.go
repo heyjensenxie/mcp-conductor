@@ -11,7 +11,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/xmj128/mcp-conductor/internal/app"
+	"github.com/heyjensenxie/mcp-conductor/internal/app"
 )
 
 func main() {

@@ -18,10 +18,17 @@
     <a-table :data-source="tools" :columns="columns" :loading="loading" :pagination="pagination" @change="onTableChange" :row-key="(r: any) => r.id">
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'gateway_name'">
-          <a-space><a-typography-text code>{{ record.gateway_name }}</a-typography-text><a-tag v-if="record.name_overridden" color="blue">{{ t('tools.customized') }}</a-tag></a-space>
+          <a-space>
+            <router-link :to="`/tools/${record.id}`" class="link"><a-typography-text code>{{ record.gateway_name }}</a-typography-text></router-link>
+            <a-tag v-if="record.name_overridden" color="blue">{{ t('tools.customized') }}</a-tag>
+          </a-space>
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-space><a-button size="small" @click="openEdit(record)">{{ t('common.edit') }}</a-button><a-switch :checked="record.enabled" :loading="toggling === record.id" @change="(checked: boolean) => toggle(record, checked)" /></a-space>
+          <a-space>
+            <a-button size="small" @click="invoke(record)">{{ t('tools.invoke') }}</a-button>
+            <a-button size="small" @click="openEdit(record)">{{ t('common.edit') }}</a-button>
+            <a-switch :checked="record.enabled" :loading="toggling === record.id" @change="(checked: boolean) => toggle(record, checked)" />
+          </a-space>
         </template>
       </template>
     </a-table>
@@ -39,7 +46,7 @@
         <a-button v-if="editing?.description_overridden" type="link" size="small" class="reset" @click="resetDescription = true; form.description = editing?.source_description ?? ''">{{ t('tools.resetSource') }}</a-button>
       </a-form-item>
       <a-form-item :label="t('tools.inputSchema')" :help="t('tools.schemaHint')">
-        <a-textarea v-model:value="form.inputSchema" :rows="12" class="schema" />
+        <InputSchemaEditor ref="schemaEditor" v-model="form.inputSchema" :seed="editSeed" />
         <a-button v-if="editing?.input_schema_overridden" type="link" size="small" class="reset" @click="resetSchemaToSource">{{ t('tools.resetSource') }}</a-button>
       </a-form-item>
     </a-form>
@@ -48,13 +55,16 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { SearchOutlined } from '@ant-design/icons-vue'
 import { listAllServers, listTools, toggleTool, updateTool } from '@/api'
+import InputSchemaEditor from '@/components/InputSchemaEditor.vue'
 import type { MCPServer, Tool } from '@/types'
 
 const { t } = useI18n()
+const router = useRouter()
 const tools = ref<Tool[]>([])
 const servers = ref<MCPServer[]>([])
 const loading = ref(false)
@@ -71,6 +81,9 @@ const toggling = ref('')
 const editVisible = ref(false)
 const saving = ref(false)
 const editing = ref<Tool | null>(null)
+const schemaEditor = ref<InstanceType<typeof InputSchemaEditor> | null>(null)
+// 每次打开弹窗都递增，让编辑器按当前 schema 重新初始化（丢弃上次未保存的编辑态）。
+const editSeed = ref(0)
 const resetName = ref(false)
 const resetDescription = ref(false)
 const resetInputSchema = ref(false)
@@ -144,18 +157,28 @@ function openEdit(tool: Tool) {
   form.description = tool.description ?? ''
   form.inputSchema = JSON.stringify(tool.input_schema ?? {}, null, 2)
   resetName.value = resetDescription.value = resetInputSchema.value = false
+  editSeed.value += 1
   editVisible.value = true
 }
 
 function resetSchemaToSource() {
   resetInputSchema.value = true
   form.inputSchema = JSON.stringify(editing.value?.source_input_schema ?? {}, null, 2)
+  // 即使目标串与当前已提交串相同，也强制编辑器按上游重建，丢弃未提交的编辑态。
+  editSeed.value += 1
 }
 
 async function save() {
   if (!editing.value) return
+  // 由编辑器统一提交：表格模式会校验并重建，JSON 模式做语法校验；非法时返回 null。
+  let schemaText = form.inputSchema
+  if (schemaEditor.value) {
+    const committed = schemaEditor.value.commit()
+    if (committed === null) return
+    schemaText = committed
+  }
   let schema: Record<string, unknown>
-  try { schema = JSON.parse(form.inputSchema) }
+  try { schema = JSON.parse(schemaText) }
   catch { message.warning(t('tools.invalidSchema')); return }
   saving.value = true
   try {
@@ -173,11 +196,16 @@ async function toggle(record: Tool, enabled: boolean) {
   catch (e) { message.error(String(e)) }
   finally { toggling.value = '' }
 }
+
+// 进入工具详情并以对外方式手动调用。
+function invoke(record: Tool) {
+  void router.push(`/tools/${record.id}`)
+}
 </script>
 
 <style scoped>
 .hint { margin-bottom: 16px; }
 .filters { margin-bottom: 12px; }
-.schema { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.reset { padding-left: 0; }
+.reset { padding-left: 0; margin-top: 4px; }
+.link { color: #1677ff; }
 </style>

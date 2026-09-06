@@ -8,7 +8,7 @@ import (
 	"errors"
 	"sync/atomic"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
 )
 
 // ErrNoAvailable 表示候选实例中无可用（健康/启用）节点。

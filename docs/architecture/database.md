@@ -32,7 +32,8 @@
 
 ## 目录
 
-- 迁移文件：`migrations/`（`.sql`，5.7 可执行）
+- 迁移文件：`migrations/`（`.sql`，5.7 可执行，按文件名序应用）
+- 全量结构快照：`database/schema.sql`（= migrations/0001..0008 合并的最终建表，表与字段均带注释，供结构参考与全新库初始化）。**Schema 变更先落 `migrations/` 增量迁移，再同步该快照，两者必须一致；已有库升级禁止直接执行快照。**
 - MySQL 驱动：`internal/storage/mysql`（已实现，满足 `storage.Store`；DSN 须含 `parseTime=true&loc=UTC&charset=utf8mb4`）
 - 集成测试：`MYSQL_TEST_DSN='...' go test ./internal/storage/mysql/ -v`（未设 DSN 自动跳过；须在真实 MySQL 5.7 上执行迁移后运行）
 - 应用迁移（开发环境，连宿主机 MySQL）：迁移文件为可重复执行的 DDL（幂等），执行器不做版本记录表：
@@ -41,6 +42,16 @@
     go run ./cmd/migrate     # 等价 make db-migrate
   ```
   `cmd/migrate` 按文件名序执行 `migrations/*.sql` 并自动补 `multiStatements=true`。
+
+## server_instances（0008 起）
+
+Server 多实例化后，具体上游端点与健康由 `server_instances` 承载；`servers` 表降级为逻辑实体：
+
+- `servers`：`id/name/description/enabled/health_status/created_at/updated_at`。`endpoint/transport/version` 列自 0008 起改为可空且**应用不再读写**（0008 回填后留作安全降级与观测留档，单一事实源是 `server_instances`）。
+- `server_instances`：`id/server_id/endpoint/transport/enabled/health_status/created_at/updated_at`；`server_id` 外键 `ON DELETE CASCADE` 关联 `servers(id)`。字符串 id（新建用 `inst-` 前缀；0008 回填复用 server id），`enabled` 为实例级启停，`health_status ∈ {unknown,healthy,unhealthy}`。
+- 实例列表稳定序：`ORDER BY created_at, id`（首条即"主实例"，用于列表展示与默认发现拨测）。
+- Server 删除级联删除实例（MySQL 外键）；`registry`/memory 侧显式 `DeleteInstancesByServer` 对齐。
+- MySQL 集成测试运行前需已应用 0001..0008（`make db-migrate`）。
 
 ## 上线检查清单（涉及 SQL 的改动合入前）
 

@@ -59,7 +59,7 @@ Request
 
 ## 3. 数据模型与命名空间
 
-- **Server ≠ Instance**：模型预留未来"一个逻辑 Server 对多个实例"，当前 endpoint 单实例承载。
+- **Server ≠ Instance（已落地）**：一个逻辑 Server 对应多个上游实例（`server_instances` 表，各自携带 `endpoint/transport/enabled/health`）。逻辑 Server 只承载 name/description/enabled 与聚合 `health_status`（由实例集合推导），对外 API 顶层不再返回 endpoint/transport，而在每条 Server 上附带 `instances[]`（控制面水合）。工具注册表与凭证仍归属逻辑 Server；工具发现与健康探测作用于具体实例，`tools/call` 在实例间做**健康感知 Round-Robin**（`instances[0]` 即最早创建的主实例，用于列表展示与默认发现拨测）。
 - **Tool 对外名**：`gateway_name = <server_namespace>.<original_name>`（如 `university.search_policy`），从根本上规避多 Server 聚合的 Tool Name Collision。
 - **Route 覆盖转发**：启用的 Route 其 `tool_names` 命中某 gateway 工具时，解析器把该工具调用目标 Server 覆盖为 `route.server_id`（恒等即原样；目标不可调用返回 `route_error`，不回退）；`tools/list` 聚合与授权语义不变。
 - **Credential 安全**：区分 Client→Gateway 与 Gateway→Upstream；敏感值经 AES-256-GCM 加密落库、不返回前端、不入日志，调用时按 Server 解密注入上游请求头（见 database.md）。
@@ -72,4 +72,4 @@ Request
 
 ## 5. 明确不在 v0.1
 
-LLM Judge、Python Evaluation Worker、AI Optimization、Traffic Replay、复杂 ABAC、审批流、Kafka、ClickHouse、Kubernetes Operator、Service Mesh、微服务拆分。评估（Evaluation）仅保留领域边界。
+LLM Judge、Python Evaluation Worker、AI Optimization、Traffic Replay、复杂 ABAC、审批流、Kafka、ClickHouse、Kubernetes Operator、Service Mesh、微服务拆分。评估（Evaluation）已有「Server 质量分 + 回归用例集」的即时实现（见 `internal/eval`，无 LLM/不落库）；LLM Judge、Dataset/TestCase 落库与历史对比另行列版。

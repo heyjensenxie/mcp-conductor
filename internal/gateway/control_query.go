@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/xmj128/mcp-conductor/internal/storage/query"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/query"
 )
 
 // control_query.go —— 各列表资源的 HTTP 查询参数绑定。
@@ -124,12 +124,20 @@ func bindCredentialQuery(r *http.Request) (query.CredentialQuery, error) {
 	return out, nil
 }
 
+// trafficLogMaxPage 是调用日志单次可取的最大条数。traffic_log 属高增长流水表，
+// 禁止 page_size<=0 的"全量模式"（避免高并发下整表返回拖垮管理面）；
+// 缺省/超限一律收敛为该上限，按最近记录返回。
+const trafficLogMaxPage = 200
+
 // bindTrafficQuery 绑定调用日志列表查询。
 func bindTrafficQuery(r *http.Request) (query.TrafficQuery, error) {
 	v := r.URL.Query()
 	page, pageSize, err := parsePageParams(v)
 	if err != nil {
 		return query.TrafficQuery{}, err
+	}
+	if pageSize <= 0 || pageSize > trafficLogMaxPage {
+		pageSize = trafficLogMaxPage
 	}
 	out := query.TrafficQuery{
 		Paging:   query.Paging{Page: page, PageSize: pageSize},

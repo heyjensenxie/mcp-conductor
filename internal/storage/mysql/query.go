@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
-	"github.com/xmj128/mcp-conductor/internal/storage/query"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/query"
 )
 
 // ---- 管理面列表查询（MySQL 5.7 实现）----
@@ -18,7 +18,8 @@ import (
 // 排序固定：servers/routes/credentials/access_keys 按 id、tools 按 gateway_name、
 // traffic 按 id 倒序（id 单调，倒序即写入倒序）。
 
-const serverColumns = `id, name, COALESCE(description,''), endpoint, transport, COALESCE(version,''), enabled, health_status, created_at, updated_at`
+// serverColumns 只投影逻辑列；Endpoint/Transport 属于 server_instances，见 instances.go。
+const serverColumns = `id, name, COALESCE(description,''), enabled, health_status, created_at, updated_at`
 
 // escapeLike 转义 MySQL LIKE 元字符（\ % _），保证关键词按字面匹配。
 func escapeLike(s string) string {
@@ -99,8 +100,8 @@ func (s *Store) QueryServers(ctx context.Context, q query.ServerQuery) ([]model.
 	out := make([]model.Server, 0)
 	for rows.Next() {
 		var server model.Server
-		if err := rows.Scan(&server.ID, &server.Name, &server.Description, &server.Endpoint, &server.Transport,
-			&server.Version, &server.Enabled, &server.HealthStatus, &server.CreatedAt, &server.UpdatedAt); err != nil {
+		if err := rows.Scan(&server.ID, &server.Name, &server.Description,
+			&server.Enabled, &server.HealthStatus, &server.CreatedAt, &server.UpdatedAt); err != nil {
 			return nil, 0, fmt.Errorf("scan server: %w", err)
 		}
 		out = append(out, server)

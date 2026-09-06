@@ -5,14 +5,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xmj128/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
 )
 
 func TestCredentialValueKeptInMemory(t *testing.T) {
 	store := New()
 	ctx := context.Background()
 
-	server := &model.Server{Name: "S", Endpoint: "http://x", Enabled: true}
+	server := &model.Server{Name: "S", Enabled: true}
 	if err := store.CreateServer(ctx, server); err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestCredentialValueKeptInMemory(t *testing.T) {
 func TestCredentialLifecycleMemory(t *testing.T) {
 	store := New()
 	ctx := context.Background()
-	server := &model.Server{Name: "S", Endpoint: "http://x", Enabled: true}
+	server := &model.Server{Name: "S", Enabled: true}
 	if err := store.CreateServer(ctx, server); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestCredentialLifecycleMemory(t *testing.T) {
 func TestDeleteServerCascadesCredentialsMemory(t *testing.T) {
 	store := New()
 	ctx := context.Background()
-	server := &model.Server{Name: "S", Endpoint: "http://x", Enabled: true}
+	server := &model.Server{Name: "S", Enabled: true}
 	if err := store.CreateServer(ctx, server); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestToolSetEnabledMemory(t *testing.T) {
 func TestRouteLifecycleMemory(t *testing.T) {
 	store := New()
 	ctx := context.Background()
-	server := &model.Server{Name: "S", Endpoint: "http://x", Enabled: true}
+	server := &model.Server{Name: "S", Enabled: true}
 	if err := store.CreateServer(ctx, server); err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestRouteLifecycleMemory(t *testing.T) {
 func TestDeleteServerCascadesRoutesMemory(t *testing.T) {
 	store := New()
 	ctx := context.Background()
-	server := &model.Server{Name: "S", Endpoint: "http://x", Enabled: true}
+	server := &model.Server{Name: "S", Enabled: true}
 	if err := store.CreateServer(ctx, server); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestToolUpsertKeepsID(t *testing.T) {
 	store := New()
 	ctx := context.Background()
 
-	server := &model.Server{Name: "U", Endpoint: "http://x", Enabled: true}
+	server := &model.Server{Name: "U", Enabled: true}
 	_ = store.CreateServer(ctx, server)
 
 	tool := &model.Tool{ServerID: server.ID, OriginalName: "search", GatewayName: "u.search", Enabled: true}
@@ -349,5 +349,133 @@ func TestAccessKeySecretNotPersisted(t *testing.T) {
 	again, err := store.GetAccessKey(ctx, key.ID)
 	if err != nil || again.Secret != "" {
 		t.Fatalf("更新后仍不应含明文 Secret: %v / %+v", err, again)
+	}
+}
+
+// TestInstanceCRUDMemory 验证实例 创建/读取/更新/删除 与重复删除报错。
+func TestInstanceCRUDMemory(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	inst := &model.Instance{
+		ServerID:     "srv-1",
+		Endpoint:     "http://a:9000/mcp",
+		Transport:    model.TransportStreamableHTTP,
+		Enabled:      true,
+		HealthStatus: model.ServerStatusUnknown,
+	}
+	if err := store.CreateInstance(ctx, inst); err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	if inst.ID == "" {
+		t.Fatalf("CreateInstance 应生成 id: %+v", inst)
+	}
+
+	got, err := store.GetInstance(ctx, inst.ID)
+	if err != nil || got.Endpoint != "http://a:9000/mcp" || !got.Enabled || got.HealthStatus != model.ServerStatusUnknown {
+		t.Fatalf("GetInstance 回读不一致: %+v / %v", got, err)
+	}
+
+	// 更新：改 endpoint/健康。
+	upd := *got
+	upd.Endpoint = "http://b:9000/mcp"
+	upd.HealthStatus = model.ServerStatusHealthy
+	if err := store.UpdateInstance(ctx, &upd); err != nil {
+		t.Fatalf("UpdateInstance: %v", err)
+	}
+	got, _ = store.GetInstance(ctx, inst.ID)
+	if got.Endpoint != "http://b:9000/mcp" || got.HealthStatus != model.ServerStatusHealthy {
+		t.Fatalf("更新后回读不一致: %+v", got)
+	}
+
+	// 删除 + 重复删除报错。
+	if err := store.DeleteInstance(ctx, inst.ID); err != nil {
+		t.Fatalf("DeleteInstance: %v", err)
+	}
+	if _, err := store.GetInstance(ctx, inst.ID); err == nil {
+		t.Fatal("删除后 GetInstance 应报错")
+	}
+	if err := store.DeleteInstance(ctx, inst.ID); err == nil {
+		t.Fatal("重复删除应报错")
+	}
+}
+
+// TestListInstancesByServerOrderingMemory 验证实例列表按 (created_at, id) 稳定升序，
+// 首条即"主实例"。
+func TestListInstancesByServerOrderingMemory(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	base := time.Now().UTC()
+	// 构造 4 条（含一条他 Server 的），用显式 id 控制同 created_at 时的次级排序：
+	// 先按 created_at 升序，同 created_at 再按 id 升序。
+	seed := []model.Instance{
+		{ID: "i-1", ServerID: "srv-1", Endpoint: "http://late-1", CreatedAt: base.Add(2 * time.Hour)},
+		{ID: "i-2", ServerID: "srv-1", Endpoint: "http://early-1", CreatedAt: base},
+		{ID: "i-3", ServerID: "srv-1", Endpoint: "http://early-2", CreatedAt: base},
+		{ID: "i-4", ServerID: "srv-2", Endpoint: "http://other", CreatedAt: base.Add(-time.Hour)},
+	}
+	for i := range seed {
+		if err := store.CreateInstance(ctx, &seed[i]); err != nil {
+			t.Fatalf("CreateInstance: %v", err)
+		}
+	}
+	instances, err := store.ListInstancesByServer(ctx, "srv-1")
+	if err != nil {
+		t.Fatalf("ListInstancesByServer: %v", err)
+	}
+	if len(instances) != 3 {
+		t.Fatalf("应返回 3 条实例，得到 %d", len(instances))
+	}
+	// 期望顺序：early-1（同 created_at，id 更小）→ early-2 → late-1。
+	want := []string{"http://early-1", "http://early-2", "http://late-1"}
+	for i, w := range want {
+		if instances[i].Endpoint != w {
+			t.Fatalf("排序异常: 第 %d 条应为 %q，得到 %+v", i, w, instances)
+		}
+	}
+	if instances[0].Endpoint != "http://early-1" {
+		t.Fatalf("主实例应为首条 early-1，得到 %+v", instances[0])
+	}
+}
+
+// TestDeleteInstancesByServerMemory 验证整组删除指定 Server 的实例。
+func TestDeleteInstancesByServerMemory(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	for _, sid := range []string{"srv-1", "srv-2"} {
+		for _, ep := range []string{"http://a", "http://b"} {
+			if err := store.CreateInstance(ctx, &model.Instance{ServerID: sid, Endpoint: ep}); err != nil {
+				t.Fatalf("CreateInstance: %v", err)
+			}
+		}
+	}
+	if err := store.DeleteInstancesByServer(ctx, "srv-1"); err != nil {
+		t.Fatalf("DeleteInstancesByServer: %v", err)
+	}
+	if insts, _ := store.ListInstancesByServer(ctx, "srv-1"); len(insts) != 0 {
+		t.Fatalf("srv-1 实例应清空，得到 %d", len(insts))
+	}
+	if insts, _ := store.ListInstancesByServer(ctx, "srv-2"); len(insts) != 2 {
+		t.Fatalf("srv-2 实例应保留 2 条，得到 %d", len(insts))
+	}
+}
+
+// TestDeleteServerCascadesInstancesMemory 验证删除 Server 会级联删除其实例。
+func TestDeleteServerCascadesInstancesMemory(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	server := &model.Server{Name: "S", Enabled: true}
+	if err := store.CreateServer(ctx, server); err != nil {
+		t.Fatal(err)
+	}
+	for _, ep := range []string{"http://a:9000/mcp", "http://b:9000/mcp"} {
+		if err := store.CreateInstance(ctx, &model.Instance{ServerID: server.ID, Endpoint: ep}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.DeleteServer(ctx, server.ID); err != nil {
+		t.Fatalf("DeleteServer: %v", err)
+	}
+	if insts, _ := store.ListInstancesByServer(ctx, server.ID); len(insts) != 0 {
+		t.Fatalf("删除 Server 后其实例应被级联清理，得到 %d", len(insts))
 	}
 }
