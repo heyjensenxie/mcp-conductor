@@ -142,9 +142,9 @@
               <a-radio-button value="success">{{ t('dashboard.trendSuccess') }}</a-radio-button>
               <a-radio-button value="latency">{{ t('dashboard.trendLatency') }}</a-radio-button>
             </a-radio-group>
-            <a-select v-model:value="windowMinutes" size="small" style="width: 124px" :options="windowOptions" />
+            <a-select v-model:value="windowMinutes" size="small" style="width: 124px" :options="windowOptions" @change="onWindowPick" />
             <a-tooltip :title="t('dashboard.reloadTrend')">
-              <a-button size="small" type="text" :loading="windowLoading" @click="loadWindow">
+              <a-button size="small" type="text" :loading="windowLoading" @click="loadWindow()">
                 <template #icon><ReloadOutlined /></template>
               </a-button>
             </a-tooltip>
@@ -330,6 +330,9 @@ const EXC_TONE: Record<LogCat, 'bad' | 'warn'> = {
   unavailable: 'warn',
 }
 
+// 时间范围档位（分钟）：趋势可选的窗口，也是 auto-fit 自动放宽的候选档位。
+const FIT_WINDOWS = [30, 60, 360, 1440]
+
 const { t } = useI18n()
 const router = useRouter()
 
@@ -350,7 +353,7 @@ const loadError = ref('')
 const lastCheck = ref(0)
 const nowTick = ref(Date.now())
 let suspendWindow = false // auto-fit 期间抑制 window watcher 重复请求
-let fitted = false
+let autoFit = true // 默认自动：当前窗口无调用时放宽到能覆盖最近一次调用的档位；用户手动选过时间范围后停用
 let pollTimer: number | undefined
 let tickTimer: number | undefined
 
@@ -589,12 +592,19 @@ const serverRows = computed(() =>
 )
 
 // ---------- 调用趋势（分模式） ----------
-const windowOptions = computed(() => [
-  { value: 30, label: t('observability.window30m') },
-  { value: 60, label: t('observability.window1h') },
-  { value: 360, label: t('observability.window6h') },
-  { value: 1440, label: t('observability.window1d') },
-])
+const windowOptions = computed(() =>
+  FIT_WINDOWS.map((v) => ({
+    value: v,
+    label:
+      v === 30
+        ? t('observability.window30m')
+        : v === 60
+          ? t('observability.window1h')
+          : v === 360
+            ? t('observability.window6h')
+            : t('observability.window1d'),
+  })),
+)
 
 function bucketLatency(list: TrafficSample[]): { ts: number; avg: number; p95: number | null }[] {
   const byMin = new Map<number, number[]>()
@@ -614,6 +624,12 @@ function bucketLatency(list: TrafficSample[]): { ts: number; avg: number; p95: n
       return { ts: ts * 60000, avg, p95: sorted.length >= 3 ? Math.round(percentile(sorted, 0.95)!) : null }
     })
 }
+
+// 延迟分桶随窗口日志变更统一刷新（不依赖当前 mode），避免切到「延迟」页时才补算，
+// 导致先用上一窗口的旧值渲染一帧造成“数据变了”的观感。
+watch(logs, () => {
+  latencyPoints.value = bucketLatency(logs.value)
+})
 
 const activeTrend = computed<{ categories: string[]; series: TrendSeries[]; unit: string; yMin: number; yMax?: number } | null>(() => {
   if (mode.value === 'latency') {
@@ -742,8 +758,9 @@ async function loadSummary() {
   toolCount.value = counts
 }
 
-async function loadWindow() {
-  const minutes = windowMinutes.value
+async function loadWindow(minutes = windowMinutes.value) {
+  // 窗口先落位：手动选窗 / auto-fit 都会带新档位进来，期间 watcher 由 suspendWindow 抑制防重入。
+  if (windowMinutes.value !== minutes) windowMinutes.value = minutes
   windowLoading.value = true
   try {
     const from = new Date(Date.now() - minutes * 60000).toISOString()
@@ -752,9 +769,6 @@ async function loadWindow() {
     trendPoints.value = trendRes.series
     // Recent Calls / 顶部卡片 / Server 健康 / 异常概览统一基于窗口内日志样本。
     logs.value = logRes.items
-    if (mode.value === 'latency') {
-      latencyPoints.value = bucketLatency(logRes.items)
-    }
   } catch (e) {
     loadError.value = String(e)
   } finally {
@@ -762,11 +776,45 @@ async function loadWindow() {
   }
 }
 
+// 自动放宽：当前窗口近期无调用、但更早确有调用时，逐级放大到能覆盖最近一次调用的
+// 档位，避免“调用趋势 / 成功率 / 延迟”长时间空白（首屏与后续轮询都会评估）。
+// 用户手动选过时间范围（autoFit=false）或本档加载出错时不干预；候选档全无数据
+// （全新系统 / 全部老化超出 24h）则回到 30 分钟默认档，保留空态提示而非定格放大档。
+async function fitWindowIfEmpty() {
+  if (!autoFit || suspendWindow || loadError.value) return
+  const hasData = () => trendPoints.value.some((p) => p.totals > 0)
+  if (hasData()) return
+  for (const mins of FIT_WINDOWS) {
+    if (mins <= windowMinutes.value) continue // 只放大，不回缩到更小档
+    suspendWindow = true
+    try {
+      await loadWindow(mins)
+    } finally {
+      suspendWindow = false
+    }
+    if (hasData() || loadError.value) return
+  }
+  if (windowMinutes.value !== FIT_WINDOWS[0]) {
+    suspendWindow = true
+    try {
+      await loadWindow(FIT_WINDOWS[0])
+    } finally {
+      suspendWindow = false
+    }
+  }
+}
+
+function onWindowPick() {
+  // 用户主动选时间范围 → 关闭自动放宽，尊重其选择（此后窗口只随手动/刷新变化）。
+  autoFit = false
+}
+
 async function refreshAll() {
   if (refreshing.value) return
   refreshing.value = true
   try {
     await Promise.all([loadSummary(), loadWindow()])
+    await fitWindowIfEmpty()
     loadError.value = ''
   } catch (e) {
     loadError.value = String(e)
@@ -780,19 +828,6 @@ async function boot() {
   await refreshAll()
   booted.value = true
   lastCheck.value = Date.now()
-  // 数据在默认窗口（30 分钟）之外但系统确有调用时，自动放宽到能覆盖它的档位，
-  // 避免首屏趋势显示为“无数据”而下方列表却有调用。
-  if (!fitted && !trendPoints.value.some((p) => p.totals > 0)) {
-    suspendWindow = true
-    for (const mins of [60, 360, 1440]) {
-      windowMinutes.value = mins
-      await loadWindow()
-      if (trendPoints.value.some((p) => p.totals > 0)) break
-    }
-    suspendWindow = false
-    fitted = true
-  }
-  fitted = true
   schedulePoll()
 }
 

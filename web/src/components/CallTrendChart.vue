@@ -41,58 +41,70 @@ function render() {
   const unit = props.unit ? ` ${props.unit}` : ''
   const yMin = props.yMin
   const yMax = props.yMax
-  chart.setOption({
-    animationDuration: 220,
-    grid: { left: 8, right: 14, top: 22, bottom: 6, containLabel: true },
-    tooltip: {
-      trigger: 'axis',
-      confine: true,
-      axisPointer: { type: 'line', lineStyle: { color: 'rgba(13,21,32,0.18)', type: 'dashed' } },
-      backgroundColor: 'rgba(255,255,255,0.96)',
-      borderColor: '#dbe1ea',
-      textStyle: { color: '#0d1520', fontSize: 12 },
-      // 空位（null）显示为破折号，避免把断点误读成 0。
-      formatter: (params: any[]) => {
-        if (!params || !params.length) return ''
-        const head = `<div style="font-weight:600;margin-bottom:4px;color:#55606e">${params[0].axisValue}</div>`
-        const rows = params
-          .map((p) => {
-            const v = p.value === null || p.value === undefined ? '—' : `${p.value}${unit}`
-            return `<div style="display:flex;align-items:center;gap:6px;line-height:1.7"><span style="display:inline-block;width:8px;height:2px;border-radius:1px;background:${p.color}"></span><span style="color:#55606e">${p.seriesName}</span><span style="margin-left:auto;font-variant-numeric:tabular-nums;font-weight:600">${v}</span></div>`
-          })
-          .join('')
-        return head + rows
-      },
-    },
-    xAxis: {
-      type: 'category',
-      data: props.categories,
-      boundaryGap: false,
-      axisTick: { show: false },
-      axisLine: { lineStyle: { color: '#dbe1ea' } },
-      axisLabel: { color: '#8a94a3', fontSize: 10.5, margin: 8 },
-    },
-    yAxis: {
-      type: 'value',
-      ...(yMin === undefined ? {} : { min: yMin }),
-      ...(yMax === undefined ? {} : { max: yMax }),
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: { color: '#8a94a3', fontSize: 10.5 },
-      splitLine: { lineStyle: { color: 'rgba(13,21,32,0.06)', type: 'dashed' } },
-    },
-    series: props.series.map((s) => ({
+  const total = props.categories.length
+  const seriesOpt = props.series.map((s) => {
+    // 稀疏数据（如放宽窗口后整段只有个别分钟有调用）用折线 + null 断点会画不出
+    // 孤立点：非空点占比低于阈值时补圆点，保证“有点可看”，密集时仍走纯净折线。
+    const nonNull: number = s.data.reduce((n: number, v) => n + (v === null || v === undefined ? 0 : 1), 0)
+    const sparse = nonNull > 0 && nonNull <= Math.max(2, Math.round(total * 0.2))
+    return {
       name: s.name,
       type: 'line',
       smooth: true,
-      symbol: 'none',
       connectNulls: false,
       data: s.data,
+      symbol: sparse ? 'circle' : 'none',
+      symbolSize: sparse ? 5 : 0,
       lineStyle: { width: 2, color: s.color, type: s.dashed ? 'dashed' : 'solid' },
       itemStyle: { color: s.color },
       emphasis: { lineStyle: { width: 2.6 } },
-    })),
+    }
   })
+  chart.setOption(
+    {
+      animationDuration: 220,
+      grid: { left: 8, right: 14, top: 22, bottom: 6, containLabel: true },
+      tooltip: {
+        trigger: 'axis',
+        confine: true,
+        axisPointer: { type: 'line', lineStyle: { color: 'rgba(13,21,32,0.18)', type: 'dashed' } },
+        backgroundColor: 'rgba(255,255,255,0.96)',
+        borderColor: '#dbe1ea',
+        textStyle: { color: '#0d1520', fontSize: 12 },
+        // 空位（null）显示为破折号，避免把断点误读成 0。
+        formatter: (params: any[]) => {
+          if (!params || !params.length) return ''
+          const head = `<div style="font-weight:600;margin-bottom:4px;color:#55606e">${params[0].axisValue}</div>`
+          const rows = params
+            .map((p) => {
+              const v = p.value === null || p.value === undefined ? '—' : `${p.value}${unit}`
+              return `<div style="display:flex;align-items:center;gap:6px;line-height:1.7"><span style="display:inline-block;width:8px;height:2px;border-radius:1px;background:${p.color}"></span><span style="color:#55606e">${p.seriesName}</span><span style="margin-left:auto;font-variant-numeric:tabular-nums;font-weight:600">${v}</span></div>`
+            })
+            .join('')
+          return head + rows
+        },
+      },
+      xAxis: {
+        type: 'category',
+        data: props.categories,
+        boundaryGap: false,
+        axisTick: { show: false },
+        axisLine: { lineStyle: { color: '#dbe1ea' } },
+        axisLabel: { color: '#8a94a3', fontSize: 10.5, margin: 8 },
+      },
+      yAxis: {
+        type: 'value',
+        ...(yMin === undefined ? {} : { min: yMin }),
+        ...(yMax === undefined ? {} : { max: yMax }),
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: { color: '#8a94a3', fontSize: 10.5 },
+        splitLine: { lineStyle: { color: 'rgba(13,21,32,0.06)', type: 'dashed' } },
+      },
+      series: seriesOpt,
+    },
+    { notMerge: true }, // 整体替换，避免不同系列数之间切换时残留旧 series（延迟 avg+p95 → 成功率等）
+  )
 }
 
 function onResize() {
