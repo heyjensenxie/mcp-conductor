@@ -123,8 +123,9 @@ func TestControlLogsFilter(t *testing.T) {
 	ctrl := NewControl(nil, store, nil, nil)
 	now := time.Now().UTC().Truncate(time.Second)
 	samples := []model.TrafficSample{
-		{RequestID: "req-1", ServerID: "s1", Tool: "svc.search", Client: "c1", Status: "success", Timestamp: now.Add(-2 * time.Minute)},
-		{RequestID: "req-2", ServerID: "s2", Tool: "svc.search", Client: "c1", Status: "upstream_error", Timestamp: now.Add(-4 * time.Minute)},
+		{RequestID: "req-1", ServerID: "s1", InstanceID: "i1", Tool: "svc.search", Client: "c1", Status: "success", Timestamp: now.Add(-2 * time.Minute)},
+		{RequestID: "req-2", ServerID: "s2", InstanceID: "i2", Tool: "svc.search", Client: "c1", Status: "upstream_error", Timestamp: now.Add(-4 * time.Minute)},
+		{RequestID: "req-3", ServerID: "s1", InstanceID: "i2", Tool: "svc.detail", Client: "c1", Status: "success", Timestamp: now.Add(-5 * time.Minute)},
 	}
 	for _, sample := range samples {
 		if err := store.AppendTraffic(context.Background(), sample); err != nil {
@@ -139,8 +140,15 @@ func TestControlLogsFilter(t *testing.T) {
 		Items []model.TrafficSample `json:"items"`
 		Total int                   `json:"total"`
 	}
-	if err := json.Unmarshal(decodeEnvelope(t, rec).Data, &logs); err != nil || len(logs.Items) != 1 || logs.Items[0].RequestID != "req-1" || logs.Total != 1 {
+	if err := json.Unmarshal(decodeEnvelope(t, rec).Data, &logs); err != nil || len(logs.Items) != 1 || logs.Items[0].RequestID != "req-1" || logs.Items[0].InstanceID != "i1" || logs.Total != 1 {
 		t.Fatalf("logs 筛选异常: %+v err=%v", logs, err)
+	}
+
+	// 实例级筛选：server_id + instance_id 收敛到该 Server 的指定实例。
+	rec = httptest.NewRecorder()
+	ctrl.handleLogs(rec, httptest.NewRequest(http.MethodGet, "/api/logs?server_id=s1&instance_id=i2", nil))
+	if err := json.Unmarshal(decodeEnvelope(t, rec).Data, &logs); err != nil || len(logs.Items) != 1 || logs.Items[0].RequestID != "req-3" || logs.Total != 1 {
+		t.Fatalf("instance 筛选异常: %+v err=%v", logs, err)
 	}
 }
 

@@ -1,5 +1,5 @@
 -- =============================================================================
--- MCP Conductor 数据库全量建表语句（最终形态 = migrations/0001..0008 合并结果）
+-- MCP Conductor 数据库全量建表语句（最终形态 = migrations/0001..0009 合并结果）
 -- =============================================================================
 -- 用途：
 --   1) 结构参考：一眼看全各表/字段含义（字段与表均带 COMMENT）；
@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS traffic_log (
   request_id VARCHAR(64)     NOT NULL COMMENT '本次调用的请求/事务标识',
   trace_id   VARCHAR(64)     NULL    COMMENT '分布式追踪 id（可选）',
   server_id  VARCHAR(64)     NULL    COMMENT '命中的逻辑 Server（可为空）',
+  instance_id VARCHAR(64)    NULL    COMMENT '命中的上游实例（可为空；多实例 Server 归属用）',
   tool       VARCHAR(255)    NOT NULL COMMENT '被调用工具（对外名）',
   client     VARCHAR(255)    NULL    COMMENT '调用方标识（如 API Key subject）',
   status     VARCHAR(32)     NOT NULL COMMENT 'success 或错误码',
@@ -132,7 +133,8 @@ CREATE TABLE IF NOT EXISTS traffic_log (
   PRIMARY KEY (id),
   KEY idx_traffic_ts (ts),
   KEY idx_traffic_tool (tool),
-  KEY idx_traffic_server_id_id (server_id, id)
+  KEY idx_traffic_server_id_id (server_id, id),
+  KEY idx_traffic_server_instance_id (server_id, instance_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='调用流水日志（只保留必要观测字段）';
 
 -- -----------------------------------------------------------------------------

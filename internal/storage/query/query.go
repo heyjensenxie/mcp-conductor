@@ -75,6 +75,9 @@ type TrafficQuery struct {
 	Q string
 	// ServerID 为空表示不过滤。注意流量行 server_id 可空，等值过滤不命中空行。
 	ServerID string
+	// InstanceID 为空表示不过滤；非空等值过滤命中的实例（配合 ServerID，
+	// 定位多实例 Server 中的单个实例流量）。
+	InstanceID string
 	// Status 为空表示不过滤；否则取 "success" 或 errs.Code 字符串。
 	Status string
 	// From / To 为闭区间时间过滤（对写入时间 ts），零值表示对应端不设界。

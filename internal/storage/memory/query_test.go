@@ -214,9 +214,9 @@ func TestQueryTraffic_filterTimeAndPage(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	samples := []model.TrafficSample{
-		{RequestID: "req-1", ServerID: "s1", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: base.Add(1 * time.Minute)},
-		{RequestID: "req-2", ServerID: "s2", Tool: "beta.search", Client: "c2", Status: "upstream_error", Timestamp: base.Add(2 * time.Minute)},
-		{RequestID: "req-3", ServerID: "s1", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: base.Add(3 * time.Minute)},
+		{RequestID: "req-1", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: base.Add(1 * time.Minute)},
+		{RequestID: "req-2", ServerID: "s2", InstanceID: "i2", Tool: "beta.search", Client: "c2", Status: "upstream_error", Timestamp: base.Add(2 * time.Minute)},
+		{RequestID: "req-3", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: base.Add(3 * time.Minute)},
 	}
 	for _, sample := range samples {
 		if err := st.AppendTraffic(ctx, sample); err != nil {
@@ -237,6 +237,12 @@ func TestQueryTraffic_filterTimeAndPage(t *testing.T) {
 	got, total, _ = st.QueryTraffic(ctx, query.TrafficQuery{ServerID: "s1", Status: "success"})
 	if len(got) != 2 || total != 2 {
 		t.Fatalf("server+status 过滤异常: %d / total=%d", len(got), total)
+	}
+
+	// server + instance 组合：命中 s1 的 i1 两条（s2/i2 与 i1 均排除）。
+	got, total, _ = st.QueryTraffic(ctx, query.TrafficQuery{ServerID: "s1", InstanceID: "i1"})
+	if len(got) != 2 || total != 2 {
+		t.Fatalf("server+instance 过滤异常: %d / total=%d", len(got), total)
 	}
 
 	// 关键词命中 request_id。

@@ -63,6 +63,9 @@ type Control struct {
 	// eval 由 registerControlRoutes 注入：MCP 评测服务（质量分 + 回归用例）；
 	// nil（如单测直接构造且未注入）表示评测未启用。
 	eval *eval.Service
+	// keyCall 由 registerControlRoutes 注入：控制面「以某 API Key 身份试调用」
+	// 能力（*MCPGateway 满足）；nil 表示未装配（handleKeyInvoke 返回 500）。
+	keyCall KeyCallService
 }
 
 // NewControl 创建控制面处理器。
@@ -745,16 +748,30 @@ func randomHex(n int) string {
 }
 
 // handleMetrics 返回调用指标快照。
-// handleMetrics 返回指标快照。默认不含按 Server 聚合的行（server: 前缀，避免
-// 污染工具维语义）；?scope=server 时只返回 Server 维度行（供 Servers 列表展示）。
+// 默认（tool）不含按 Server/实例聚合的行（server:/instance: 前缀，避免污染工具维
+// 语义）；?scope=server 只返回 Server 维行（Servers 列表）；?scope=instance 只返回
+// 实例维行（可配 &server_id= 收敛到某 Server 的实例，供 Server 详情实例表展示）。
 func (c *Control) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	all := c.metrics.SnapshotAll()
 	scope := r.URL.Query().Get("scope")
+	serverID := strings.TrimSpace(r.URL.Query().Get("server_id"))
 	out := make([]observability.Snapshot, 0, len(all))
 	for _, s := range all {
 		isServer := strings.HasPrefix(s.Key, observability.ServerDimPrefix)
-		if (scope == "server") == isServer {
-			out = append(out, s)
+		isInstance := strings.HasPrefix(s.Key, observability.InstanceDimPrefix)
+		switch scope {
+		case "server":
+			if isServer {
+				out = append(out, s)
+			}
+		case "instance":
+			if isInstance && (serverID == "" || strings.HasPrefix(s.Key, observability.InstanceDimPrefix+serverID+":")) {
+				out = append(out, s)
+			}
+		default: // "" 或 "tool"：工具维 = 非 server:/instance: 前缀
+			if !isServer && !isInstance {
+				out = append(out, s)
+			}
 		}
 	}
 	writeOK(w, RequestIDFrom(r.Context()), out)
@@ -786,7 +803,7 @@ func (c *Control) handleMetricsTrend(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, RequestIDFrom(r.Context()), map[string]any{"series": series})
 }
 
-// handleLogs 分页返回调用日志，支持 server_id/q/status/from/to 筛选。
+// handleLogs 分页返回调用日志，支持 server_id/instance_id/q/status/from/to 筛选。
 // 不再提供旧 ?limit= 截断语义：控制台通过 page/page_size 取页（Dashboard 等
 // 全量场景传较大 page_size）。
 func (c *Control) handleLogs(w http.ResponseWriter, r *http.Request) {

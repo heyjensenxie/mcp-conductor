@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/errs"
 	"github.com/heyjensenxie/mcp-conductor/internal/eval"
@@ -17,12 +18,17 @@ func (c *Control) evalEnabled(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+// instanceParam 读取可选的 ?instance_id= 定向评测参数（空 = 首个可拨测实例）。
+func instanceParam(r *http.Request) string {
+	return strings.TrimSpace(r.URL.Query().Get("instance_id"))
+}
+
 // handleEvalMeta 返回指定 Server 的评测概况（拨测实例/工具数/流量/覆盖）。
 func (c *Control) handleEvalMeta(w http.ResponseWriter, r *http.Request) {
 	if !c.evalEnabled(w, r) {
 		return
 	}
-	meta, err := c.eval.Describe(r.Context(), r.PathValue("id"))
+	meta, err := c.eval.Describe(r.Context(), r.PathValue("id"), instanceParam(r))
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
@@ -35,7 +41,7 @@ func (c *Control) handleEvalQuality(w http.ResponseWriter, r *http.Request) {
 	if !c.evalEnabled(w, r) {
 		return
 	}
-	report, err := c.eval.RunQuality(r.Context(), r.PathValue("id"))
+	report, err := c.eval.RunQuality(r.Context(), r.PathValue("id"), instanceParam(r))
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
@@ -59,7 +65,7 @@ func (c *Control) handleEvalSuite(w http.ResponseWriter, r *http.Request) {
 		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "cases 不能为空"))
 		return
 	}
-	out, err := c.eval.RunSuite(r.Context(), r.PathValue("id"), body.Cases)
+	out, err := c.eval.RunSuite(r.Context(), r.PathValue("id"), instanceParam(r), body.Cases)
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return

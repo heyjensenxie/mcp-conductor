@@ -101,7 +101,8 @@ func TestRecentTrafficByServerMemory(t *testing.T) {
 	now := time.Now().UTC()
 	for _, sid := range []string{"srv-1", "srv-2"} {
 		for range 3 {
-			sample := model.TrafficSample{ServerID: sid, Tool: "t", Status: "success", Timestamp: now}
+			// 各 Server 固定归属一个实例，验证实例字段随整 struct 往返。
+			sample := model.TrafficSample{ServerID: sid, InstanceID: "inst-" + sid, Tool: "t", Status: "success", Timestamp: now}
 			if err := store.AppendTraffic(ctx, sample); err != nil {
 				t.Fatal(err)
 			}

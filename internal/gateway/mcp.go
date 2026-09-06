@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/access"
@@ -47,6 +48,12 @@ type MCPGateway struct {
 	recorder        *observability.Recorder
 	upstreamTimeout time.Duration
 	sem             chan struct{} // 并发上限；nil 表示不限
+	// instanceTracker 让网关把实例级调用失败回报给负载均衡器（短期冷却）；
+	// 均衡器未实现 InstanceTracker 时为 nil（无失败反馈）。
+	instanceTracker balancer.InstanceTracker
+	// instanceProbe 在实例调用失败时触发对所属 Server 的快速健康探活
+	// （由 app 注入 Monitor.TriggerCheck；nil 表示不触发，等周期巡检兜底）。
+	instanceProbe func(serverID string)
 }
 
 // Option 是 MCPGateway 构造选项。
@@ -66,11 +73,21 @@ func WithMaxConcurrency(n int) Option {
 	}
 }
 
+// WithInstanceProbe 配置实例调用失败后触发对所属 Server 的快速健康探活回调。
+// 回调应为非阻塞触发（如健康巡检的 TriggerCheck），周期巡检仍作为兜底。
+func WithInstanceProbe(fn func(serverID string)) Option {
+	return func(g *MCPGateway) {
+		if fn != nil {
+			g.instanceProbe = fn
+		}
+	}
+}
+
 // NewMCPGateway 创建统一端点后端。
 func NewMCPGateway(
 	store storage.Store,
 	resolver router.Resolver,
-	balancer balancer.LoadBalancer,
+	lb balancer.LoadBalancer,
 	caller ToolCaller,
 	authorizer Authorizer,
 	metrics *observability.Metrics,
@@ -80,12 +97,16 @@ func NewMCPGateway(
 	g := &MCPGateway{
 		tools:           store,
 		resolver:        resolver,
-		balancer:        balancer,
+		balancer:        lb,
 		caller:          caller,
 		authorizer:      authorizer,
 		metrics:         metrics,
 		recorder:        recorder,
 		upstreamTimeout: 10 * time.Second,
+	}
+	// 均衡器实现了 InstanceTracker（RoundRobin 具备失败冷却）才启用失败反馈。
+	if tracker, ok := lb.(balancer.InstanceTracker); ok {
+		g.instanceTracker = tracker
 	}
 	for _, o := range opts {
 		o(g)
@@ -173,9 +194,12 @@ func (g *MCPGateway) CallTool(ctx context.Context, name string, arguments map[st
 	contents, callErr := g.caller.Call(callCtx, resolved.Server, dialInstance, resolved.Tool.OriginalName, targetArgs, extraHeaders)
 
 	// 7. 观测（唯一观测点：成功/失败各记一次指标与调用日志）
-	g.record(ctx, resolved, name, identity.Subject, start, callErr)
+	g.record(ctx, resolved, name, identity.Subject, dialInstance.ID, start, callErr)
 
 	if callErr != nil {
+		// 失败反馈：传输/实例级故障（非工具 isError 业务失败）才触发短期冷却
+		// 与快速探活，避免把一次业务失败误判成实例宕机而摘除。
+		g.reportInstanceFailure(resolved.Server.ID, dialInstance.ID, callErr)
 		return g.failResult(callErr)
 	}
 
@@ -186,10 +210,12 @@ func (g *MCPGateway) CallTool(ctx context.Context, name string, arguments map[st
 	return &mcp.CallToolResult{Content: content}, nil
 }
 
-// record 是 tools/call 的唯一后置观测点：按工具与所属 Server 两个维度记录
-// 指标，并写入调用日志；错误状态只使用统一错误码与脱敏摘要，避免暴露内部
-// 细节或完整敏感体。成功与失败各只记一次（调用方不得再经其它路径重复计数）。
-func (g *MCPGateway) record(ctx context.Context, resolved *router.Resolved, name, subject string, start time.Time, callErr error) {
+// record 是 tools/call 的唯一后置观测点：按工具、所属 Server 与其实际命中的
+// 实例三个维度记录指标，并写入调用日志；错误状态只使用统一错误码与脱敏摘要，
+// 避免暴露内部细节或完整敏感体。成功与失败各只记一次（调用方不得再经其它路径
+// 重复计数）。instanceID 为本次实际拨测的实例；Server 单实例场景也会记录，
+// instance: 维仅用于观测下沉，不影响既有 server:/tool 维语义。
+func (g *MCPGateway) record(ctx context.Context, resolved *router.Resolved, name, subject, instanceID string, start time.Time, callErr error) {
 	latency := time.Since(start)
 	ok := callErr == nil
 	g.metrics.Record(name, ok, latency)
@@ -198,6 +224,9 @@ func (g *MCPGateway) record(ctx context.Context, resolved *router.Resolved, name
 		serverID = resolved.Server.ID
 		if serverID != "" {
 			g.metrics.Record(observability.ServerDimPrefix+serverID, ok, latency)
+			if instanceID != "" {
+				g.metrics.Record(observability.InstanceDimPrefix+serverID+":"+instanceID, ok, latency)
+			}
 		}
 	}
 
@@ -206,14 +235,15 @@ func (g *MCPGateway) record(ctx context.Context, resolved *router.Resolved, name
 		status = string(errs.CodeOf(callErr))
 	}
 	sample := model.TrafficSample{
-		RequestID: RequestIDFrom(ctx),
-		TraceID:   TraceIDFrom(ctx),
-		ServerID:  serverID,
-		Tool:      name,
-		Client:    subject,
-		Status:    status,
-		LatencyMS: latency.Milliseconds(),
-		Timestamp: time.Now(),
+		RequestID:  RequestIDFrom(ctx),
+		TraceID:    TraceIDFrom(ctx),
+		ServerID:   serverID,
+		InstanceID: instanceID,
+		Tool:       name,
+		Client:     subject,
+		Status:     status,
+		LatencyMS:  latency.Milliseconds(),
+		Timestamp:  time.Now(),
 	}
 	if !ok {
 		sample.Error = errs.SafeMessage(callErr)
@@ -235,4 +265,28 @@ func (g *MCPGateway) failResult(err error) (*mcp.CallToolResult, error) {
 		Content: []mcp.ContentBlock{{Type: "text", Text: err.Error()}},
 		IsError: true,
 	}, nil
+}
+
+// reportInstanceFailure 在一次真实拨测到实例的调用失败后回报均衡器并触发快速
+// 探活。仅传输/实例级故障（非工具 isError 业务失败）参与，避免业务失败误摘。
+func (g *MCPGateway) reportInstanceFailure(serverID, instanceID string, callErr error) {
+	if isToolFailure(callErr) {
+		return
+	}
+	if g.instanceTracker != nil {
+		g.instanceTracker.ReportFailure(instanceID)
+	}
+	if g.instanceProbe != nil {
+		g.instanceProbe(serverID)
+	}
+}
+
+// isToolFailure 判定错误是否为上游连通但工具执行失败（MCP isError 结果）。
+// 这种业务性失败不表示实例故障，不应触发实例级冷却。
+func isToolFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var toolFail *registry.ToolFailedError
+	return errors.As(err, &toolFail)
 }

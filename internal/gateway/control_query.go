@@ -140,9 +140,10 @@ func bindTrafficQuery(r *http.Request) (query.TrafficQuery, error) {
 		pageSize = trafficLogMaxPage
 	}
 	out := query.TrafficQuery{
-		Paging:   query.Paging{Page: page, PageSize: pageSize},
-		Q:        keyword(v),
-		ServerID: strings.TrimSpace(v.Get("server_id")),
+		Paging:     query.Paging{Page: page, PageSize: pageSize},
+		Q:          keyword(v),
+		ServerID:   strings.TrimSpace(v.Get("server_id")),
+		InstanceID: strings.TrimSpace(v.Get("instance_id")),
 	}
 	if status := strings.TrimSpace(v.Get("status")); status != "" {
 		if err := validTrafficStatus(status); err != nil {

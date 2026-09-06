@@ -41,6 +41,7 @@ func (r *Recorder) Record(ctx context.Context, sample model.TrafficSample) {
 		"request_id", sample.RequestID,
 		"trace_id", sample.TraceID,
 		"server_id", sample.ServerID,
+		"instance_id", sample.InstanceID,
 		"tool", sample.Tool,
 		"client", sample.Client,
 		"status", sample.Status,

@@ -168,6 +168,9 @@ func (s *Store) QueryTraffic(_ context.Context, q query.TrafficQuery) ([]model.T
 		if q.ServerID != "" && sample.ServerID != q.ServerID {
 			continue
 		}
+		if q.InstanceID != "" && sample.InstanceID != q.InstanceID {
+			continue
+		}
 		if q.Status != "" && sample.Status != q.Status {
 			continue
 		}

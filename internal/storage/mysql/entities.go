@@ -313,7 +313,6 @@ func (s *Store) DeleteRoute(ctx context.Context, id string) error {
 	return nil
 }
 
-
 // CreateCredential 新增凭证：值为空时仅登记元数据；非空时加密落库
 // （AES-256-GCM，需配置 credentials.encryption_key）。
 func (s *Store) CreateCredential(ctx context.Context, credential *model.Credential) error {
@@ -646,14 +645,14 @@ func (s *Store) DeleteAccessKey(ctx context.Context, id string) error {
 
 // ---- TrafficStore ----
 
-// AppendTraffic 追加一条调用采样。请求/追踪标识为可选，错误文本仅在失败时写入。
+// AppendTraffic 追加一条调用采样。请求/追踪标识、实例与错误文本仅在需要时写入。
 func (s *Store) AppendTraffic(ctx context.Context, sample model.TrafficSample) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO traffic_log (request_id, trace_id, server_id, tool, client, status, latency_ms, error, ts)
-		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO traffic_log (request_id, trace_id, server_id, instance_id, tool, client, status, latency_ms, error, ts)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		sample.RequestID, nullIfEmpty(sample.TraceID), nullIfEmpty(sample.ServerID),
-		sample.Tool, nullIfEmpty(sample.Client), sample.Status, sample.LatencyMS,
-		nullIfEmpty(sample.Error), fmtTimeUTC(sample.Timestamp),
+		nullIfEmpty(sample.InstanceID), sample.Tool, nullIfEmpty(sample.Client), sample.Status,
+		sample.LatencyMS, nullIfEmpty(sample.Error), fmtTimeUTC(sample.Timestamp),
 	)
 	if err != nil {
 		return fmt.Errorf("insert traffic_log: %w", err)
@@ -664,8 +663,8 @@ func (s *Store) AppendTraffic(ctx context.Context, sample model.TrafficSample) e
 // RecentTraffic 返回最近 limit 条调用采样（按写入顺序倒序）。
 func (s *Store) RecentTraffic(ctx context.Context, limit int) ([]model.TrafficSample, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT request_id, COALESCE(trace_id,''), COALESCE(server_id,''), tool, COALESCE(client,''),
-		        status, latency_ms, COALESCE(error,''), ts
+		`SELECT request_id, COALESCE(trace_id,''), COALESCE(server_id,''), COALESCE(instance_id,''),
+		        tool, COALESCE(client,''), status, latency_ms, COALESCE(error,''), ts
 		 FROM traffic_log ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -675,8 +674,9 @@ func (s *Store) RecentTraffic(ctx context.Context, limit int) ([]model.TrafficSa
 	out := make([]model.TrafficSample, 0)
 	for rows.Next() {
 		var sample model.TrafficSample
-		if err := rows.Scan(&sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.Tool,
-			&sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error, &sample.Timestamp); err != nil {
+		if err := rows.Scan(&sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.InstanceID,
+			&sample.Tool, &sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error,
+			&sample.Timestamp); err != nil {
 			return nil, err
 		}
 		out = append(out, sample)
@@ -687,8 +687,8 @@ func (s *Store) RecentTraffic(ctx context.Context, limit int) ([]model.TrafficSa
 // RecentTrafficByServer 返回指定 Server 最近 limit 条调用采样（按写入倒序）。
 func (s *Store) RecentTrafficByServer(ctx context.Context, serverID string, limit int) ([]model.TrafficSample, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT request_id, COALESCE(trace_id,''), COALESCE(server_id,''), tool, COALESCE(client,''),
-		        status, latency_ms, COALESCE(error,''), ts
+		`SELECT request_id, COALESCE(trace_id,''), COALESCE(server_id,''), COALESCE(instance_id,''),
+		        tool, COALESCE(client,''), status, latency_ms, COALESCE(error,''), ts
 		 FROM traffic_log WHERE server_id = ? ORDER BY id DESC LIMIT ?`, serverID, limit)
 	if err != nil {
 		return nil, err
@@ -698,8 +698,9 @@ func (s *Store) RecentTrafficByServer(ctx context.Context, serverID string, limi
 	out := make([]model.TrafficSample, 0)
 	for rows.Next() {
 		var sample model.TrafficSample
-		if err := rows.Scan(&sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.Tool,
-			&sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error, &sample.Timestamp); err != nil {
+		if err := rows.Scan(&sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.InstanceID,
+			&sample.Tool, &sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error,
+			&sample.Timestamp); err != nil {
 			return nil, err
 		}
 		out = append(out, sample)

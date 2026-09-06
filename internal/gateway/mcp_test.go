@@ -39,7 +39,8 @@ func (f *errCaller) Call(context.Context, model.Server, model.Instance, string, 
 
 // seedGatewayFull 构造带单 Server（一条 healthy 实例）+ 两工具的内存网关，
 // 并返回网关与其所用的 store/metrics，便于断言观测结果（指标快照、调用日志）。
-func seedGatewayFull(t *testing.T, caller registry.ToolCaller) (*MCPGateway, *memory.Store, *observability.Metrics) {
+// opts 为可选的网关构造选项（如 WithInstanceProbe）。
+func seedGatewayFull(t *testing.T, caller registry.ToolCaller, opts ...Option) (*MCPGateway, *memory.Store, *observability.Metrics) {
 	t.Helper()
 	store := memory.New()
 	ctx := context.Background()
@@ -79,6 +80,7 @@ func seedGatewayFull(t *testing.T, caller registry.ToolCaller) (*MCPGateway, *me
 		store, resolver, balancer.NewRoundRobin(),
 		caller, authz, metrics,
 		observability.NewRecorder(store, false, 1.0),
+		opts...,
 	)
 	return g, store, metrics
 }
@@ -221,6 +223,9 @@ func TestCallTool_upstreamError_recordsOnceAndMasksBody(t *testing.T) {
 	if srv, ok := snapshotOfKey(snaps, observability.ServerDimPrefix+"srv-1"); !ok || srv.Totals != 1 || srv.Errors != 1 {
 		t.Fatalf("Server 维度应只记 1 次失败，得到 %+v", srv)
 	}
+	if inst, ok := snapshotOfKey(snaps, observability.InstanceDimPrefix+"srv-1:inst-1"); !ok || inst.Totals != 1 || inst.Errors != 1 {
+		t.Fatalf("实例维度应只记 1 次失败，得到 %+v", inst)
+	}
 
 	logs, err := store.RecentTraffic(ctx, 10)
 	if err != nil {
@@ -231,6 +236,9 @@ func TestCallTool_upstreamError_recordsOnceAndMasksBody(t *testing.T) {
 	}
 	if logs[0].Status != "upstream_error" {
 		t.Fatalf("调用日志 status 应为 upstream_error，得到 %q", logs[0].Status)
+	}
+	if logs[0].InstanceID != "inst-1" {
+		t.Fatalf("调用日志应记录命中实例，得到 %q", logs[0].InstanceID)
 	}
 	if logs[0].Error != "上游工具执行失败" {
 		t.Fatalf("调用日志 error 应为脱敏短语，得到 %q", logs[0].Error)
@@ -257,6 +265,9 @@ func TestCallTool_success_recordsOnce(t *testing.T) {
 	if srv, ok := snapshotOfKey(snaps, observability.ServerDimPrefix+"srv-1"); !ok || srv.Totals != 1 || srv.Success != 1 {
 		t.Fatalf("Server 维度应只记 1 次成功，得到 %+v", srv)
 	}
+	if inst, ok := snapshotOfKey(snaps, observability.InstanceDimPrefix+"srv-1:inst-1"); !ok || inst.Totals != 1 || inst.Success != 1 {
+		t.Fatalf("实例维度应只记 1 次成功，得到 %+v", inst)
+	}
 
 	logs, err := store.RecentTraffic(ctx, 10)
 	if err != nil {
@@ -264,5 +275,65 @@ func TestCallTool_success_recordsOnce(t *testing.T) {
 	}
 	if len(logs) != 1 || logs[0].Status != "success" || logs[0].Error != "" {
 		t.Fatalf("成功日志应无 Error 且 status=success，得到 %+v", logs)
+	}
+	if logs[0].InstanceID != "inst-1" {
+		t.Fatalf("调用日志应记录命中实例，得到 %q", logs[0].InstanceID)
+	}
+}
+
+// TestCallTool_transportFailureCoolsAndProbes 验证传输/实例级失败触发失败反馈：
+// 唯一实例进入短期冷却（第二次调用直接 route_error、不再拨测），并触发快速探活。
+func TestCallTool_transportFailureCoolsAndProbes(t *testing.T) {
+	probeCalls := 0
+	caller := &errCaller{err: errs.New(errs.CodeTimeout, "上游调用超时")}
+	g, _, metrics := seedGatewayFull(t, caller, WithInstanceProbe(func(string) { probeCalls++ }))
+	ctx := WithIdentity(context.Background(), &auth.Identity{Subject: "anon", Operator: true})
+
+	first, err := g.CallTool(ctx, "mock.search", map[string]any{})
+	if err != nil || !first.IsError {
+		t.Fatalf("首次拨测应 isError: err=%v res=%+v", err, first)
+	}
+	if probeCalls != 1 {
+		t.Fatalf("传输失败应触发快速探活，得到 %d", probeCalls)
+	}
+
+	// 唯一实例冷却中 → 第二次不再拨测，直接 route_error（无可用上游实例）。
+	second, err := g.CallTool(ctx, "mock.search", map[string]any{})
+	if err != nil || !second.IsError {
+		t.Fatalf("冷却中应 isError: err=%v res=%+v", err, second)
+	}
+	text := ""
+	if len(second.Content) > 0 {
+		text = second.Content[0].Text
+	}
+	if !strings.Contains(text, "无可用") {
+		t.Fatalf("冷却中应返回无可用上游实例，得到 %q", text)
+	}
+	// 冷却期内的第二次调用未拨测：Server 维失败数仍为 1（未被重复计为拨测失败）。
+	if srv, ok := snapshotOfKey(metrics.SnapshotAll(), observability.ServerDimPrefix+"srv-1"); !ok || srv.Errors != 1 {
+		t.Fatalf("冷却期调用不应记 Server 维拨测失败，得到 %+v", srv)
+	}
+}
+
+// TestCallTool_toolFailureDoesNotCool 验证 isError 业务失败（上游连通但工具执行
+// 失败）不会触发冷却与快速探活——避免把业务失败误判成实例宕机。
+func TestCallTool_toolFailureDoesNotCool(t *testing.T) {
+	probeCalls := 0
+	toolFail := registry.NewToolFailedError(errs.Wrap(errs.CodeUpstream, errors.New("boom"), "上游工具执行失败"))
+	g, _, metrics := seedGatewayFull(t, &errCaller{err: toolFail}, WithInstanceProbe(func(string) { probeCalls++ }))
+	ctx := WithIdentity(context.Background(), &auth.Identity{Subject: "anon", Operator: true})
+
+	for range 2 {
+		res, err := g.CallTool(ctx, "mock.search", map[string]any{})
+		if err != nil || !res.IsError {
+			t.Fatalf("isError 业务失败应 isError: err=%v res=%+v", err, res)
+		}
+	}
+	if probeCalls != 0 {
+		t.Fatalf("业务失败不应触发快速探活，得到 %d", probeCalls)
+	}
+	// 未冷却 → 两次都真实拨测：Server 维失败数应为 2（业务失败不摘除实例）。
+	if srv, ok := snapshotOfKey(metrics.SnapshotAll(), observability.ServerDimPrefix+"srv-1"); !ok || srv.Errors != 2 {
+		t.Fatalf("业务失败不应冷却实例，Server 维应记 2 次拨测失败，得到 %+v", srv)
 	}
 }

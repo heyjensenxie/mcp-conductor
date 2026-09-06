@@ -1,5 +1,5 @@
 import http, { unwrap } from './http'
-import type { AccessKey, Credential, EvalMeta, EvalReport, EvalSuiteCase, EvalSuiteResult, MCPServer, MetricSnapshot, Paged, RediscoverPlan, Route, ServerInstance, ServerStatus, Session, Tool, ToolGrant, TrafficSample, Transport, TrendPoint } from '@/types'
+import type { AccessKey, Credential, EvalMeta, EvalReport, EvalSuiteCase, EvalSuiteResult, KeyInvokeResult, MCPServer, MetricSnapshot, Paged, RediscoverPlan, Route, ServerInstance, ServerStatus, Session, Tool, ToolGrant, TrafficSample, Transport, TrendPoint } from '@/types'
 
 // ---- 管理面列表查询（服务端分页 + 筛选）----
 //
@@ -53,6 +53,7 @@ export interface KeyListParams extends ListParams {
 export interface LogListParams extends ListParams {
   q?: string
   server_id?: string
+  instance_id?: string
   status?: string
   from?: string
   to?: string
@@ -191,20 +192,29 @@ export const rotateKey = (id: string) =>
 
 export const deleteKey = (id: string) => unwrap<void>(http.delete(`/keys/${id}`))
 
+// invokeKey 以某 API Key 身份端到端试调用一次（Operator 触发；授权拒绝由 HTTP
+// 403 信封给出，未授权/禁用 key 不返回数据体）。
+export const invokeKey = (id: string, payload: { gateway_tool: string; arguments?: Record<string, unknown> }) =>
+  unwrap<KeyInvokeResult>(http.post(`/keys/${id}/invoke`, payload))
+
 // ---- Metrics / Logs ----
 
-// getMetrics 读取指标快照；scope='tool'（默认）排除 server: 前缀行，
-// scope='server' 只返回按 Server 聚合的行。
-export const getMetrics = (scope?: 'tool' | 'server') =>
+// getMetrics 读取指标快照；默认（tool）排除 server:/instance: 前缀行，
+// scope='server' 只返回按 Server 聚合的行，scope='instance' 只返回实例维行。
+export const getMetrics = (scope?: 'tool' | 'server' | 'instance') =>
   unwrap<MetricSnapshot[]>(http.get('/metrics', { params: scope ? { scope } : undefined }))
 
 export const getServerMetrics = () => unwrap<MetricSnapshot[]>(http.get('/metrics', { params: { scope: 'server' } }))
+
+// getInstanceMetrics 返回某 Server 各实例的指标行（供 Server 详情实例表展示）。
+export const getInstanceMetrics = (serverId: string) =>
+  unwrap<MetricSnapshot[]>(http.get('/metrics', { params: { scope: 'instance', server_id: serverId } }))
 
 // getMetricsTrend 读取真时序趋势（近 N 分钟，按分钟桶）。
 export const getMetricsTrend = (scope: 'tool' | 'server' = 'tool', minutes = 30) =>
   unwrap<{ series: TrendPoint[] }>(http.get('/metrics/trend', { params: { scope, minutes } }))
 
-// getLogs 分页读取调用日志，支持 server_id/q/status/from/to 筛选。
+// getLogs 分页读取调用日志，支持 server_id/instance_id/q/status/from/to 筛选。
 // 注意：traffic_log 为流水大表，服务端对 page_size 设上限（200）且不支持 0=全量，
 // Dashboard/Traffic 均按最近分页拉取。
 export const getLogs = (params?: LogListParams) =>
@@ -212,16 +222,19 @@ export const getLogs = (params?: LogListParams) =>
 
 // ---- MCP Evaluation（评测）----
 
+// instanceId 可选：定向某实例评测（缺省为空=首个可拨测实例）。
+
 // getEvalMeta 读取某 Server 的评测概况（拨测实例/工具数/是否有流量/覆盖数）。
-export const getEvalMeta = (id: string) => unwrap<EvalMeta>(http.get(`/evaluations/servers/${id}`))
+export const getEvalMeta = (id: string, instanceId?: string) =>
+  unwrap<EvalMeta>(http.get(`/evaluations/servers/${id}`, { params: instanceId ? { instance_id: instanceId } : undefined }))
 
 // runEvalQuality 对某 Server 现场拨测并返回 MCP 质量报告（即时，不落库）。
-export const runEvalQuality = (id: string) =>
-  unwrap<EvalReport>(http.post(`/evaluations/servers/${id}/quality`, {}))
+export const runEvalQuality = (id: string, instanceId?: string) =>
+  unwrap<EvalReport>(http.post(`/evaluations/servers/${id}/quality`, {}, { params: instanceId ? { instance_id: instanceId } : undefined }))
 
 // runEvalSuite 执行一组回归用例并返回汇总（即时，不落库）。
-export const runEvalSuite = (id: string, cases: EvalSuiteCase[]) =>
-  unwrap<EvalSuiteResult>(http.post(`/evaluations/servers/${id}/suite`, { cases }))
+export const runEvalSuite = (id: string, cases: EvalSuiteCase[], instanceId?: string) =>
+  unwrap<EvalSuiteResult>(http.post(`/evaluations/servers/${id}/suite`, { cases }, { params: instanceId ? { instance_id: instanceId } : undefined }))
 
 // ---- 全量辅助（page_size=0，供 picker/下拉/弹层等需要完整目录的消费）----
 

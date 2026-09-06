@@ -39,18 +39,21 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | 健康检查按实例（initialize 握手 + 周期巡检；Server 级状态由实例聚合） | ✅ |
 | 路由解析 + Round Robin 负载均衡（健康感知） | ✅ |
 | **Server 多实例**：实例 CRUD · 启停 · 单实例测试 · 列表/详情水合 | ✅ |
-| **tools/call 多实例健康感知 Round-Robin 真实生效**（拨测被选实例；故障/停用实例剔除） | ✅ |
+| **tools/call 多实例健康感知 Round-Robin 真实生效**（拨测被选实例；故障/停用实例剔除） | ✅ **带失败反馈**：单实例调用失败（传输/超时，不含工具的 `isError` 业务失败）即短期冷却约 5s，不再把后续调用打向疑似故障实例，并触发该 Server 快速健康探活；探活确认健康后放回 |
 | Tool/Route 管理闭环 + Route 覆盖转发 | ✅ Tool 启停；Route 编辑·启停·删除；启用 Route 命中 `tool_names` 时把该工具调用目标 Server 覆盖为 route 指向的 Server（恒等即原样；目标不可调用返回 `route_error`） |
 | 鉴权（默认开启） | ✅ Console 用管理员账号（`admin`/`admin_password`）登录换会话；/api 接受会话或 `operator_token`；/mcp 数据面用 API Key（HMAC 哈希落库、按 key×工具白名单），与登录分离 |
 | Gateway→上游 Credential 管理（API Key / Static Token） | ✅ 值 AES-256-GCM 加密落库；经 `json:"-"` 不下发 API、不入日志；按 Server 注入上游请求头 |
 | 按 Key×Tool 白名单授权（跨 Server 聚合） | ✅ 每个 key 只可见/可调被授权工具（支持 `server.*`/`*` 通配）；每工具可配调用参数与请求头 |
 | Memory（令牌桶）/ Redis 限流，支持按 Key 独立配额 | ✅ 默认关闭 |
 | Request Logging + 基础 Metrics（P50/P95/P99） | ✅ 应用层聚合；`?scope=server` 按 Server 聚合 |
-| Traffic 调用筛选 + Observability 双维度 | ✅ 日志按 Server/状态筛选（近 500 条）；指标按 Tool/Server 查看；趋势为真时序分钟桶（近 30 分钟折线） |
+| **实例级流量归属（多实例观测下沉）** | ✅ 每次调用把 `instance_id` 落调用日志（traffic_log，可按 `server_id+instance_id` 筛选）并按实例记内存指标（`?scope=instance&server_id=`）；Server 详情「实例」表直接展示每个实例的 Requests / P95 / Errors |
+| Traffic 调用筛选 + Observability | ✅ 日志按 Server/实例/状态/关键词/时间分页筛选（page/page_size，上限 200）；指标按 Tool/Server/实例查看；趋势为真时序分钟桶（近 30 分钟折线） |
 | Vue3 Console（Ant Design Vue + ECharts） | ✅ 构建后嵌入二进制 |
 | MCP Manual Test（Console 内联） | ✅ |
-| MCP 评测：Server 质量分（工具 Schema/描述/命名 + 协议 + 运行时指标）+ 回归用例集 | ✅ 无 LLM；即时计算不落库；现场拨测实例 |
+| MCP 评测：Server 质量分（工具 Schema/描述/命名 + 协议 + 运行时指标）+ 回归用例集 | ✅ 无 LLM；即时计算不落库；现场拨测实例；quality/suite/meta 可 `?instance_id=` 定向某实例（缺省首个可拨测） |
 | 评测报告导出（浏览器打印为 PDF） | ✅ |
+| 控制面「以 API Key 身份试调用」（细粒度授权验证） | ✅ `POST /api/keys/{id}/invoke`：Operator 触发，后台用已存 Key 跑完整数据面（授权→grant 参数/头→路由→均衡→上游），**不写 metrics/调用日志**、不经 per-key 限流 |
+| 工具详情页编辑 + 恢复源定义 | ✅ `/tools/:id` 支持改名/描述/入参 Schema 编辑，逐字段「恢复上游定义」 |
 | Docker / Docker Compose / Makefile | ✅ |
 
 **明确不属于 v0.1**：LLM Judge、Python Evaluation Worker、AI Optimization、Traffic Replay、复杂 ABAC、Kafka、ClickHouse、Kubernetes Operator、Service Mesh、微服务拆分。
@@ -118,7 +121,7 @@ CONDUCTOR_DB_PASSWORD=<你的本地 MySQL 密码> docker compose up --build
 # MCP 端点: http://localhost:8080/mcp
 ```
 
-- 数据库：默认 `mysql`，连宿主机 `host.docker.internal:3306` 的 `conductor` 库（库表需先执行 `migrations/0001..0003`，宿主机已有 MySQL 时用 `CONDUCTOR_DATABASE_DSN='root:***@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate`）。账号可用 `CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME` 覆盖；`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。
+- 数据库：默认 `mysql`，连宿主机 `host.docker.internal:3306` 的 `conductor` 库（库表需先执行 `migrations/0001..0009`，宿主机已有 MySQL 时用 `CONDUCTOR_DATABASE_DSN='root:***@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate`）。账号可用 `CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME` 覆盖；`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。
 - Redis：仅当同时开启 `CONDUCTOR_REDIS_ENABLED=true` 与 `CONDUCTOR_RATELIMIT_ENABLED=true` 时才用于分布式 per-key 限流，默认关闭（本机 Redis 若只监听 `127.0.0.1` 需放开监听才能被容器访问）。
 
 ### 方式二：一键构建（带真实 Console 的单二进制，推荐）
@@ -195,18 +198,23 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 | `PATCH /api/servers/{id}/toggle` | 启用 / 禁用（禁用即摘除整个 Server） |
 | `DELETE /api/servers/{id}` | 删除（级联删实例/Tools/凭证） |
 | `POST /api/servers/{id}/test` | 测试连接（拨主实例）并重新发现 Tools |
+| `POST /api/servers/{id}/rediscover/plan` | 预演重新发现：只读比对并返回将新增/变更/删除的工具清单（不落库） |
 | `GET/POST /api/servers/{id}/instances` | 实例列表 / 新增实例（endpoint/transport） |
 | `PATCH .../instances/{iid}` · `.../toggle` · `.../test` · `DELETE .../instances/{iid}` | 实例编辑 · 启停 · 单实例测试 · 删除（Server 至少保留一个实例） |
-| `GET /api/servers/{id}/tools` · `.../credentials` | Server 下的 Tools / 凭证 |
-| `GET /api/tools` · `PATCH /api/tools/{id}/toggle` | 聚合工具 / 工具启停 |
+| `GET /api/servers/{id}/tools` | Server 下的工具目录 |
+| `POST /api/servers/{id}/credentials` · `GET .../credentials` · `PATCH .../credentials/{credId}` · `DELETE .../credentials/{credId}` | Gateway→上游凭据 CRUD（值加密落库、不下发） |
+| `GET /api/tools` · `GET /api/tools/{id}` · `PATCH /api/tools/{id}/toggle` | 聚合工具分页/详情 / 工具启停 |
 | `PATCH /api/tools/{id}` | 更新工具对外名称、描述、入参 Schema；支持 `reset_name/reset_description/reset_input_schema` 恢复上游定义 |
 | `GET/POST /api/routes` · `PATCH /api/routes/{id}` · `PATCH /api/routes/{id}/toggle` · `DELETE /api/routes/{id}` | 路由 CRUD / 启停 / 删除 |
-| `GET /api/metrics` | 指标快照（p50/p95/p99、成功率；`?scope=server` 返回按 Server 聚合） |
+| `GET /api/keys` · `POST /api/keys` | API Key 分页 / 创建（明文 Secret 仅本响应返回一次） |
+| `GET/PATCH/DELETE /api/keys/{id}` · `POST /api/keys/{id}/rotate` | Key 详情 · 更新（白名单/配额/启停）· 删除 · 密钥轮换（新明文仅本响应一次） |
+| `POST /api/keys/{id}/invoke` | **按该 Key 身份试调用**（`{gateway_tool,arguments}`）：后台用已存 Key 跑完整数据面验证白名单授权；不写 metrics/调用日志、不经 per-key 限流。未授权/禁用 → 403 |
+| `GET /api/metrics` | 指标快照（p50/p95/p99、成功率）；`?scope=server` 按 Server、`?scope=instance&server_id=` 按某 Server 实例聚合 |
 | `GET /api/metrics/trend` | 近 N 分钟真时序（分钟桶，`?scope=tool\|server&minutes=30`） |
-| `GET /api/logs` | 最近调用日志（`?server_id=` 过滤、`?limit=` 上限 500） |
-| `GET /api/evaluations/servers/{id}` | 评测概况（拨测实例/工具数/是否有流量/平台覆盖数） |
-| `POST /api/evaluations/servers/{id}/quality` | 运行 Server 质量评测（现场拨测 initialize+tools/list，叠加运行时指标，即时返回分维度 MCP 分与建议） |
-| `POST /api/evaluations/servers/{id}/suite` | 运行回归用例集（`{"cases":[{name,gateway_tool,arguments,expected_substring}]}`，直连上游判定，即时返回汇总） |
+| `GET /api/logs` | 调用日志分页（`page/page_size`，上限 200；`?server_id=&instance_id=&q=&status=&from=&to=` 筛选） |
+| `GET /api/evaluations/servers/{id}` | 评测概况（拨测实例/工具数/是否有流量/平台覆盖数；`?instance_id=` 可选） |
+| `POST /api/evaluations/servers/{id}/quality` | 运行 Server 质量评测（`?instance_id=` 可选定向实例；现场拨测 initialize+tools/list，叠加运行时指标，即时返回分维度 MCP 分与建议） |
+| `POST /api/evaluations/servers/{id}/suite` | 运行回归用例集（`{"cases":[{name,gateway_tool,arguments,expected_substring,timeout_ms}]}`，`?instance_id=` 可选；直连上游判定，即时返回汇总 + 按工具分组） |
 | `POST /api/auth/login` | 管理员账号登录（`admin` + 密码）换 `mc1.` 会话 |
 | `GET /api/auth/status` | 鉴权是否开启（`auth_required`） |
 | `GET /healthz` · `/readyz` | 存活 / 就绪探针 |
@@ -239,11 +247,12 @@ go run ./cmd/conductor
 | --- | --- | --- |
 | `server` | host / port | `CONDUCTOR_SERVER_PORT=8080` |
 | `database` | driver（memory/mysql）/ dsn | `CONDUCTOR_DATABASE_DSN=user:pwd@tcp(host:3306)/conductor?parseTime=true&charset=utf8mb4` |
-| `redis` | enabled / addr / password | `CONDUCTOR_REDIS_ENABLED=false` |
+| `redis` | enabled / addr / password / db | `CONDUCTOR_REDIS_ENABLED=false` · `CONDUCTOR_REDIS_DB=0` |
 | `gateway` | upstream_timeout / max_concurrency | `CONDUCTOR_GATEWAY_UPSTREAM_TIMEOUT_MS=10000` |
-| `ratelimit` | enabled / qps / burst | `CONDUCTOR_RATELIMIT_QPS=100` |
+| `ratelimit` | enabled / qps / burst | `CONDUCTOR_RATELIMIT_QPS=100`（代码默认 qps=0/burst=1，example 为启用示例） |
 | `auth` | enabled / operator_token / token_secret / api_keys | `CONDUCTOR_AUTH_OPERATOR_TOKEN=<程序化令牌> CONDUCTOR_AUTH_TOKEN_SECRET=<32 位 hex>` |
 | `auth` | admin_username / admin_password（Console 登录） | `CONDUCTOR_AUTH_ADMIN_USERNAME=admin CONDUCTOR_AUTH_ADMIN_PASSWORD=<管理员密码>` |
+| `auth` | session_ttl（登录会话有效期，默认 12h） | `CONDUCTOR_AUTH_SESSION_TTL_MINUTES=720` |
 | `credentials` | encryption_key（AES-256，64 位 hex） | `CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY=<hex>` |
 | `logging` | level / format | `CONDUCTOR_LOGGING_LEVEL=info` |
 | `observability` | record_body / sample_rate | `CONDUCTOR_OBSERVABILITY_SAMPLE_RATE=1.0` |
@@ -277,7 +286,7 @@ make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATA
 
 - **后端约定**：统一错误模型与结构化日志（不打印 Credential、Token 与完整敏感 MCP payload）；核心模块测试优先（Router / Balancer / Rate Limiter / Tool Namespace）。
 - **前端约定**：基础设施管理平台风格（现代、克制、高信息密度），Ant Design Vue + ECharts + Pinia，Payload 不可达时保持空态。
-- **测试**：`go test ./...` 覆盖 16 个包（含 Tool Name Collision 回归、真实 JSON-RPC 握手链路、防指标重复计数与调用日志脱敏）。
+- **测试**：`go test ./...` 覆盖 17 个包（含 Tool Name Collision 回归、真实 JSON-RPC 握手链路、metrics 单次计数/实例维度隔离、per-instance 评测与调用日志脱敏）。
 
 ## Examples
 
@@ -286,7 +295,7 @@ make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATA
 ## Roadmap
 
 - **v0.1（当前）**：最小闭环 + 运维基础（Registry / 聚合 / 路由 / 治理 / 观测 / Console / Docker）。其中 **MySQL 5.7+ 持久化驱动已先行落地**（`internal/storage/mysql`，实测通过）。
-- **v0.2 候选**：SSE/stdio 上游接入、Route 管理页完善、观测时间序列（Traffic Replay）、实例级流量归属（traffic/metrics 记 `instance_id`）、CI 接通（GitHub Actions 目前有意移除，需要时再加）。注：Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）已随 v0.1 落地；Server 多实例 + 健康感知 Round-Robin 已随多实例化落地。
+- **v0.2 候选**：SSE/stdio 上游接入、Route 管理页完善、观测时间序列（Traffic Replay）、CI 接通（GitHub Actions 目前有意移除，需要时再加）。注：Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）已随 v0.1 落地；Server 多实例 + 健康感知 Round-Robin 随多实例化落地；**实例级流量归属（traffic/metrics 记 `instance_id`）+ 按实例定向评测已随本轮落地**。
 - **v0.3 候选**：Evaluation 深化（本阶段已落地 Server 质量分 + 回归用例的 MCP Score 雏形，见上表；后续 Dataset/TestCase 落库、对比与 LLM Judge 另行列版）、协议/Schema/性能测试、CI Quality Gate。
 - **远期**：独立 Python Evaluation Worker、AI 优化建议、Traffic Replay、Route 灰度/分组转发。
 

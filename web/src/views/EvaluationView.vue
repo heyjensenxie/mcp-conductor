@@ -3,8 +3,13 @@
     <!-- 工具栏（不打印） -->
     <a-card :bordered="true" class="mb no-print">
       <a-space wrap>
-        <a-select v-model:value="serverId" :placeholder="t('evaluation.selectServer')" style="width: 280px" show-search option-filter-prop="label" @change="onServerChange">
+        <a-select v-model:value="serverId" :placeholder="t('evaluation.selectServer')" style="width: 240px" show-search option-filter-prop="label" @change="onServerChange">
           <a-select-option v-for="s in servers" :key="s.id" :value="s.id" :label="s.name">{{ s.name }} ({{ primaryEndpoint(s) }})</a-select-option>
+        </a-select>
+        <a-select v-if="currentInstances.length > 1" v-model:value="targetInstance" style="width: 200px" allow-clear :placeholder="t('evaluation.instanceAuto')" @change="onTargetChange">
+          <a-select-option v-for="inst in currentInstances" :key="inst.id" :value="inst.id">
+            {{ inst.id }}<template v-if="!inst.enabled"> · {{ t('servers.disabled') }}</template>
+          </a-select-option>
         </a-select>
         <a-button type="primary" :disabled="!serverId" :loading="qualityLoading" @click="runQuality">
           <template #icon><AuditOutlined /></template>{{ t('evaluation.runQuality') }}
@@ -25,10 +30,17 @@
         <span class="meta-item"><b>{{ t('evaluation.metaOverrides') }}</b>: {{ meta.platform_override_count }}</span>
         <span class="meta-item">
           <b>{{ t('evaluation.metaProbe') }}</b>:
-          <template v-if="meta.probe"><span class="mono">{{ meta.probe.endpoint }}</span></template>
+          <template v-if="meta.probe"><span class="mono">{{ meta.probe.id }}</span> · <span class="mono">{{ meta.probe.endpoint }}</span></template>
           <template v-else><a-tag color="orange">{{ t('evaluation.noProbe') }}</a-tag></template>
         </span>
       </a-space>
+      <div v-if="meta.issues && meta.issues.length" class="issues">
+        <div v-for="(iss, i) in meta.issues" :key="i" class="issue">
+          <a-tag :color="severityColor(iss.severity)" :bordered="false">{{ iss.code }}</a-tag>
+          <span>{{ iss.message }}</span>
+          <span v-if="iss.suggestion" class="muted">→ {{ iss.suggestion }}</span>
+        </div>
+      </div>
     </a-card>
 
     <!-- 质量报告（打印内容） -->
@@ -38,9 +50,20 @@
         <div class="report-head-side">
           <div class="report-title">{{ t('evaluation.overallScore') }}</div>
           <div class="report-sub">{{ report.server.name }} · {{ t('evaluation.generatedAt') }} {{ formatTime(report.generated_at) }}</div>
+          <div v-if="report.server.probed_instance" class="runtime-note">
+            {{ t('evaluation.probedTarget') }}: <span class="mono">{{ report.server.probed_instance.id }}</span>
+          </div>
           <div v-if="report.runtime && !report.runtime.available" class="runtime-note">{{ t('evaluation.runtimeTrafficNone') }}</div>
           <div v-if="report.platform_overrides" class="runtime-note">{{ t('evaluation.overrideHint', { count: report.platform_overrides.count }) }}</div>
         </div>
+      </div>
+
+      <!-- 运行时流量块：有真实调用时给出观测口径的成功率/延迟（评测结论的一部分） -->
+      <div v-if="report.runtime && report.runtime.available" class="runtime-stats">
+        <span class="stat"><b>{{ t('evaluation.runtimeTotals') }}</b> {{ report.runtime.totals }}</span>
+        <span class="stat"><b>{{ t('evaluation.runtimeSuccessRate') }}</b> {{ rateText(report.runtime.success_rate) }}</span>
+        <span class="stat"><b>{{ t('evaluation.runtimeP95') }}</b> {{ msText(report.runtime.p95) }}</span>
+        <span class="stat bad"><b>{{ t('evaluation.runtimeErrors') }}</b> {{ report.runtime.errors }}</span>
       </div>
 
       <a-divider orientation="left">{{ t('evaluation.dimensions') }}</a-divider>
@@ -58,6 +81,10 @@
               size="small"
             />
             <div v-else class="dim-note">{{ t('evaluation.dimNA') }}</div>
+            <div class="dim-weight">
+              {{ t('evaluation.weight') }} {{ pctText(d.weight) }} ·
+              {{ t('evaluation.contribution') }} <span class="mono">{{ (d.weighted_contribution ?? 0).toFixed(1) }}</span>
+            </div>
           </div>
         </a-col>
       </a-row>
@@ -120,6 +147,7 @@
           <a-input v-model:value="c.gateway_tool" placeholder="mock.search" class="case-tool" />
           <a-textarea v-model:value="c.arguments_text" :rows="1" :placeholder='{ "q": "x" }' class="case-args" />
           <a-input v-model:value="c.expected_substring" :placeholder="t('evaluation.expectedSubstring')" class="case-expect" />
+          <a-input-number v-model:value="c.timeout_ms" :min="0" :step="500" class="case-timeout" :placeholder="t('evaluation.timeoutMs')" @change="persistCases" />
           <a-button type="text" danger size="small" @click="suiteCases.splice(i, 1)">
             <template #icon><DeleteOutlined /></template>
           </a-button>
@@ -157,6 +185,19 @@
           </template>
         </template>
       </a-table>
+
+      <!-- 按工具分组：回归用例失败常聚在某工具（Schema/入参不稳），一眼定位 -->
+      <a-divider v-if="suiteResult.by_tool && suiteResult.by_tool.length" orientation="left">{{ t('evaluation.byTool') }}</a-divider>
+      <a-table v-if="suiteResult.by_tool && suiteResult.by_tool.length" :data-source="suiteResult.by_tool" :columns="byToolColumns" :pagination="false" size="small" :row-key="(r: any) => r.gateway_tool">
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'passed'">
+            <a-tag :color="record.passed === record.total ? 'green' : 'red'" :bordered="false">{{ record.passed }}/{{ record.total }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'p95'">
+            <span class="mono">{{ msText(record.p95_latency_ms) }}</span>
+          </template>
+        </template>
+      </a-table>
     </a-card>
   </div>
 </template>
@@ -167,16 +208,21 @@ import { useI18n } from 'vue-i18n'
 import { message } from 'ant-design-vue'
 import { AuditOutlined, DeleteOutlined, FilePdfOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { getEvalMeta, listAllServers, primaryEndpoint, runEvalQuality, runEvalSuite } from '@/api'
-import type { EvalMeta, EvalReport, EvalSuiteResult, MCPServer } from '@/types'
+import type { EvalMeta, EvalReport, EvalSuiteResult, MCPServer, ServerInstance } from '@/types'
 
 const { t } = useI18n()
 
 const servers = ref<MCPServer[]>([])
 const serverId = ref('')
+// 评测定向实例：空=取首个可拨测实例（仅在该 Server 多实例时显示选择器）。
+const targetInstance = ref('')
 const meta = ref<EvalMeta>()
 const report = ref<EvalReport>()
 const qualityLoading = ref(false)
 const suiteLoading = ref(false)
+
+// 当前选中 Server 的实例（用于实例定向下拉）。
+const currentInstances = computed<ServerInstance[]>(() => servers.value.find((s) => s.id === serverId.value)?.instances ?? [])
 
 // ---- 回归用例编辑（浏览器 localStorage 暂存）----
 interface CaseEdit {
@@ -184,6 +230,7 @@ interface CaseEdit {
   gateway_tool: string
   arguments_text: string
   expected_substring: string
+  timeout_ms?: number
 }
 const suiteCases = reactive<CaseEdit[]>([])
 const suiteResult = ref<EvalSuiteResult>()
@@ -199,16 +246,28 @@ onMounted(async () => {
 })
 
 async function onServerChange() {
+  targetInstance.value = ''
   meta.value = undefined
   report.value = undefined
   suiteResult.value = undefined
   loadStoredCases()
+  await loadMeta()
+}
+
+async function loadMeta() {
   if (!serverId.value) return
   try {
-    meta.value = await getEvalMeta(serverId.value)
+    meta.value = await getEvalMeta(serverId.value, targetInstance.value || undefined)
   } catch (e) {
     message.error(String(e))
   }
+}
+
+// 切换评测定向实例：重置结果并刷新概况（选定实例不可拨测时后端给出明确错误）。
+async function onTargetChange() {
+  report.value = undefined
+  suiteResult.value = undefined
+  await loadMeta()
 }
 
 watch(suiteCases, () => persistCases(), { deep: true })
@@ -225,6 +284,7 @@ function loadStoredCases() {
         gateway_tool: c.gateway_tool ?? '',
         arguments_text: c.arguments_text ?? '',
         expected_substring: c.expected_substring ?? '',
+        timeout_ms: c.timeout_ms,
       })
     }
   } catch {
@@ -244,14 +304,13 @@ function persistCases() {
 function addCase() {
   suiteCases.push({ name: `case-${suiteCases.length + 1}`, gateway_tool: '', arguments_text: '', expected_substring: '' })
 }
-
 // ---- 质量评测 ----
 async function runQuality() {
   if (!serverId.value) return
   qualityLoading.value = true
   try {
-    report.value = await runEvalQuality(serverId.value)
-    meta.value = await getEvalMeta(serverId.value)
+    report.value = await runEvalQuality(serverId.value, targetInstance.value || undefined)
+    await loadMeta()
   } catch (e) {
     message.error(String(e))
   } finally {
@@ -262,7 +321,7 @@ async function runQuality() {
 // ---- 回归执行 ----
 async function runSuite() {
   if (!serverId.value || !suiteCases.length) return
-  const parsed: { name: string; gateway_tool: string; arguments: Record<string, unknown>; expected_substring: string }[] = []
+  const parsed: { name: string; gateway_tool: string; arguments: Record<string, unknown>; expected_substring: string; timeout_ms?: number }[] = []
   for (const c of suiteCases) {
     if (!c.name || !c.gateway_tool) {
       message.warning(t('evaluation.caseRequired'))
@@ -279,11 +338,11 @@ async function runSuite() {
         return
       }
     }
-    parsed.push({ name: c.name, gateway_tool: c.gateway_tool, arguments: args, expected_substring: c.expected_substring })
+    parsed.push({ name: c.name, gateway_tool: c.gateway_tool, arguments: args, expected_substring: c.expected_substring, timeout_ms: c.timeout_ms || undefined })
   }
   suiteLoading.value = true
   try {
-    suiteResult.value = await runEvalSuite(serverId.value, parsed)
+    suiteResult.value = await runEvalSuite(serverId.value, parsed, targetInstance.value || undefined)
   } catch (e) {
     message.error(String(e))
   } finally {
@@ -328,6 +387,14 @@ const caseColumns = computed<any[]>(() => [
   { title: '', key: 'result', width: 90 },
 ])
 
+// 按网关工具分组的回归汇总列。
+const byToolColumns = computed<any[]>(() => [
+  { title: t('evaluation.gatewayTool'), key: 'gateway_tool', dataIndex: 'gateway_tool' },
+  { title: t('evaluation.total'), key: 'total', dataIndex: 'total', width: 90 },
+  { title: t('evaluation.passCount'), key: 'passed', width: 120 },
+  { title: t('evaluation.p95Latency'), key: 'p95', width: 120 },
+])
+
 function severityColor(sev: string) {
   return sev === 'error' ? 'red' : sev === 'warn' ? 'orange' : 'blue'
 }
@@ -346,6 +413,11 @@ function scoreText(v?: number) {
 
 function rateText(v: number) {
   return `${(v * 100).toFixed(0)}%`
+}
+
+// pctText 把 0..1 的比例显示为百分比（如维度权重）。
+function pctText(v: number) {
+  return `${Math.round((v ?? 0) * 100)}%`
 }
 
 function msText(v: number) {
@@ -437,6 +509,29 @@ function formatTime(iso: string) {
 }
 .case-expect {
   flex: 0 0 200px;
+}
+.case-timeout {
+  flex: 0 0 90px;
+}
+.dim-weight {
+  font-size: 11px;
+  color: var(--mc-ink-3);
+  margin-top: 6px;
+}
+.runtime-stats {
+  display: flex;
+  gap: 24px;
+  padding: 8px 0 2px;
+}
+.issues {
+  margin-top: 8px;
+}
+.issue {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 13px;
+  padding: 2px 0;
 }
 .finding-list {
   margin: 0;

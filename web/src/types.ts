@@ -95,10 +95,24 @@ export interface AccessKey {
   updated_at: string
 }
 
+// KeyInvokeResult 是控制面「以某 Key 身份试调用」的返回（POST /api/keys/{id}/invoke）。
+// Allowed=false 时后端以 403 信封返回，不产生本数据体；此处覆盖放行后的成功/失败。
+export interface KeyInvokeResult {
+  allowed: boolean
+  is_error?: boolean
+  server_id?: string
+  instance_id?: string
+  latency_ms: number
+  error_code?: string
+  message?: string
+  content?: string
+}
+
 export interface TrafficSample {
   request_id: string
   trace_id?: string
   server_id: string
+  instance_id?: string
   tool: string
   client?: string
   status: string

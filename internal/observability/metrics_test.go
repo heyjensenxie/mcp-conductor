@@ -25,14 +25,15 @@ func TestMetricsTrendToolAggregates(t *testing.T) {
 	}
 }
 
-// TestMetricsTrendScopeIsolation 验证 Tool/Server 两个 scope 互不串。
+// TestMetricsTrendScopeIsolation 验证 Tool/Server/Instance 三个 scope 互不串。
 func TestMetricsTrendScopeIsolation(t *testing.T) {
 	m := NewMetrics()
 	m.Record("mock.search", true, time.Millisecond) // 工具维
 	m.Record(ServerDimPrefix+"srv-1", true, time.Millisecond)
+	m.Record(InstanceDimPrefix+"srv-1:inst-1", false, time.Millisecond) // 实例维
 
 	if got := m.TrendTool(1)[0].Totals; got != 1 {
-		t.Fatalf("TrendTool 应只含工具维，得到 %d", got)
+		t.Fatalf("TrendTool 应只含工具维（排除 instance:），得到 %d", got)
 	}
 	if got := m.TrendServer(1)[0].Totals; got != 1 {
 		t.Fatalf("TrendServer 应只含 server: 前缀，得到 %d", got)
@@ -69,8 +70,8 @@ func TestMetricsTrendPrunesOldBuckets(t *testing.T) {
 	old := now.Unix() - (trendKeepMinutes+10)*minuteSec
 	m.mu.Lock()
 	m.rows["mock.search"] = &metricRow{buckets: map[int64]*trendBucket{
-		old:             {total: 5, err: 0},
-		now.Unix():      {total: 1, err: 0},
+		old:        {total: 5, err: 0},
+		now.Unix(): {total: 1, err: 0},
 	}}
 	m.mu.Unlock()
 

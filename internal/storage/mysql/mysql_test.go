@@ -439,8 +439,10 @@ func TestTrafficAppendRecent(t *testing.T) {
 	now := time.Now().UTC()
 	for i := 0; i < 3; i++ {
 		if err := store.AppendTraffic(ctx, model.TrafficSample{
-			RequestID: "req-" + string(rune('a'+i)),
-			ServerID:  "srv-1", Tool: "mock.search", Status: "success",
+			RequestID:  "req-" + string(rune('a'+i)),
+			ServerID:   "srv-1",
+			InstanceID: "inst-1",
+			Tool:       "mock.search", Status: "success",
 			LatencyMS: int64(i + 1), Timestamp: now,
 		}); err != nil {
 			t.Fatalf("AppendTraffic: %v", err)
@@ -456,6 +458,9 @@ func TestTrafficAppendRecent(t *testing.T) {
 	}
 	if samples[0].LatencyMS != 3 { // 倒序，最新在前
 		t.Fatalf("RecentTraffic 应按写入倒序: %+v", samples)
+	}
+	if samples[0].InstanceID != "inst-1" || samples[1].InstanceID != "inst-1" {
+		t.Fatalf("RecentTraffic 实例字段应往返: %+v", samples)
 	}
 }
 

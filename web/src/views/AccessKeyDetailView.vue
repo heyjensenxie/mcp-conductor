@@ -27,6 +27,9 @@
             </span>
           </div>
           <div class="ph-btns">
+            <a-button :loading="invokeRunning" @click="openInvoke">
+              <template #icon><ExperimentOutlined /></template>{{ t('access.invokeAsKey') }}
+            </a-button>
             <a-button :loading="saving" :disabled="saving" @click="save">{{ t('common.save') }}</a-button>
             <a-button type="primary" :loading="saving" :disabled="saving" @click="save">{{ t('access.publishGrants') }}</a-button>
           </div>
@@ -321,6 +324,52 @@
           <a-button @click="copyNewSecret"><template #icon><CopyOutlined /></template>{{ t('access.copy') }}</a-button>
         </a-input-group>
       </a-modal>
+
+      <!-- 试调用：以该 Key 身份端到端调用一次（Operator 触发，后台免明文，不写遥测） -->
+      <a-modal
+        v-model:open="invokeVisible"
+        :title="t('access.invokeTitle')"
+        :footer="null"
+        width="640px"
+      >
+        <p class="inv-desc">{{ t('access.invokeDesc') }}</p>
+        <a-form layout="vertical">
+          <a-form-item :label="t('access.invokeGatewayTool')">
+            <a-select
+              v-model:value="invokeTool"
+              show-search
+              option-filter-prop="value"
+              allow-clear
+              :placeholder="t('access.invokeToolPlaceholder')"
+            >
+              <a-select-option v-for="g in enabledTools" :key="g.gateway_name" :value="g.gateway_name">{{ g.gateway_name }}</a-select-option>
+            </a-select>
+          </a-form-item>
+          <a-form-item :label="t('access.invokeArgs')">
+            <a-textarea v-model:value="invokeArgsText" :rows="4" class="mono" placeholder='{ "q": "…" }' />
+          </a-form-item>
+          <div class="inv-actions">
+            <a-button type="primary" :loading="invokeRunning" :disabled="!invokeTool" @click="runInvoke">
+              <template #icon><PlayCircleOutlined /></template>{{ t('access.invokeRun') }}
+            </a-button>
+          </div>
+        </a-form>
+
+        <template v-if="invokeOut">
+          <a-alert v-if="invokeOut.type === 'denied'" type="error" show-icon class="inv-result" :message="invokeOut.message" />
+          <div v-else class="inv-result">
+            <a-alert v-if="invokeOut.res.is_error" type="warning" show-icon class="mb"
+              :message="`${invokeOut.res.error_code} — ${invokeOut.res.message || ''}`" />
+            <div class="inv-meta mono">
+              <template v-if="invokeOut.res.server_id">{{ t('access.invokeServer') }} {{ invokeOut.res.server_id }} · {{ t('access.invokeInstance') }} {{ invokeOut.res.instance_id }}</template>
+              <template v-else>-</template>
+              · {{ t('access.invokeLatency') }} {{ invokeOut.res.latency_ms }}ms
+            </div>
+            <pre v-if="invokeOut.res.content" class="inv-content">{{ invokeOut.res.content }}</pre>
+            <p v-else-if="!invokeOut.res.is_error" class="muted">{{ t('access.invokeNoContent') }}</p>
+          </div>
+        </template>
+      </a-modal>
     </div>
   </a-spin>
 </template>
@@ -329,10 +378,10 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { ArrowLeftOutlined, CopyOutlined, DeleteOutlined, DownOutlined, InfoCircleOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
+import { ArrowLeftOutlined, CopyOutlined, DeleteOutlined, DownOutlined, ExperimentOutlined, InfoCircleOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
-import { getKey, listAllServers, listAllTools, rotateKey, updateKey } from '@/api'
-import type { AccessKey, MCPServer, Tool, ToolGrant } from '@/types'
+import { getKey, invokeKey, listAllServers, listAllTools, rotateKey, updateKey } from '@/api'
+import type { AccessKey, KeyInvokeResult, MCPServer, Tool, ToolGrant } from '@/types'
 
 interface GrantEditor { gw: string; headers: { k: string; v: string }[]; defargs: { k: string; v: string }[] }
 type GrantKind = 'tool' | 'global' | 'pattern'
@@ -357,6 +406,13 @@ const rotateVisible = ref(false)
 const rotating = ref(false)
 const newSecret = ref('')
 const secretVisible = ref(false)
+
+// ---- 试调用：以该 Key 身份端到端调用（Operator 触发，后台免明文，不写遥测）----
+const invokeVisible = ref(false)
+const invokeTool = ref('')
+const invokeArgsText = ref('')
+const invokeRunning = ref(false)
+const invokeOut = ref<{ type: 'ok'; res: KeyInvokeResult } | { type: 'denied'; message: string } | null>(null)
 
 const grants = ref<GrantEditor[]>([])
 const form = reactive({ qps: 0, burst: 0, enabled: true })
@@ -585,6 +641,39 @@ async function doRotateKey() {
     message.error(String(e))
   } finally {
     rotating.value = false
+  }
+}
+
+function openInvoke() {
+  invokeTool.value = ''
+  invokeArgsText.value = ''
+  invokeOut.value = null
+  invokeVisible.value = true
+}
+
+async function runInvoke() {
+  if (!key.value || !invokeTool.value) return
+  let args: Record<string, unknown> = {}
+  if (invokeArgsText.value.trim()) {
+    try {
+      const v = JSON.parse(invokeArgsText.value)
+      if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error('obj')
+      args = v
+    } catch {
+      message.warning(t('access.invokeArgsInvalid'))
+      return
+    }
+  }
+  invokeRunning.value = true
+  invokeOut.value = null
+  try {
+    const res = await invokeKey(key.value.id, { gateway_tool: invokeTool.value, arguments: args })
+    invokeOut.value = { type: 'ok', res }
+  } catch (e) {
+    // 403 授权拒绝/禁用等由后端信封给出；展示为明确拒绝而非裸错误。
+    invokeOut.value = { type: 'denied', message: String(e) }
+  } finally {
+    invokeRunning.value = false
   }
 }
 
@@ -1085,6 +1174,26 @@ onMounted(load)
 .rotate-desc { margin: 0 0 2px; color: var(--mc-ink-2); font-size: 13px; line-height: 1.6; }
 .mb { margin-bottom: 16px; }
 .secret-row { display: flex; width: 100%; }
+
+/* ===== 试调用 modal ===== */
+.inv-desc { margin: 0 0 6px; color: var(--mc-ink-2); font-size: 12px; line-height: 1.6; }
+.inv-actions { margin: 2px 0 10px; }
+.inv-result { margin-top: 4px; }
+.inv-meta { font-size: 11.5px; color: var(--mc-ink-2); margin: 10px 0 6px; }
+.inv-content {
+  margin: 0;
+  padding: 10px 12px;
+  background: #f6f8fb;
+  border: 1px solid var(--mc-line);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--mc-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow: auto;
+}
+.muted { color: var(--mc-ink-3); font-size: 12px; }
 
 /* ===== 响应式 ===== */
 @media (max-width: 1240px) {

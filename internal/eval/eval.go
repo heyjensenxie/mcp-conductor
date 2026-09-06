@@ -53,22 +53,29 @@ type Meta struct {
 }
 
 // Describe 返回指定 Server 的评测概况。
-func (s *Service) Describe(ctx context.Context, id string) (*Meta, error) {
+// instanceID 为空时拨测首个可拨测实例（无则仅给 warn issue）；非空时必须属于
+// 该 Server 且可拨测，否则返回明确错误（供定向评测前端提示）。
+func (s *Service) Describe(ctx context.Context, id, instanceID string) (*Meta, error) {
 	server, err := s.store.GetServer(ctx, id)
 	if err != nil {
 		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
 	}
-	instances, err := s.store.ListInstancesByServer(ctx, id)
-	if err != nil {
-		return nil, errs.Wrap(errs.CodeInternal, err, "读取实例失败")
-	}
-	inst, pickErr := pickInstance(instances)
-	var probe *InstanceMeta
+	var inst *model.Instance
 	var issues []Finding
-	if pickErr != nil {
-		issues = append(issues, Finding{Severity: SeverityWarn, Code: "no_callable_instance",
-			Message: "该 Server 当前没有可拨测的启用实例", Suggestion: "新增实例或启用/恢复某个实例后即可评测"})
+	if instanceID == "" {
+		inst, err = s.pickTarget(ctx, id, "")
+		if err != nil {
+			issues = append(issues, Finding{Severity: SeverityWarn, Code: "no_callable_instance",
+				Message: "该 Server 当前没有可拨测的启用实例", Suggestion: "新增实例或启用/恢复某个实例后即可评测"})
+		}
 	} else {
+		inst, err = s.pickTarget(ctx, id, instanceID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var probe *InstanceMeta
+	if inst != nil {
 		probe = &InstanceMeta{ID: inst.ID, Endpoint: inst.Endpoint, Transport: string(inst.Transport), HealthStatus: string(inst.HealthStatus)}
 	}
 	tools, err := s.store.ListToolsByServer(ctx, id)
@@ -92,13 +99,15 @@ func (s *Service) Describe(ctx context.Context, id string) (*Meta, error) {
 	}, nil
 }
 
-// RunQuality 对指定 Server 现场拨测并输出质量报告。
-func (s *Service) RunQuality(ctx context.Context, id string) (*Report, error) {
+// RunQuality 对指定 Server 现场拨测并输出质量报告；instanceID 为空取首个可拨测
+// 实例。runtime 统计块仍按整个 Server 的流量取（观测为 Server 级），定向实例只
+// 决定本次拨测对象。
+func (s *Service) RunQuality(ctx context.Context, id, instanceID string) (*Report, error) {
 	server, err := s.store.GetServer(ctx, id)
 	if err != nil {
 		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
 	}
-	instance, err := s.pickCallable(ctx, server.ID)
+	instance, err := s.pickTarget(ctx, server.ID, instanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -158,8 +167,8 @@ func (s *Service) RunQuality(ctx context.Context, id string) (*Report, error) {
 	}, nil
 }
 
-// RunSuite 顺序执行一组回归用例（直连上游）。
-func (s *Service) RunSuite(ctx context.Context, id string, cases []SuiteCase) (*SuiteResult, error) {
+// RunSuite 顺序执行一组回归用例（直连上游）；instanceID 为空取首个可拨测实例。
+func (s *Service) RunSuite(ctx context.Context, id, instanceID string, cases []SuiteCase) (*SuiteResult, error) {
 	if len(cases) == 0 {
 		return nil, errs.New(errs.CodeInvalidArgument, "cases 不能为空")
 	}
@@ -167,7 +176,7 @@ func (s *Service) RunSuite(ctx context.Context, id string, cases []SuiteCase) (*
 	if err != nil {
 		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
 	}
-	instance, err := s.pickCallable(ctx, server.ID)
+	instance, err := s.pickTarget(ctx, server.ID, instanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -184,13 +193,28 @@ func (s *Service) RunSuite(ctx context.Context, id string, cases []SuiteCase) (*
 	return &out, nil
 }
 
-// pickCallable 取该 Server 第一个可拨测实例。
-func (s *Service) pickCallable(ctx context.Context, serverID string) (*model.Instance, error) {
+// pickTarget 取该 Server 的评测/回归目标实例。
+// instanceID 为空：返回第一个可拨测实例（无则 CodeRoute 错误）。
+// instanceID 非空：必须是该 Server 的实例且 IsCallable()（启用且非 unhealthy），
+// 否则返回明确 4xx（不属于 → CodeNotFound；不可拨测 → CodeInvalidArgument）。
+func (s *Service) pickTarget(ctx context.Context, serverID, instanceID string) (*model.Instance, error) {
 	instances, err := s.store.ListInstancesByServer(ctx, serverID)
 	if err != nil {
 		return nil, errs.Wrap(errs.CodeInternal, err, "读取实例失败")
 	}
-	return pickInstance(instances)
+	if instanceID == "" {
+		return pickInstance(instances)
+	}
+	for i := range instances {
+		if instances[i].ID != instanceID {
+			continue
+		}
+		if !instances[i].IsCallable() {
+			return nil, errs.New(errs.CodeInvalidArgument, "实例 %q 不可拨测（未启用或 unhealthy），请选择其它实例", instanceID)
+		}
+		return &instances[i], nil
+	}
+	return nil, errs.New(errs.CodeNotFound, "实例 %q 不属于该 Server", instanceID)
 }
 
 // pickInstance 返回第一个启用且未被探测为 unhealthy 的实例。

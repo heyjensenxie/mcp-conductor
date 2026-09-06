@@ -81,6 +81,11 @@ func Run(ctx context.Context) error {
 		return eval.RuntimeStats{}, false
 	})
 
+	// 周期性健康巡检：以 initialize 握手为 Probe，启动时先全量探一遍，
+	// 注册/启用 Server 时经 ProbeNow 即时触发单点探活；实例调用失败时由网关
+	// 经 WithInstanceProbe 触发快速探活（见 mcpGateway 装配）。
+	monitor := health.NewMonitor(store, adapter, 30*time.Second, cfg.Gateway.UpstreamTimeout)
+
 	mcpGateway := gateway.NewMCPGateway(
 		store,
 		resolver,
@@ -91,6 +96,7 @@ func Run(ctx context.Context) error {
 		recorder,
 		gateway.WithUpstreamTimeout(cfg.Gateway.UpstreamTimeout),
 		gateway.WithMaxConcurrency(cfg.Gateway.MaxConcurrency),
+		gateway.WithInstanceProbe(monitor.TriggerCheck),
 	)
 
 	authSvc, err := auth.NewService(cfg.Auth, store)
@@ -107,9 +113,7 @@ func Run(ctx context.Context) error {
 	}
 	limiter := buildLimiter(cfg)
 
-	// 周期性健康巡检：以 initialize 握手为 Probe，启动时先全量探一遍，
-	// 注册/启用 Server 时可被控制面经 ProbeNow 即时触发单点探活。
-	monitor := health.NewMonitor(store, adapter, 30*time.Second, cfg.Gateway.UpstreamTimeout)
+	// 启动巡检协程 + 启动时先全量探一遍（Monitor 已在上方随网关装配）。
 	monitor.CheckOnce(ctx)
 	go monitor.Run(ctx)
 
@@ -126,6 +130,7 @@ func Run(ctx context.Context) error {
 		},
 		ProbeNow: monitor.TriggerCheck,
 		Eval:     evalSvc,
+		KeyCall:  mcpGateway,
 	})
 
 	return runWithSignal(ctx, server)

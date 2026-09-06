@@ -34,6 +34,8 @@ type Deps struct {
 	ProbeNow func(serverID string)
 	// Eval 是 MCP 评测服务（质量分 + 回归用例；nil 表示评测未启用）。
 	Eval *eval.Service
+	// KeyCall 是控制面「按 Key 试调用」能力（*MCPGateway 满足；nil 表示未装配）。
+	KeyCall KeyCallService
 }
 
 // NewServer 组装 HTTP 服务器：统一 MCP 端点 + 控制面 REST API + 健康探针，
@@ -76,6 +78,7 @@ func registerControlRoutes(mux *http.ServeMux, deps Deps) {
 	// 注册/启用 Server 后即时触发健康巡检（nil 安全，测试可不注入）。
 	control.probeNow = deps.ProbeNow
 	control.eval = deps.Eval
+	control.keyCall = deps.KeyCall
 
 	mux.HandleFunc("GET /api/servers", control.handleListServers)
 	mux.HandleFunc("POST /api/servers", control.handleCreateServer)
@@ -113,6 +116,7 @@ func registerControlRoutes(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("PATCH /api/keys/{id}", control.handleUpdateKey)
 	mux.HandleFunc("DELETE /api/keys/{id}", control.handleDeleteKey)
 	mux.HandleFunc("POST /api/keys/{id}/rotate", control.handleRotateKeySecret)
+	mux.HandleFunc("POST /api/keys/{id}/invoke", control.handleKeyInvoke)
 
 	mux.HandleFunc("GET /api/metrics", control.handleMetrics)
 	mux.HandleFunc("GET /api/metrics/trend", control.handleMetricsTrend)

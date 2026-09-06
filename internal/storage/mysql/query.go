@@ -342,11 +342,15 @@ func (s *Store) loadKeyGrants(ctx context.Context, keys []model.AccessKey) error
 
 // QueryTraffic 分页查询调用日志（按 id 倒序）。
 func (s *Store) QueryTraffic(ctx context.Context, q query.TrafficQuery) ([]model.TrafficSample, int, error) {
-	cond := make([]string, 0, 5)
-	args := make([]any, 0, 5)
+	cond := make([]string, 0, 6)
+	args := make([]any, 0, 6)
 	if q.ServerID != "" {
 		cond = append(cond, "server_id = ?")
 		args = append(args, q.ServerID)
+	}
+	if q.InstanceID != "" {
+		cond = append(cond, "instance_id = ?")
+		args = append(args, q.InstanceID)
 	}
 	if q.Status != "" {
 		cond = append(cond, "status = ?")
@@ -370,7 +374,7 @@ func (s *Store) QueryTraffic(ctx context.Context, q query.TrafficQuery) ([]model
 		return nil, 0, fmt.Errorf("count traffic: %w", err)
 	}
 
-	sql := `SELECT request_id, COALESCE(trace_id,''), COALESCE(server_id,''), tool, COALESCE(client,''),
+	sql := `SELECT request_id, COALESCE(trace_id,''), COALESCE(server_id,''), COALESCE(instance_id,''), tool, COALESCE(client,''),
 	               status, latency_ms, COALESCE(error,''), ts
 	         FROM traffic_log`
 	if len(cond) > 0 {
@@ -388,8 +392,9 @@ func (s *Store) QueryTraffic(ctx context.Context, q query.TrafficQuery) ([]model
 	out := make([]model.TrafficSample, 0)
 	for rows.Next() {
 		var sample model.TrafficSample
-		if err := rows.Scan(&sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.Tool,
-			&sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error, &sample.Timestamp); err != nil {
+		if err := rows.Scan(&sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.InstanceID,
+			&sample.Tool, &sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error,
+			&sample.Timestamp); err != nil {
 			return nil, 0, fmt.Errorf("scan traffic: %w", err)
 		}
 		out = append(out, sample)

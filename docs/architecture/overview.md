@@ -55,6 +55,8 @@ Request
 
 错误分类：`protocol / authentication / authorization / rate_limit / route / upstream / timeout / internal`，对外统一为 `code + message(脱敏) + request_id`。
 
+**失败反馈回路（Balancer）**：`tools/call` 的一次真实拨测失败若属**传输/实例级故障**（连接失败/超时，上游 isError 的纯业务失败被 `registry.ToolFailedError` 标记排除），网关会回报 `RoundRobin.ReportFailure` 让该实例进入约 5s 短期冷却（不再被后续调用选中），并触发该 Server 的快速健康探活（`health.Monitor.TriggerCheck`）；探活确认健康或冷却期满后放回。这样坏实例的暴露时间从“等下一轮 30s 巡检”压到秒级，避免把每个请求都打向疑似故障的上游。
+
 认证（默认开启）：Console 用管理员账号（`admin`/`admin_password`，未配置首启生成并打印）登录换会话；`/api` 控制面接受会话或 `operator_token`（程序化）；`/mcp` 数据面用 API Key，与登录分离。
 
 ## 3. 数据模型与命名空间
@@ -66,9 +68,10 @@ Request
 
 ## 4. 观测
 
-- 每次 `tools/call`：`request_id / trace_id / server / tool / client / status / latency / timestamp` 落库并输出结构化日志。
-- 默认**不记录**完整参数与返回值（可能含隐私）；`observability.record_body` 与 `sample_rate` 为后续精细化预留。
-- 指标维度：请求量、成功率、错误率、P50/P95/P99、Server Health、Tool Call Count（经 `/api/metrics` 读取）。
+- 每次 `tools/call`：`request_id / trace_id / server / instance / tool / client / status / latency / timestamp` 落调用日志并输出结构化日志。多实例 Server 会记录**命中实例**（`instance_id`，可配合 `server_id` 精确筛选，见 `traffic_log` 0009）。
+- 默认**不记录**完整参数与返回值（可能含隐私）。`observability.sample_rate` 已生效（采样即丢弃，降低高并发写放大）；`observability.record_body` 仍为预留（当前不落参数/返回值）。
+- 指标维度：请求量、成功率、错误率、P50/P95/P99、Server Health、Tool Call Count（经 `/api/metrics` 读取）。维度三档：工具维（默认）、`?scope=server` 的 `server:<id>` 聚合、`?scope=instance&server_id=` 的 `instance:<sid>:<iid>` 实例维（`internal/gateway/mcp.go` 同一次调用三档各记一次，实例维仅进程内）。
+- 控制面另有「以 API Key 身份试调用」`POST /api/keys/{id}/invoke`：以已存 Key 身份跑完整数据面链路验证白名单授权，**不写调用日志/metrics**（诊断流量不污染真实观测）。
 
 ## 5. 明确不在 v0.1
 

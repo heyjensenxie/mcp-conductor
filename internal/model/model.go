@@ -271,13 +271,16 @@ func MergeArguments(defaultArgs, clientArgs map[string]any) map[string]any {
 
 // TrafficSample 是一条工具调用观测记录（Request Logging / Audit 的落库结构）。
 type TrafficSample struct {
-	RequestID string    `json:"request_id"`
-	TraceID   string    `json:"trace_id,omitempty"`
-	ServerID  string    `json:"server_id"`
-	Tool      string    `json:"tool"`
-	Client    string    `json:"client,omitempty"`
-	Status    string    `json:"status"`
-	LatencyMS int64     `json:"latency_ms"`
-	Error     string    `json:"error,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
+	RequestID string `json:"request_id"`
+	TraceID   string `json:"trace_id,omitempty"`
+	ServerID  string `json:"server_id"`
+	// InstanceID 记录本次调用实际命中的上游实例；实例未定（如路由阶段失败）
+	// 或 Server 单实例未落实例归属时为 ""。
+	InstanceID string    `json:"instance_id,omitempty"`
+	Tool       string    `json:"tool"`
+	Client     string    `json:"client,omitempty"`
+	Status     string    `json:"status"`
+	LatencyMS  int64     `json:"latency_ms"`
+	Error      string    `json:"error,omitempty"`
+	Timestamp  time.Time `json:"timestamp"`
 }

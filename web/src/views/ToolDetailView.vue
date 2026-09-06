@@ -11,6 +11,11 @@
             </a-tag>
           </a-space>
         </template>
+        <template #extra>
+          <a-button size="small" @click="openEdit">
+            <template #icon><EditOutlined /></template>{{ t('common.edit') }}
+          </a-button>
+        </template>
       </a-page-header>
 
       <!-- 基本信息 -->
@@ -74,6 +79,25 @@
           <pre :class="['result', resultError ? 'result-error' : '']" class="mono">{{ resultText || t('toolDetail.contentEmpty') }}</pre>
         </template>
       </a-card>
+
+      <!-- 编辑 / 恢复源定义（与 Tools 列表页弹窗同语义：updateTool + 逐字段 reset） -->
+      <a-modal v-model:open="editVisible" :title="t('tools.editTitle')" :confirm-loading="saving" :width="760" @ok="save">
+        <a-form layout="vertical">
+          <a-form-item :label="t('tools.original')"><a-input :value="tool.original_name" disabled /></a-form-item>
+          <a-form-item :label="t('tools.gatewayName')" :help="t('tools.renameHint')">
+            <a-input v-model:value="form.gatewayName" />
+            <a-button v-if="tool.name_overridden" type="link" size="small" class="reset" @click="form.gatewayName = canonicalName; resetName = true">{{ t('tools.resetSource') }}</a-button>
+          </a-form-item>
+          <a-form-item :label="t('tools.description')">
+            <a-textarea v-model:value="form.description" :rows="3" />
+            <a-button v-if="tool.description_overridden" type="link" size="small" class="reset" @click="form.description = tool.source_description ?? ''; resetDescription = true">{{ t('tools.resetSource') }}</a-button>
+          </a-form-item>
+          <a-form-item :label="t('tools.inputSchema')" :help="t('tools.schemaHint')">
+            <InputSchemaEditor ref="schemaEditor" v-model="form.inputSchema" :seed="editSeed" />
+            <a-button v-if="tool.input_schema_overridden" type="link" size="small" class="reset" @click="resetSchemaToSource">{{ t('tools.resetSource') }}</a-button>
+          </a-form-item>
+        </a-form>
+      </a-modal>
     </template>
     <a-empty v-else-if="!loading" :description="t('toolDetail.notFound')">
       <a-button type="primary" @click="$router.push('/tools')">{{ t('toolDetail.back') }}</a-button>
@@ -87,9 +111,10 @@ import { useRoute } from 'vue-router'
 import axios from 'axios'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { PlayCircleOutlined } from '@ant-design/icons-vue'
-import { getTool, listAllServers } from '@/api'
+import { PlayCircleOutlined, EditOutlined } from '@ant-design/icons-vue'
+import { getTool, listAllServers, updateTool } from '@/api'
 import InputSchemaView from '@/components/InputSchemaView.vue'
+import InputSchemaEditor from '@/components/InputSchemaEditor.vue'
 import ParamEditor from '@/components/ParamEditor.vue'
 import { schemaToNodes, objectSkeleton, editorKindFor } from '@/utils/schema'
 import type { ParamNode, ScalarKind } from '@/utils/schema'
@@ -117,6 +142,21 @@ const invoking = ref(false)
 const resultText = ref('')
 const resultMeta = ref('')
 const resultError = ref(false)
+
+// —— 编辑 / 恢复源定义（复用 Tools 列表页弹窗语义）——
+const editVisible = ref(false)
+const saving = ref(false)
+const schemaEditor = ref<InstanceType<typeof InputSchemaEditor> | null>(null)
+const editSeed = ref(0)
+const resetName = ref(false)
+const resetDescription = ref(false)
+const resetInputSchema = ref(false)
+const form = reactive({ gatewayName: '', description: '', inputSchema: '' })
+// canonicalName：按 Server 命名空间 + 上游原名复原对外名（reset 用）。
+const canonicalName = computed(() => {
+  const namespace = serverName.value.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'server'
+  return `${namespace}.${tool.value?.original_name ?? ''}`
+})
 
 const serverName = computed(() => servers.value.find((s) => s.id === tool.value?.server_id)?.name ?? '')
 
@@ -350,6 +390,61 @@ async function invoke() {
     invoking.value = false
   }
 }
+
+// —— 编辑 / 恢复源定义 ——
+function openEdit() {
+  const spec = tool.value
+  if (!spec) return
+  form.gatewayName = spec.gateway_name
+  form.description = spec.description ?? ''
+  form.inputSchema = JSON.stringify(spec.input_schema ?? {}, null, 2)
+  resetName.value = resetDescription.value = resetInputSchema.value = false
+  editSeed.value += 1
+  editVisible.value = true
+}
+
+function resetSchemaToSource() {
+  resetInputSchema.value = true
+  form.inputSchema = JSON.stringify(tool.value?.source_input_schema ?? {}, null, 2)
+  // 即使目标串与当前已提交串相同，也强制编辑器按上游重建，丢弃未提交的编辑态。
+  editSeed.value += 1
+}
+
+async function save() {
+  if (!tool.value) return
+  // 由编辑器统一提交：表格模式会校验并重建，JSON 模式做语法校验；非法时返回 null。
+  let schemaText = form.inputSchema
+  if (schemaEditor.value) {
+    const committed = schemaEditor.value.commit()
+    if (committed === null) return
+    schemaText = committed
+  }
+  let schema: Record<string, unknown>
+  try {
+    schema = JSON.parse(schemaText)
+  } catch {
+    message.warning(t('tools.invalidSchema'))
+    return
+  }
+  saving.value = true
+  try {
+    await updateTool(tool.value.id, {
+      gateway_name: form.gatewayName,
+      description: form.description,
+      input_schema: schema,
+      reset_name: resetName.value,
+      reset_description: resetDescription.value,
+      reset_input_schema: resetInputSchema.value,
+    })
+    editVisible.value = false
+    message.success(t('tools.updatedOk'))
+    await load()
+  } catch (e) {
+    message.error(String(e))
+  } finally {
+    saving.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -389,5 +484,10 @@ async function invoke() {
 .muted {
   color: var(--mc-ink-3);
   font-size: 12px;
+}
+.reset {
+  padding-left: 0;
+  font-size: 12px;
+  height: 22px;
 }
 </style>

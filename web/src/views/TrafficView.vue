@@ -14,8 +14,11 @@
 
     <div class="filters">
       <a-space wrap :size="8">
-        <a-select v-model:value="logFilters.serverId" allow-clear show-search option-filter-prop="label" :placeholder="t('filter.serverPlaceholder')" style="width: 220px" @change="onFilterChange">
+        <a-select v-model:value="logFilters.serverId" allow-clear show-search option-filter-prop="label" :placeholder="t('filter.serverPlaceholder')" style="width: 200px" @change="onServerFilter">
           <a-select-option v-for="s in servers" :key="s.id" :value="s.id" :label="s.name">{{ s.name }}</a-select-option>
+        </a-select>
+        <a-select v-if="instances.length > 1" v-model:value="logFilters.instanceId" allow-clear :placeholder="t('traffic.filterInstance')" style="width: 200px" @change="onFilterChange">
+          <a-select-option v-for="inst in instances" :key="inst.id" :value="inst.id">{{ inst.id }}</a-select-option>
         </a-select>
         <a-input v-model:value="logFilters.q" allow-clear :placeholder="t('filter.keyword')" style="width: 200px" @press-enter="onFilterChange">
           <template #prefix><SearchOutlined /></template>
@@ -41,6 +44,10 @@
         <template v-if="column.key === 'status'">
           <a-tag :color="record.status === 'success' ? 'green' : 'red'">{{ record.status }}</a-tag>
         </template>
+        <template v-else-if="column.key === 'instance_id'">
+          <span v-if="record.instance_id" class="mono">{{ record.instance_id }}</span>
+          <span v-else>-</span>
+        </template>
         <template v-else-if="column.key === 'error'">
           <a-tooltip v-if="record.error" :title="record.error">
             <span class="err-cell">{{ record.error }}</span>
@@ -57,13 +64,14 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
-import { getLogs, getMetricsTrend, listAllServers } from '@/api'
-import type { MCPServer, TrafficSample, TrendPoint } from '@/types'
+import { getLogs, getMetricsTrend, listAllServers, listServerInstances } from '@/api'
+import type { MCPServer, ServerInstance, TrafficSample, TrendPoint } from '@/types'
 import TrafficTrend from '@/components/TrafficTrend.vue'
 
 const { t } = useI18n()
 const logs = ref<TrafficSample[]>([])
 const servers = ref<MCPServer[]>([])
+const instances = ref<ServerInstance[]>([])
 const loading = ref(false)
 const trendData = ref<TrendPoint[]>([])
 
@@ -75,7 +83,7 @@ const pagination = reactive({
   showSizeChanger: true,
   showTotal: (total: number) => t('filter.total', { total }),
 })
-const logFilters = reactive({ serverId: '', q: '', status: '', from: '', to: '' })
+const logFilters = reactive({ serverId: '', instanceId: '', q: '', status: '', from: '', to: '' })
 const dateRange = ref<any>(null)
 
 // 失败状态=标准错误码；'success' 之外的 code 直接展示。
@@ -106,8 +114,9 @@ const trendHasData = computed(() => trendData.value.some((p) => p.totals > 0))
 const columns = computed<any[]>(() => [
   { title: t('traffic.time'), key: 'timestamp', dataIndex: 'timestamp', width: 190 },
   { title: t('traffic.tool'), key: 'tool', dataIndex: 'tool' },
-  { title: t('traffic.server'), key: 'server_id', dataIndex: 'server_id', width: 120 },
-  { title: t('traffic.client'), key: 'client', dataIndex: 'client', width: 110 },
+  { title: t('traffic.server'), key: 'server_id', dataIndex: 'server_id', width: 90 },
+  { title: t('traffic.instance'), key: 'instance_id', dataIndex: 'instance_id', width: 110 },
+  { title: t('traffic.client'), key: 'client', dataIndex: 'client', width: 100 },
   { title: t('traffic.status'), key: 'status', dataIndex: 'status', width: 100 },
   { title: t('traffic.latencyMs'), key: 'latency_ms', dataIndex: 'latency_ms', width: 100 },
   { title: t('traffic.error'), key: 'error', dataIndex: 'error', ellipsis: true },
@@ -129,6 +138,7 @@ async function load() {
     const [logRes, trendRes] = await Promise.all([
       getLogs({
         server_id: logFilters.serverId || undefined,
+        instance_id: logFilters.instanceId || undefined,
         q: logFilters.q.trim() || undefined,
         status: logFilters.status || undefined,
         from: logFilters.from || undefined,
@@ -156,6 +166,20 @@ async function load() {
 function onFilterChange() {
   pagination.current = 1
   void load()
+}
+
+// 切换 Server 时级联加载其实例，供按实例筛选；实例下拉仅在多实例 Server 出现。
+async function onServerFilter() {
+  instances.value = []
+  logFilters.instanceId = ''
+  if (logFilters.serverId) {
+    try {
+      instances.value = await listServerInstances(logFilters.serverId)
+    } catch {
+      instances.value = []
+    }
+  }
+  onFilterChange()
 }
 
 function onTableChange(p: { current?: number; pageSize?: number }) {

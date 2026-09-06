@@ -213,9 +213,9 @@ func TestQueryTrafficFilterAndPage(t *testing.T) {
 	base := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
 
 	samples := []model.TrafficSample{
-		{RequestID: m + "-1", ServerID: "s1", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: base},
-		{RequestID: m + "-2", ServerID: "s2", Tool: "beta.search", Client: "c2", Status: "upstream_error", Timestamp: base.Add(30 * time.Second)},
-		{RequestID: m + "-3", ServerID: "s1", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: base.Add(60 * time.Second)},
+		{RequestID: m + "-1", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: base},
+		{RequestID: m + "-2", ServerID: "s2", InstanceID: "i2", Tool: "beta.search", Client: "c2", Status: "upstream_error", Timestamp: base.Add(30 * time.Second)},
+		{RequestID: m + "-3", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: base.Add(60 * time.Second)},
 	}
 	for _, sample := range samples {
 		if err := store.AppendTraffic(ctx, sample); err != nil {
@@ -230,10 +230,19 @@ func TestQueryTrafficFilterAndPage(t *testing.T) {
 	if got[0].RequestID != m+"-3" {
 		t.Fatalf("应按 id 倒序（最新在前），得到 %s", got[0].RequestID)
 	}
+	if got[0].InstanceID != "i1" || got[1].InstanceID != "i2" {
+		t.Fatalf("instance_id 应随行往返: %+v", got)
+	}
 
 	got, total, _ = store.QueryTraffic(ctx, query.TrafficQuery{Q: m, ServerID: "s1", Status: "success"})
 	if len(got) != 2 || total != 2 {
 		t.Fatalf("server+status 过滤异常: %d / %d", len(got), total)
+	}
+
+	// server + instance 组合等值过滤。
+	got, total, _ = store.QueryTraffic(ctx, query.TrafficQuery{Q: m, ServerID: "s1", InstanceID: "i1"})
+	if len(got) != 2 || total != 2 {
+		t.Fatalf("server+instance 过滤异常: %d / %d", len(got), total)
 	}
 
 	// 时间闭区间（含边界）：命中 30s~60s 两条。

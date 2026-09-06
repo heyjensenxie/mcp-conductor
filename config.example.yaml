@@ -23,7 +23,7 @@ gateway:
 
 ratelimit:
   enabled: false
-  qps: 100
+  qps: 100 # 示例启用值；代码默认 qps=0 / burst=1（未显式配置时的兜底）
   burst: 10
 
 # 认证（默认开启）：控制台需登录、/api 控制面需管理凭据。
@@ -45,6 +45,8 @@ auth:
   # Console 登录的管理员账号；admin_password 留空则首启生成并打印。
   admin_username: admin
   admin_password: ""
+  # 登录会话有效期（留空默认 12h；单位小时，环境变量用 CONDUCTOR_AUTH_SESSION_TTL_MINUTES 指定分钟）。
+  session_ttl: 12h
 
 # Gateway→上游 凭证加密：AES-256 密钥（64 位 hex）。为空时 MySQL 存储拒绝
 # 落库明文凭证值（仅 memory 模式可在进程内承载）。

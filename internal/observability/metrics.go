@@ -26,6 +26,13 @@ const minuteSec = 60
 // 污染工具维语义；需 ?scope=server 时才单独返回。
 const ServerDimPrefix = "server:"
 
+// InstanceDimPrefix 是 metrics 中按「Server 的某个具体实例」聚合的维度前缀，
+// 键格式 instance:<serverID>:<instanceID>。与 server: 维同一次调用并存：server:
+// 承载逻辑 Server 聚合（eval runtime 等精确等值消费者依赖），instance: 用于把
+// 观测下沉到多实例中的单个实例。默认 /metrics 的 tool 语义不返回此类行，
+// 需 ?scope=instance（可配 &server_id=）时才单独返回。
+const InstanceDimPrefix = "instance:"
+
 // trendBucket 是单个分钟桶的调用计数。
 type trendBucket struct {
 	total int64
@@ -108,10 +115,10 @@ type TrendPoint struct {
 	Errors int64 `json:"errors"` // 该分钟失败数
 }
 
-// TrendTool 返回工具维度（非 server: 前缀）近 minutes 分钟的聚合时序。
+// TrendTool 返回工具维度（非 server:/instance: 前缀）近 minutes 分钟的聚合时序。
 func (m *Metrics) TrendTool(minutes int) []TrendPoint {
 	return m.trendScope(time.Now().UTC(), minutes, func(key string) bool {
-		return !strings.HasPrefix(key, ServerDimPrefix)
+		return !strings.HasPrefix(key, ServerDimPrefix) && !strings.HasPrefix(key, InstanceDimPrefix)
 	})
 }
 

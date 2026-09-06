@@ -43,7 +43,8 @@ func evalControlUpstream(t *testing.T) *httptest.Server {
 }
 
 // seedEvalControl 建评测所需的 Control（真实 adapter + memory store + 上游）。
-func seedEvalControl(t *testing.T) (*Control, string) {
+// 返回 control/serverID/健康实例ID/禁用实例ID（供定向评测用例）。
+func seedEvalControl(t *testing.T) (*Control, string, string, string) {
 	t.Helper()
 	upstream := evalControlUpstream(t)
 	t.Cleanup(upstream.Close)
@@ -55,10 +56,18 @@ func seedEvalControl(t *testing.T) (*Control, string) {
 	if err := store.CreateServer(ctx, server); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateInstance(ctx, &model.Instance{
+	healthy := &model.Instance{
 		ServerID: server.ID, Endpoint: upstream.URL, Transport: model.TransportStreamableHTTP,
 		Enabled: true, HealthStatus: model.ServerStatusHealthy, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
+	}
+	if err := store.CreateInstance(ctx, healthy); err != nil {
+		t.Fatal(err)
+	}
+	disabled := &model.Instance{
+		ServerID: server.ID, Endpoint: upstream.URL, Transport: model.TransportStreamableHTTP,
+		Enabled: false, HealthStatus: model.ServerStatusUnknown, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateInstance(ctx, disabled); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpsertTool(ctx, &model.Tool{
@@ -74,12 +83,13 @@ func seedEvalControl(t *testing.T) (*Control, string) {
 	})
 	ctrl := NewControl(nil, store, nil, nil)
 	ctrl.eval = svc
-	return ctrl, server.ID
+	return ctrl, server.ID, healthy.ID, disabled.ID
 }
 
-// TestControlEval_MetaQualitySuite 覆盖 meta / quality / suite 三个端点的 JSON 形状。
+// TestControlEval_MetaQualitySuite 覆盖 meta / quality / suite 三个端点的 JSON 形状，
+// 并覆盖 ?instance_id= 定向（有效 → 命中该实例；陌生 → 404；禁用 → 400）。
 func TestControlEval_MetaQualitySuite(t *testing.T) {
-	ctrl, id := seedEvalControl(t)
+	ctrl, id, healthyID, disabledID := seedEvalControl(t)
 
 	// Meta。
 	rec := httptest.NewRecorder()
@@ -95,6 +105,7 @@ func TestControlEval_MetaQualitySuite(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"server"`
 		Probe struct {
+			ID       string `json:"id"`
 			Endpoint string `json:"endpoint"`
 		} `json:"probe"`
 		StoredToolCount int `json:"stored_tool_count"`
@@ -102,11 +113,11 @@ func TestControlEval_MetaQualitySuite(t *testing.T) {
 	if err := json.Unmarshal(decodeEnvelope(t, rec).Data, &meta); err != nil {
 		t.Fatalf("解析 meta: %v", err)
 	}
-	if meta.Server.ID != id || meta.Probe.Endpoint == "" || meta.StoredToolCount != 1 {
+	if meta.Server.ID != id || meta.Probe.Endpoint == "" || meta.Probe.ID != healthyID || meta.StoredToolCount != 1 {
 		t.Fatalf("meta 异常: %+v", meta)
 	}
 
-	// Quality。
+	// Quality：缺省（首个可拨测=健康实例）。
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/evaluations/servers/"+id+"/quality", strings.NewReader(`{}`))
 	req.SetPathValue("id", id)
@@ -123,6 +134,11 @@ func TestControlEval_MetaQualitySuite(t *testing.T) {
 		ToolChecks []struct {
 			Tool string `json:"tool"`
 		} `json:"tool_checks"`
+		Server struct {
+			ProbedInstance *struct {
+				ID string `json:"id"`
+			} `json:"probed_instance"`
+		} `json:"server"`
 	}
 	if err := json.Unmarshal(decodeEnvelope(t, rec).Data, &report); err != nil {
 		t.Fatalf("解析 report: %v", err)
@@ -130,10 +146,46 @@ func TestControlEval_MetaQualitySuite(t *testing.T) {
 	if len(report.Dimensions) != 6 || len(report.ToolChecks) != 1 || report.ToolChecks[0].Tool != "search" {
 		t.Fatalf("report 异常: %+v", report)
 	}
+	if report.Server.ProbedInstance == nil || report.Server.ProbedInstance.ID != healthyID {
+		t.Fatalf("缺省 quality 应拨测健康实例 %q，得到 %+v", healthyID, report.Server.ProbedInstance)
+	}
 
-	// Suite：命中 + 缺失。
+	// Quality：定向健康实例 → probed_instance 命中该实例。
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/evaluations/servers/"+id+"/suite",
+	req = httptest.NewRequest(http.MethodPost, "/api/evaluations/servers/"+id+"/quality?instance_id="+healthyID, strings.NewReader(`{}`))
+	req.SetPathValue("id", id)
+	ctrl.handleEvalQuality(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("定向 quality 应 200，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(decodeEnvelope(t, rec).Data, &report); err != nil {
+		t.Fatalf("解析定向 report: %v", err)
+	}
+	if report.Server.ProbedInstance == nil || report.Server.ProbedInstance.ID != healthyID {
+		t.Fatalf("定向 quality 应命中实例 %q，得到 %+v", healthyID, report.Server.ProbedInstance)
+	}
+
+	// Quality：定向陌生实例 → 404。
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/evaluations/servers/"+id+"/quality?instance_id=ghost", strings.NewReader(`{}`))
+	req.SetPathValue("id", id)
+	ctrl.handleEvalQuality(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("陌生实例应 404，得到 %d", rec.Code)
+	}
+
+	// Quality：定向禁用实例 → 400 invalid_argument。
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/evaluations/servers/"+id+"/quality?instance_id="+disabledID, strings.NewReader(`{}`))
+	req.SetPathValue("id", id)
+	ctrl.handleEvalQuality(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("禁用实例应 400，得到 %d", rec.Code)
+	}
+
+	// Suite：命中 + 缺失，并定向实例。
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/evaluations/servers/"+id+"/suite?instance_id="+healthyID,
 		strings.NewReader(`{"cases":[{"name":"ok","gateway_tool":"mock.search","arguments":{"q":"x"},"expected_substring":"result"}]}`))
 	req.SetPathValue("id", id)
 	ctrl.handleEvalSuite(rec, req)
@@ -156,7 +208,7 @@ func TestControlEval_MetaQualitySuite(t *testing.T) {
 
 // TestControlEval_errorPaths 覆盖未知 Server / 空 cases / 未装配评测。
 func TestControlEval_errorPaths(t *testing.T) {
-	ctrl, id := seedEvalControl(t)
+	ctrl, id, _, _ := seedEvalControl(t)
 
 	// 未知 Server。
 	rec := httptest.NewRecorder()

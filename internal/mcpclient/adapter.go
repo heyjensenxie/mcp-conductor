@@ -119,8 +119,10 @@ func (a *Adapter) Call(ctx context.Context, server model.Server, instance model.
 		// 上游把工具执行失败以 isError 结果返回：把回显正文放到底层 Err
 		// （客户端 err.Error() 仍可见、便于诊断），对外 Message 保持固定
 		// 短语，避免完整正文写入调用日志错误列（隐私/体积）。
+		// 用 ToolFailedError 标记“业务失败、实例仍健康”，避免被负载均衡
+		// 的失败冷却误判为实例故障而摘除。
 		text := firstText(result.Content)
-		return nil, errs.Wrap(errs.CodeUpstream, errors.New(text), "上游工具执行失败")
+		return nil, registry.NewToolFailedError(errs.Wrap(errs.CodeUpstream, errors.New(text), "上游工具执行失败"))
 	}
 	contents := make([]registry.CallContent, 0, len(result.Content))
 	for _, block := range result.Content {

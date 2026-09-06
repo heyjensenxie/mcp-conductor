@@ -68,7 +68,7 @@
           </a-space>
         </div>
         <a-table
-          :data-source="instanceRows"
+          :data-source="instanceRowsWithMetrics"
           :columns="instanceColumns"
           :loading="instancesLoading"
           :pagination="false"
@@ -83,6 +83,12 @@
               <a-tag :color="record.enabled ? 'green' : 'default'">
                 {{ record.enabled ? t('servers.enabled') : t('servers.disabled') }}
               </a-tag>
+            </template>
+            <template v-else-if="column.key === 'm_requests' || column.key === 'm_errors'">
+              <span>{{ record[column.key] === '-' ? '-' : record[column.key] }}</span>
+            </template>
+            <template v-else-if="column.key === 'm_p95'">
+              <span class="mono">{{ record.m_p95 === '-' ? '-' : `${record.m_p95}ms` }}</span>
             </template>
             <template v-else-if="column.key === 'actions'">
               <a-space :size="4">
@@ -304,6 +310,7 @@ import {
   createServerInstance,
   deleteCredential,
   deleteServerInstance,
+  getInstanceMetrics,
   getLogs,
   getServer,
   listServerCredentials,
@@ -320,7 +327,7 @@ import {
   updateServer,
   updateServerInstance,
 } from '@/api'
-import type { Credential, MCPServer, RediscoverChange, RediscoverPlan, ServerInstance, Tool, TrafficSample, Transport } from '@/types'
+import type { Credential, MCPServer, MetricSnapshot, RediscoverChange, RediscoverPlan, ServerInstance, Tool, TrafficSample, Transport } from '@/types'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -357,14 +364,26 @@ const toolColumns = computed<any[]>(() => [
 const instanceRows = ref<ServerInstance[]>([])
 const instancesLoading = ref(false)
 const testingInst = ref('')
+// 实例维指标（键 = instance:<sid>:<iid> → 剥离前缀，按实例 id 取请求量/延迟）。
+const instanceMetrics = ref<Record<string, MetricSnapshot>>({})
 const instanceColumns = computed<any[]>(() => [
   { title: t('serverDetail.endpoint'), key: 'endpoint', dataIndex: 'endpoint', ellipsis: true },
   { title: t('serverDetail.transport'), key: 'transport', dataIndex: 'transport', width: 100 },
-  { title: t('servers.health'), key: 'health_status', dataIndex: 'health_status', width: 110 },
-  { title: t('common.status'), key: 'enabled', dataIndex: 'enabled', width: 90 },
-  { title: t('common.updated'), key: 'updated_at', dataIndex: 'updated_at', width: 170 },
-  { title: t('common.actions'), key: 'actions', width: 270 },
+  { title: t('servers.health'), key: 'health_status', dataIndex: 'health_status', width: 105 },
+  { title: t('common.status'), key: 'enabled', dataIndex: 'enabled', width: 85 },
+  { title: t('traffic.requests'), key: 'm_requests', width: 90 },
+  { title: t('observability.p95'), key: 'm_p95', width: 90 },
+  { title: t('traffic.errors'), key: 'm_errors', width: 90 },
+  { title: t('common.updated'), key: 'updated_at', dataIndex: 'updated_at', width: 165 },
+  { title: t('common.actions'), key: 'actions', width: 265 },
 ])
+// 实例行 + 该实例的实时指标（为空显示 '-'；bodyCell 里格式化）。
+const instanceRowsWithMetrics = computed<any[]>(() =>
+  instanceRows.value.map((r) => {
+    const m = instanceMetrics.value[r.id]
+    return { ...r, m_requests: m?.totals ?? '-', m_p95: m?.p95 ?? '-', m_errors: m?.errors ?? '-' }
+  }),
+)
 const instanceCount = computed(() => instanceRows.value.length)
 
 const instVisible = ref(false)
@@ -376,10 +395,27 @@ async function loadInstances() {
   instancesLoading.value = true
   try {
     instanceRows.value = await listServerInstances(id.value)
+    await loadInstanceMetrics()
   } catch (e) {
     message.error(String(e))
   } finally {
     instancesLoading.value = false
+  }
+}
+
+// loadInstanceMetrics 拉取该 Server 的实例维指标，键为 instance:<sid>:<iid>，
+// 剥离前缀后按实例 id 落表（仅展示；拉取失败不清空已有，避免闪烁）。
+async function loadInstanceMetrics() {
+  try {
+    const rows = await getInstanceMetrics(id.value)
+    const byID: Record<string, MetricSnapshot> = {}
+    const prefix = `instance:${id.value}:`
+    for (const row of rows) {
+      if (row.key.startsWith(prefix)) byID[row.key.slice(prefix.length)] = row
+    }
+    instanceMetrics.value = byID
+  } catch {
+    /* 忽略：指标拉取失败不影响实例启停等核心操作 */
   }
 }
 
