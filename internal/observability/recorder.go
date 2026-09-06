@@ -49,6 +49,7 @@ func (r *Recorder) Record(ctx context.Context, sample model.TrafficSample) {
 		"instance_id", sample.InstanceID,
 		"tool", sample.Tool,
 		"client", sample.Client,
+		"ip", sample.ClientIP,
 		"status", sample.Status,
 		"latency_ms", sample.LatencyMS,
 		"ts", sample.Timestamp.Format(time.RFC3339Nano),

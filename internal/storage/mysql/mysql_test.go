@@ -443,6 +443,7 @@ func TestTrafficAppendRecent(t *testing.T) {
 			ServerID:   "srv-1",
 			InstanceID: "inst-1",
 			Tool:       "mock.search", Status: "success",
+			ClientIP:  "198.51.100.7",
 			LatencyMS: int64(i + 1), Timestamp: now,
 		}); err != nil {
 			t.Fatalf("AppendTraffic: %v", err)
@@ -461,6 +462,9 @@ func TestTrafficAppendRecent(t *testing.T) {
 	}
 	if samples[0].InstanceID != "inst-1" || samples[1].InstanceID != "inst-1" {
 		t.Fatalf("RecentTraffic 实例字段应往返: %+v", samples)
+	}
+	if samples[0].ClientIP != "198.51.100.7" {
+		t.Fatalf("RecentTraffic client_ip 应往返: %+v", samples[0])
 	}
 }
 

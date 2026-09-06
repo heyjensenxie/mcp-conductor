@@ -1,5 +1,5 @@
 import http, { unwrap } from './http'
-import type { AccessKey, Credential, EvalMeta, EvalReport, EvalSuiteCase, EvalSuiteResult, KeyInvokeResult, MCPServer, MetricSnapshot, Paged, RediscoverPlan, Route, ServerInstance, ServerStatus, Session, Tool, ToolGrant, TrafficDetail, TrafficReplayResult, TrafficSample, Transport, TrendPoint } from '@/types'
+import type { AccessKey, Credential, EvalMeta, EvalReport, EvalSuiteCase, EvalSuiteResult, KeyInvokeResult, MCPServer, MetricSnapshot, Paged, RediscoverPlan, Route, RuntimeConfig, RuntimeConfigView, ServerInstance, ServerStatus, Session, Tool, ToolGrant, TrafficDetail, TrafficReplayResult, TrafficSample, Transport, TrendPoint } from '@/types'
 
 // ---- 管理面列表查询（服务端分页 + 筛选）----
 //
@@ -66,6 +66,13 @@ export const getAuthStatus = () => unwrap<{ auth_required: boolean }>(http.get('
 // 登录换取会话令牌（仅 auth.enabled 且填 operator_token 时可用）。
 export const login = (payload: { username: string; password: string }) =>
   unwrap<Session>(http.post('/auth/login', payload))
+
+// ---- 运行期治理配置（防护页：IP 黑名单 + 三级限流阈值）----
+
+export const getRuntimeConfig = () => unwrap<RuntimeConfigView>(http.get('/runtime-config'))
+
+export const putRuntimeConfig = (payload: RuntimeConfig) =>
+  unwrap<RuntimeConfigView>(http.put('/runtime-config', payload))
 
 // ---- Servers ----
 
@@ -176,14 +183,14 @@ export const deleteRoute = (id: string) => unwrap<void>(http.delete(`/routes/${i
 export const listKeys = (params?: KeyListParams) =>
   unwrap<Paged<AccessKey>>(http.get('/keys', { params }))
 
-export const createKey = (payload: { name: string; subject: string; qps?: number; burst?: number; grants?: ToolGrant[] }) =>
+export const createKey = (payload: { name: string; subject: string; qps?: number; burst?: number; window_seconds?: number; grants?: ToolGrant[] }) =>
   unwrap<AccessKey>(http.post('/keys', payload))
 
 export const getKey = (id: string) => unwrap<AccessKey>(http.get(`/keys/${id}`))
 
 export const updateKey = (
   id: string,
-  payload: Partial<Pick<AccessKey, 'name' | 'enabled' | 'qps' | 'burst' | 'grants'>>,
+  payload: Partial<Pick<AccessKey, 'name' | 'enabled' | 'qps' | 'burst' | 'window_seconds' | 'grants'>>,
 ) => unwrap<AccessKey>(http.patch(`/keys/${id}`, payload))
 
 // rotateKey 重置 API Key 明文密钥：新密钥仅在本响应返回一次（与创建同契约）。

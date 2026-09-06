@@ -1,4 +1,6 @@
 # 本机 Agent / IDE / 临时资源 / 本地入口（精确忽略条目，来自 AI Workspace 规范）
+.idea/
+.vscode/
 .local/
 BOOTSTRAP.md
 .claude/

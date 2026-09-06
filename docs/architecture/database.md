@@ -33,7 +33,7 @@
 ## 目录
 
 - 迁移文件：`migrations/`（`.sql`，5.7 可执行，按文件名序应用）
-- 全量结构快照：`database/schema.sql`（= migrations/0001..0011 合并的最终建表，表与字段均带注释，供结构参考与全新库初始化）。**Schema 变更先落 `migrations/` 增量迁移，再同步该快照，两者必须一致；已有库升级禁止直接执行快照。**
+- 全量结构快照：`database/schema.sql`（= migrations/0001..0017 合并的最终建表，表与字段均带注释，供结构参考与全新库初始化）。**Schema 变更先落 `migrations/` 增量迁移，再同步该快照，两者必须一致；已有库升级禁止直接执行快照。**
 - MySQL 驱动：`internal/storage/mysql`（已实现，满足 `storage.Store`；DSN 须含 `parseTime=true&loc=UTC&charset=utf8mb4`）
 - 集成测试：`MYSQL_TEST_DSN='...' go test ./internal/storage/mysql/ -v`（未设 DSN 自动跳过；须在真实 MySQL 5.7 上执行迁移后运行）
 - 应用迁移（开发环境，连宿主机 MySQL）：迁移文件为可重复执行的 DDL（幂等），执行器不做版本记录表：
@@ -51,7 +51,7 @@ Server 多实例化后，具体上游端点与健康由 `server_instances` 承�
 - `server_instances`：`id/server_id/endpoint/transport/enabled/health_status/created_at/updated_at`；`server_id` 外键 `ON DELETE CASCADE` 关联 `servers(id)`。字符串 id（新建用 `inst-` 前缀；0008 回填复用 server id），`enabled` 为实例级启停，`health_status ∈ {unknown,healthy,unhealthy}`。
 - 实例列表稳定序：`ORDER BY created_at, id`（首条即"主实例"，用于列表展示与默认发现拨测）。
 - Server 删除级联删除实例（MySQL 外键）；`registry`/memory 侧显式 `DeleteInstancesByServer` 对齐。
-- MySQL 集成测试运行前需已应用 0001..0011（`make db-migrate`）。
+- MySQL 集成测试运行前需已应用 0001..0017（`make db-migrate`）。
 
 ## traffic_log.instance_id（0009 起）
 
@@ -82,6 +82,21 @@ Server 多实例后，调用观测从 Server 粒度下沉到实例粒度：`traf
 （工具均为查询语义，回放只需入参）。列表/分页 SELECT 不读本列，仅 `GET /api/logs/{id}`
 详情与 `POST /api/logs/{id}/replay` 读取；列表以 `request_args IS NOT NULL` 派生
 `has_args` 供前端启用「回放」。受 `sample_rate` 影响：被采样丢弃的行连同入参丢弃、不可回放。
+
+## traffic_log.client_ip（0012 起，调用观测来源 IP）
+
+`traffic_log` 追加可空 `client_ip VARCHAR(64)`：最外层中间件按可信代理规则解析的调用方
+来源 IP（`server.trusted_proxies`；未配置只认直连 `RemoteAddr`，防伪造），随行写入并
+随列表/详情带出，供审计与按来源定位。为空表示未解析到（旧行/直连未配置）。
+
+## runtime_config 运行期治理配置（0013 起，Console/API 动态维护）
+
+单行快照表（PK `id` 恒为 1，无自增），保存数据面运行期治理配置：三级限流滑动窗口
+（`qps/burst/window_seconds/ip_qps/ip_burst/global_qps/global_burst`；任意 N 秒窗口内
+≤ 该级 QPS×N，0014 起支持 window_seconds；0015 起支持自动封禁参数 auto_ban_*；0017 起支持 ip_whitelist 可信豁免）与来源 IP/CIDR 封禁名单（`ip_blocklist`
+JSON 文本，仅 /mcp 生效）。由 `/api/runtime-config`（Operator 门禁）整份覆盖写
+（`INSERT ... ON DUPLICATE KEY UPDATE`）；无保存值时网关回退 `config.yaml` 种子
+（`ratelimit.*` 与 `security.ip_blocklist`）。memory 模式仅进程内承载，重启回退种子。
 
 ## 上线检查清单（涉及 SQL 的改动合入前）
 

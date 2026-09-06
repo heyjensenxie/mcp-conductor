@@ -489,6 +489,7 @@ const logColumns = computed<any[]>(() => [
   { title: t('traffic.status'), key: 'status', dataIndex: 'status', width: 130 },
   { title: t('traffic.latencyMs'), key: 'latency_ms', dataIndex: 'latency_ms', width: 90 },
   { title: t('traffic.client'), key: 'client', dataIndex: 'client', width: 110 },
+  { title: t('traffic.clientIp'), key: 'client_ip', dataIndex: 'client_ip', width: 130 },
   { title: t('traffic.error'), key: 'error', dataIndex: 'error', ellipsis: true },
   { title: t('traffic.time'), key: 'timestamp', dataIndex: 'timestamp', width: 170 },
 ])

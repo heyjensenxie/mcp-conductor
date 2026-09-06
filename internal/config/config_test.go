@@ -35,6 +35,11 @@ func TestLoadEnvOverridesNewKeys(t *testing.T) {
 	t.Setenv("CONDUCTOR_GATEWAY_MAX_CONCURRENCY", "11")
 	t.Setenv("CONDUCTOR_LOGGING_FORMAT", "json")
 	t.Setenv("CONDUCTOR_RATELIMIT_ENABLED", "true")
+	t.Setenv("CONDUCTOR_RATELIMIT_IP_QPS", "120")
+	t.Setenv("CONDUCTOR_RATELIMIT_IP_BURST", "12")
+	t.Setenv("CONDUCTOR_RATELIMIT_GLOBAL_QPS", "500")
+	t.Setenv("CONDUCTOR_RATELIMIT_GLOBAL_BURST", "50")
+	t.Setenv("CONDUCTOR_SERVER_TRUSTED_PROXIES", "127.0.0.1, 10.0.0.0/8")
 
 	cfg, err := Load("")
 	if err != nil {
@@ -54,6 +59,15 @@ func TestLoadEnvOverridesNewKeys(t *testing.T) {
 	}
 	if !cfg.RateLimit.Enabled {
 		t.Fatal("ratelimit.enabled 应为 true")
+	}
+	if cfg.RateLimit.IPQPS != 120 || cfg.RateLimit.IPBurst != 12 {
+		t.Fatalf("ratelimit.ip 覆盖失败: %+v", cfg.RateLimit)
+	}
+	if cfg.RateLimit.GlobalQPS != 500 || cfg.RateLimit.GlobalBurst != 50 {
+		t.Fatalf("ratelimit.global 覆盖失败: %+v", cfg.RateLimit)
+	}
+	if len(cfg.Server.TrustedProxies) != 2 || cfg.Server.TrustedProxies[1] != "10.0.0.0/8" {
+		t.Fatalf("server.trusted_proxies 覆盖失败: %v", cfg.Server.TrustedProxies)
 	}
 }
 
@@ -79,5 +93,107 @@ func TestLoadEnvOverridesYAML(t *testing.T) {
 	}
 	if cfg.Gateway.UpstreamTimeout != 10*time.Second {
 		t.Fatalf("默认上游超时应为 10s: %v", cfg.Gateway.UpstreamTimeout)
+	}
+}
+
+// TestLoadTrustedProxies 验证 server.trusted_proxies 从 YAML 加载且非法项被校验拦截。
+func TestLoadTrustedProxies(t *testing.T) {
+	dir := t.TempDir()
+	write := func(content string) string {
+		p := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatalf("写临时配置失败: %v", err)
+		}
+		return p
+	}
+
+	// 合法 IP/CIDR 列表。
+	cfg, err := Load(write("server:\n  trusted_proxies:\n    - 10.0.0.0/8\n    - 127.0.0.1\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Server.TrustedProxies) != 2 {
+		t.Fatalf("trusted_proxies 数量异常: %v", cfg.Server.TrustedProxies)
+	}
+
+	// 非法项应在启动前被校验拒绝。
+	if _, err := Load(write("server:\n  trusted_proxies:\n    - not-an-ip\n")); err == nil {
+		t.Fatal("非法的 trusted_proxies 应被拒绝")
+	}
+}
+
+// TestSecurityIPBlocklist 验证 security.ip_blocklist 的 YAML/env 加载与校验。
+func TestSecurityIPBlocklist(t *testing.T) {
+	t.Setenv("CONDUCTOR_SECURITY_IP_BLOCKLIST", "203.0.113.9, 198.51.100.0/24")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Security.IPBlocklist) != 2 || cfg.Security.IPBlocklist[1] != "198.51.100.0/24" {
+		t.Fatalf("security.ip_blocklist env 覆盖失败: %v", cfg.Security.IPBlocklist)
+	}
+
+	// 非法项应在启动前被拒绝。
+	t.Setenv("CONDUCTOR_SECURITY_IP_BLOCKLIST", "not-an-ip")
+	if _, err := Load(""); err == nil {
+		t.Fatal("非法的 ip_blocklist 应被拒绝")
+	}
+}
+
+// TestRateLimitWindowSeconds 验证 window_seconds 的 env 覆盖与范围校验。
+func TestRateLimitWindowSeconds(t *testing.T) {
+	t.Setenv("CONDUCTOR_RATELIMIT_WINDOW_SECONDS", "5")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.RateLimit.WindowSeconds != 5 {
+		t.Fatalf("window_seconds env 覆盖失败: %d", cfg.RateLimit.WindowSeconds)
+	}
+
+	for _, bad := range []string{"0", "4000", "-1"} {
+		t.Setenv("CONDUCTOR_RATELIMIT_WINDOW_SECONDS", bad)
+		if _, err := Load(""); err == nil {
+			t.Fatalf("window_seconds=%s 应被拒绝", bad)
+		}
+	}
+}
+
+// TestAutoBanConfig 验证 auto_ban 的 env 覆盖与开启时参数校验。
+func TestAutoBanConfig(t *testing.T) {
+	t.Setenv("CONDUCTOR_RATELIMIT_AUTO_BAN_ENABLED", "true")
+	t.Setenv("CONDUCTOR_RATELIMIT_AUTO_BAN_WINDOW_SECONDS", "30")
+	t.Setenv("CONDUCTOR_RATELIMIT_AUTO_BAN_MAX_VIOLATIONS", "3")
+	t.Setenv("CONDUCTOR_RATELIMIT_AUTO_BAN_BAN_SECONDS", "120")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ab := cfg.RateLimit.AutoBan
+	if !ab.Enabled || ab.WindowSeconds != 30 || ab.MaxViolations != 3 || ab.BanSeconds != 120 {
+		t.Fatalf("auto_ban env 覆盖失败: %+v", ab)
+	}
+
+	// 开启但参数非法（如 max=0）应拒绝。
+	t.Setenv("CONDUCTOR_RATELIMIT_AUTO_BAN_ENABLED", "true")
+	t.Setenv("CONDUCTOR_RATELIMIT_AUTO_BAN_MAX_VIOLATIONS", "0")
+	if _, err := Load(""); err == nil {
+		t.Fatal("auto_ban 开启且 max_violations=0 应被拒绝")
+	}
+}
+
+// TestSecurityIPWhitelist 验证 security.ip_whitelist 的 env 加载与非法项校验。
+func TestSecurityIPWhitelist(t *testing.T) {
+	t.Setenv("CONDUCTOR_SECURITY_IP_WHITELIST", "127.0.0.1, 10.0.0.0/8")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Security.IPWhitelist) != 2 || cfg.Security.IPWhitelist[1] != "10.0.0.0/8" {
+		t.Fatalf("security.ip_whitelist env 覆盖失败: %v", cfg.Security.IPWhitelist)
+	}
+	t.Setenv("CONDUCTOR_SECURITY_IP_WHITELIST", "not-an-ip")
+	if _, err := Load(""); err == nil {
+		t.Fatal("非法的 ip_whitelist 应被拒绝")
 	}
 }

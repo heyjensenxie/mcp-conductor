@@ -429,11 +429,11 @@ func (s *Store) DeleteCredentialsByServer(ctx context.Context, serverID string) 
 
 // ---- AccessKeyStore ----
 
-const accessKeyColumns = `id, name, subject, enabled, COALESCE(key_hash,''), qps, burst, created_at, updated_at`
+const accessKeyColumns = `id, name, subject, enabled, COALESCE(key_hash,''), qps, burst, window_seconds, created_at, updated_at`
 
 func scanAccessKey(scan func(dest ...any) error) (model.AccessKey, error) {
 	var k model.AccessKey
-	err := scan(&k.ID, &k.Name, &k.Subject, &k.Enabled, &k.KeyHash, &k.QPS, &k.Burst,
+	err := scan(&k.ID, &k.Name, &k.Subject, &k.Enabled, &k.KeyHash, &k.QPS, &k.Burst, &k.WindowSeconds,
 		&k.CreatedAt, &k.UpdatedAt)
 	if err != nil {
 		return model.AccessKey{}, err
@@ -576,8 +576,8 @@ func (s *Store) CreateAccessKey(ctx context.Context, key *model.AccessKey) error
 	key.UpdatedAt = nowOr(key.UpdatedAt)
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO access_keys (id, name, subject, enabled, key_hash, qps, burst, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`,
-		key.ID, key.Name, key.Subject, key.Enabled, key.KeyHash, key.QPS, key.Burst,
+		`INSERT INTO access_keys (id, name, subject, enabled, key_hash, qps, burst, window_seconds, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		key.ID, key.Name, key.Subject, key.Enabled, key.KeyHash, key.QPS, key.Burst, key.WindowSeconds,
 		fmtTimeUTC(key.CreatedAt), fmtTimeUTC(key.UpdatedAt)); err != nil {
 		return fmt.Errorf("insert access_keys: %w", err)
 	}
@@ -617,8 +617,8 @@ func (s *Store) UpdateAccessKey(ctx context.Context, key *model.AccessKey) error
 
 	key.UpdatedAt = nowOr(key.UpdatedAt)
 	res, err := tx.ExecContext(ctx,
-		`UPDATE access_keys SET name=?, subject=?, enabled=?, key_hash=?, qps=?, burst=?, updated_at=? WHERE id=?`,
-		key.Name, key.Subject, key.Enabled, key.KeyHash, key.QPS, key.Burst,
+		`UPDATE access_keys SET name=?, subject=?, enabled=?, key_hash=?, qps=?, burst=?, window_seconds=?, updated_at=? WHERE id=?`,
+		key.Name, key.Subject, key.Enabled, key.KeyHash, key.QPS, key.Burst, key.WindowSeconds,
 		fmtTimeUTC(key.UpdatedAt), key.ID)
 	if err != nil {
 		return err
@@ -657,7 +657,7 @@ func scanTrafficList(s trafficScanner) (model.TrafficSample, error) {
 	var sample model.TrafficSample
 	var hasArgs int
 	if err := s.Scan(&sample.ID, &sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.InstanceID,
-		&sample.Tool, &sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error,
+		&sample.Tool, &sample.Client, &sample.ClientIP, &sample.Status, &sample.LatencyMS, &sample.Error,
 		&hasArgs, &sample.Timestamp); err != nil {
 		return sample, err
 	}
@@ -667,7 +667,7 @@ func scanTrafficList(s trafficScanner) (model.TrafficSample, error) {
 
 // trafficListColumns 是列表/分页 SELECT 的列（不读 request_args 大列）。
 const trafficListColumns = `id, request_id, COALESCE(trace_id,''), COALESCE(server_id,''), COALESCE(instance_id,''),
-	tool, COALESCE(client,''), status, latency_ms, COALESCE(error,''), (request_args IS NOT NULL), ts`
+	tool, COALESCE(client,''), COALESCE(client_ip,''), status, latency_ms, COALESCE(error,''), (request_args IS NOT NULL), ts`
 
 // AppendTraffic 追加一条调用采样。入参体仅当已捕获（record_args 开启）时写入；
 // 请求/追踪标识、实例与错误文本仅在需要时写入。
@@ -677,10 +677,10 @@ func (s *Store) AppendTraffic(ctx context.Context, sample model.TrafficSample) e
 		return fmt.Errorf("marshal traffic request_args: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO traffic_log (request_id, trace_id, server_id, instance_id, tool, client, status, latency_ms, error, request_args, ts)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO traffic_log (request_id, trace_id, server_id, instance_id, tool, client, client_ip, status, latency_ms, error, request_args, ts)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		sample.RequestID, nullIfEmpty(sample.TraceID), nullIfEmpty(sample.ServerID),
-		nullIfEmpty(sample.InstanceID), sample.Tool, nullIfEmpty(sample.Client), sample.Status,
+		nullIfEmpty(sample.InstanceID), sample.Tool, nullIfEmpty(sample.Client), nullIfEmpty(sample.ClientIP), sample.Status,
 		sample.LatencyMS, nullIfEmpty(sample.Error), nullIfEmpty(argsJSON), fmtTimeUTC(sample.Timestamp),
 	)
 	if err != nil {
@@ -735,10 +735,10 @@ func (s *Store) GetTraffic(ctx context.Context, id int64) (*model.TrafficSample,
 	var requestArgs string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, request_id, COALESCE(trace_id,''), COALESCE(server_id,''), COALESCE(instance_id,''),
-		        tool, COALESCE(client,''), status, latency_ms, COALESCE(error,''), COALESCE(request_args,''), ts
+		        tool, COALESCE(client,''), COALESCE(client_ip,''), status, latency_ms, COALESCE(error,''), COALESCE(request_args,''), ts
 		 FROM traffic_log WHERE id = ?`, id,
 	).Scan(&sample.ID, &sample.RequestID, &sample.TraceID, &sample.ServerID, &sample.InstanceID,
-		&sample.Tool, &sample.Client, &sample.Status, &sample.LatencyMS, &sample.Error,
+		&sample.Tool, &sample.Client, &sample.ClientIP, &sample.Status, &sample.LatencyMS, &sample.Error,
 		&requestArgs, &sample.Timestamp)
 	if err != nil {
 		return nil, notExistError(err, "traffic", fmt.Sprintf("%d", id))

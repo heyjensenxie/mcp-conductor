@@ -71,6 +71,13 @@ type Control struct {
 	// trendRetentionMinutes 长程分钟桶趋势保留窗口（分钟）。由 app 按
 	// observability.trend_retention_days 换算注入；NewControl 提供 7 天兜底。
 	trendRetentionMinutes int
+	// runtimeCache 由 registerControlRoutes 注入：运行期治理配置缓存（含 config.yaml
+	// 回退种子），供 /api/runtime-config 读取/保存后失效；nil（如单测直接构造且未
+	// 注入）时回退到空配置。
+	runtimeCache *runtimeConfigCache
+	// rateLimitEnabled 标识启动配置 ratelimit.enabled（运行期不可开关）：关闭时
+	// 三级阈值不生效，Console 据此提示惰态。
+	rateLimitEnabled bool
 }
 
 // NewControl 创建控制面处理器。
@@ -620,11 +627,13 @@ type createKeyResponse struct {
 // 落库仅存哈希；subject 唯一。Grants 为白名单授权 + 调用配置。
 func (c *Control) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Name    string            `json:"name"`
-		Subject string            `json:"subject"`
-		QPS     int               `json:"qps"`
-		Burst   int               `json:"burst"`
-		Grants  []model.ToolGrant `json:"grants"`
+		Name    string `json:"name"`
+		Subject string `json:"subject"`
+		QPS     int    `json:"qps"`
+		Burst   int    `json:"burst"`
+		// WindowSeconds 该 key 专属滑动窗口（秒，0=跟随全局；1..3600 覆盖）。
+		WindowSeconds int               `json:"window_seconds"`
+		Grants        []model.ToolGrant `json:"grants"`
 	}
 	if err := decodeBody(r, &input); err != nil {
 		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
@@ -632,6 +641,17 @@ func (c *Control) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.Name == "" || input.Subject == "" {
 		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "name 与 subject 不能为空"))
+		return
+	}
+	if input.WindowSeconds < 0 || input.WindowSeconds > 3600 {
+		writeGatewayError(w, r, http.StatusBadRequest,
+			errs.New(errs.CodeInvalidArgument, "key.window_seconds 须在 0..3600"))
+		return
+	}
+	// key.qps：>0 专属 / 0 跟随默认 / -1 不设 key 上限；其余负数非法。
+	if input.QPS < -1 {
+		writeGatewayError(w, r, http.StatusBadRequest,
+			errs.New(errs.CodeInvalidArgument, "key.qps 仅支持 -1（不设 key 上限）、0（跟随默认）或 >0"))
 		return
 	}
 	if _, err := c.store.GetAccessKeyBySubject(r.Context(), input.Subject); err == nil {
@@ -646,16 +666,17 @@ func (c *Control) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC()
 	key := &model.AccessKey{
-		Name:      input.Name,
-		Subject:   input.Subject,
-		Enabled:   true,
-		QPS:       input.QPS,
-		Burst:     input.Burst,
-		Grants:    input.Grants,
-		KeyHash:   keyHash,
-		Secret:    secret, // 明文仅本次响应下发
-		CreatedAt: now,
-		UpdatedAt: now,
+		Name:          input.Name,
+		Subject:       input.Subject,
+		Enabled:       true,
+		QPS:           input.QPS,
+		Burst:         input.Burst,
+		WindowSeconds: input.WindowSeconds,
+		Grants:        input.Grants,
+		KeyHash:       keyHash,
+		Secret:        secret, // 明文仅本次响应下发
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	if err := c.store.CreateAccessKey(r.Context(), key); err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
@@ -678,14 +699,27 @@ func (c *Control) handleGetKey(w http.ResponseWriter, r *http.Request) {
 // handleUpdateKey 更新 API Key：名称/启用/配额/白名单；不重设密钥明文。
 func (c *Control) handleUpdateKey(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Name    *string            `json:"name"`
-		Enabled *bool              `json:"enabled"`
-		QPS     *int               `json:"qps"`
-		Burst   *int               `json:"burst"`
-		Grants  *[]model.ToolGrant `json:"grants"`
+		Name    *string `json:"name"`
+		Enabled *bool   `json:"enabled"`
+		QPS     *int    `json:"qps"`
+		Burst   *int    `json:"burst"`
+		// WindowSeconds 该 key 专属滑动窗口（秒，0=跟随全局；1..3600 覆盖）。
+		WindowSeconds *int               `json:"window_seconds"`
+		Grants        *[]model.ToolGrant `json:"grants"`
 	}
 	if err := decodeBody(r, &input); err != nil {
 		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
+		return
+	}
+	if input.WindowSeconds != nil && (*input.WindowSeconds < 0 || *input.WindowSeconds > 3600) {
+		writeGatewayError(w, r, http.StatusBadRequest,
+			errs.New(errs.CodeInvalidArgument, "key.window_seconds 须在 0..3600"))
+		return
+	}
+	// key.qps：>0 专属 / 0 跟随默认 / -1 不设 key 上限；其余负数非法。
+	if input.QPS != nil && *input.QPS < -1 {
+		writeGatewayError(w, r, http.StatusBadRequest,
+			errs.New(errs.CodeInvalidArgument, "key.qps 仅支持 -1（不设 key 上限）、0（跟随默认）或 >0"))
 		return
 	}
 	key, err := c.store.GetAccessKey(r.Context(), r.PathValue("id"))
@@ -704,6 +738,9 @@ func (c *Control) handleUpdateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.Burst != nil {
 		key.Burst = *input.Burst
+	}
+	if input.WindowSeconds != nil {
+		key.WindowSeconds = *input.WindowSeconds
 	}
 	if input.Grants != nil {
 		key.Grants = *input.Grants

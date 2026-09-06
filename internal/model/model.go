@@ -188,21 +188,28 @@ type ToolGrant struct {
 // AccessKey 是 API Key 调用方的完整配置，作为认证/授权/限流的主体载体。
 //
 // 语义：被管理的 key 采用白名单模式——只能看到/调用 Grants 内命中的工具；
-// QPS/Burst 为该 key 独立限流配额，0 表示沿用全局 ratelimit 配置。
+// QPS 为该 key 专属限流速率（与安全防护「维度默认」同构）：>0 覆盖全局默认，
+// 0 表示跟随全局（安全防护）默认，-1 表示不设 key 级上限（仅受单 IP/全局闸）；
+// WindowSeconds 为该 key 专属滑动窗口（0=跟随全局）。Burst 已废弃（保留兼容）。
 // KeyHash 存储 HMAC-SHA256(key)，Secret 为原始密钥明文，两者均 json:"-"
 // 不随任何 API 序列化下发；明文只在创建成功时经专用响应体返回一次。
 type AccessKey struct {
-	ID        string      `json:"id"`
-	Name      string      `json:"name"`
-	Subject   string      `json:"subject"` // 唯一主体标识（日志/授权/限流维度）
-	Enabled   bool        `json:"enabled"`
-	QPS       int         `json:"qps"`   // 0 → 全局默认
-	Burst     int         `json:"burst"` // 0 → 全局默认
-	Grants    []ToolGrant `json:"grants"`
-	KeyHash   string      `json:"-"` // HMAC-SHA256 哈希，落库不下发
-	Secret    string      `json:"-"`
-	CreatedAt time.Time   `json:"created_at"`
-	UpdatedAt time.Time   `json:"updated_at"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Subject string `json:"subject"` // 唯一主体标识（日志/授权/限流维度）
+	Enabled bool   `json:"enabled"`
+	// QPS 该 key 的每秒速率上限：>0 = 专属覆盖；0 = 跟随安全防护维度默认；-1 = 不设 key 上限。
+	QPS int `json:"qps"`
+	// Burst 已废弃（不再参与判定，保留兼容）。
+	Burst int `json:"burst"`
+	// WindowSeconds 该 key 自己的滑动窗口（秒，0..3600）：0 = 跟随安全防护全局窗口；
+	// >0 = 覆盖（与 QPS 一并决定该 key 每窗口容量 = QPS×WindowSeconds）。
+	WindowSeconds int         `json:"window_seconds"`
+	Grants        []ToolGrant `json:"grants"`
+	KeyHash       string      `json:"-"` // HMAC-SHA256 哈希，落库不下发
+	Secret        string      `json:"-"`
+	CreatedAt     time.Time   `json:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at"`
 }
 
 // bestGrant 返回与工具（GatewayName）命中的白名单条目中"最特异"的那条；
@@ -284,13 +291,15 @@ type TrafficSample struct {
 	ServerID    string         `json:"server_id"`
 	// InstanceID 记录本次调用实际命中的上游实例；实例未定（如路由阶段失败）
 	// 或 Server 单实例未落实例归属时为 ""。
-	InstanceID string    `json:"instance_id,omitempty"`
-	Tool       string    `json:"tool"`
-	Client     string    `json:"client,omitempty"`
-	Status     string    `json:"status"`
-	LatencyMS  int64     `json:"latency_ms"`
-	Error      string    `json:"error,omitempty"`
-	Timestamp  time.Time `json:"timestamp"`
+	InstanceID string `json:"instance_id,omitempty"`
+	Tool       string `json:"tool"`
+	Client     string `json:"client,omitempty"`
+	// ClientIP 记录调用方来源 IP（最外层中间件按可信代理规则解析，非空才落库/下发）。
+	ClientIP  string    `json:"client_ip,omitempty"`
+	Status    string    `json:"status"`
+	LatencyMS int64     `json:"latency_ms"`
+	Error     string    `json:"error,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // TrendMinute 是单个维度在某个已闭合分钟桶的计数（进程内分钟桶落库的持久形态）。
@@ -303,4 +312,38 @@ type TrendMinute struct {
 	Minute   int64  `json:"minute"`
 	Totals   int64  `json:"totals"`
 	Errors   int64  `json:"errors"`
+}
+
+// RuntimeRateLimit 是数据面 /mcp 三级限流的运行期配额（语义与 cfg.ratelimit 一致）：
+// 各 QPS<=0 表示该级不启用（global）；ip 为 0 时沿用 QPS；key 为 0 时沿用维度默认。
+// WindowSeconds 为滑动窗口长度（秒，0 归一为 1）。Burst 已废弃（不再参与判定）。
+type RuntimeRateLimit struct {
+	QPS           int `json:"qps"`
+	Burst         int `json:"burst"`
+	WindowSeconds int `json:"window_seconds"`
+	IPQPS         int `json:"ip_qps"`
+	IPBurst       int `json:"ip_burst"`
+	GlobalQPS     int `json:"global_qps"`
+	GlobalBurst   int `json:"global_burst"`
+}
+
+// RuntimeAutoBan 是自动封禁参数（来源在检测窗口内被限流 429 达次数即临时封禁，
+// TTL 到期自动解封）。0 值语义由控制面归一为默认（60s/5 次/300s）。
+type RuntimeAutoBan struct {
+	Enabled       bool `json:"enabled"`
+	WindowSeconds int  `json:"window_seconds"`
+	MaxViolations int  `json:"max_violations"`
+	BanSeconds    int  `json:"ban_seconds"`
+}
+
+// RuntimeConfig 是网关运行期治理配置的完整快照（单行持久化，Console 维护）：
+// 后台首次保存后即权威，静态 config.yaml 仅作为无存值时的种子。
+type RuntimeConfig struct {
+	RateLimit RuntimeRateLimit `json:"ratelimit"`
+	AutoBan   RuntimeAutoBan   `json:"auto_ban"`
+	// IPBlocklist 来源 IP/CIDR 封禁名单（仅 /mcp 生效）。
+	IPBlocklist []string `json:"ip_blocklist"`
+	// IPWhitelist 可信豁免名单：命中来源不受 IP 黑名单 / 自动封禁(IP) / 单 IP 级限流影响。
+	IPWhitelist []string  `json:"ip_whitelist"`
+	UpdatedAt   time.Time `json:"updated_at,omitempty"`
 }

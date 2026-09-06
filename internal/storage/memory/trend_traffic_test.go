@@ -20,7 +20,7 @@ func TestAppendTrafficAssignsIDAndKeepsArgs(t *testing.T) {
 
 	if err := s.AppendTraffic(ctx, model.TrafficSample{
 		RequestID: "req-1", ServerID: "srv-1", InstanceID: "inst-1", Tool: "demo",
-		Status: "success", LatencyMS: 12, Timestamp: time.Now().UTC(), RequestArgs: args,
+		ClientIP: "203.0.113.9", Status: "success", LatencyMS: 12, Timestamp: time.Now().UTC(), RequestArgs: args,
 	}); err != nil {
 		t.Fatalf("AppendTraffic: %v", err)
 	}
@@ -31,12 +31,12 @@ func TestAppendTrafficAssignsIDAndKeepsArgs(t *testing.T) {
 		t.Fatalf("AppendTraffic: %v", err)
 	}
 
-	// 详情按 id 读回：ID 单调自增、入参完整往返。
+	// 详情按 id 读回：ID 单调自增、入参完整往返、ClientIP 保留。
 	got, err := s.GetTraffic(ctx, 1)
 	if err != nil {
 		t.Fatalf("GetTraffic: %v", err)
 	}
-	if got.ID != 1 || !reflect.DeepEqual(got.RequestArgs, args) {
+	if got.ID != 1 || !reflect.DeepEqual(got.RequestArgs, args) || got.ClientIP != "203.0.113.9" {
 		t.Fatalf("详情回读不一致: %+v", got)
 	}
 
@@ -53,14 +53,17 @@ func TestAppendTrafficAssignsIDAndKeepsArgs(t *testing.T) {
 	if total != 2 || len(rows) != 2 {
 		t.Fatalf("QueryTraffic total=%d len=%d", total, len(rows))
 	}
-	if rows[0].ID != 2 || rows[0].HasArgs {
-		t.Fatalf("最新行 id=%d HasArgs=%v", rows[0].ID, rows[0].HasArgs)
+	if rows[0].ID != 2 || rows[0].HasArgs || rows[0].ClientIP != "" {
+		t.Fatalf("最新行 id=%d HasArgs=%v ClientIP=%q", rows[0].ID, rows[0].HasArgs, rows[0].ClientIP)
 	}
 	if !rows[1].HasArgs {
 		t.Fatal("含入参的行 HasArgs 应为 true")
 	}
 	if rows[1].RequestArgs != nil {
 		t.Fatal("列表不得携带 RequestArgs（隐私）")
+	}
+	if rows[1].ClientIP != "203.0.113.9" {
+		t.Fatalf("列表应保留 ClientIP, 得到 %q", rows[1].ClientIP)
 	}
 }
 

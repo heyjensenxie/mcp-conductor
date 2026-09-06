@@ -44,7 +44,7 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | 鉴权（默认开启） | ✅ Console 用管理员账号（`admin`/`admin_password`）登录换会话；/api 接受会话或 `operator_token`；/mcp 数据面用 API Key（HMAC 哈希落库、按 key×工具白名单），与登录分离 |
 | Gateway→上游 Credential 管理（API Key / Static Token） | ✅ 值 AES-256-GCM 加密落库；经 `json:"-"` 不下发 API、不入日志；按 Server 注入上游请求头 |
 | 按 Key×Tool 白名单授权（跨 Server 聚合） | ✅ 每个 key 只可见/可调被授权工具（支持 `server.*`/`*` 通配）；每工具可配调用参数与请求头 |
-| Memory（令牌桶）/ Redis 限流，支持按 Key 独立配额 | ✅ 默认关闭 |
+| Memory/Redis N 秒滑动窗口限流，支持按 Key 独立配额 | ✅ 默认关闭 |
 | Request Logging + 基础 Metrics（P50/P95/P99） | ✅ 应用层聚合；`?scope=server` 按 Server 聚合 |
 | **实例级流量归属（多实例观测下沉）** | ✅ 每次调用把 `instance_id` 落调用日志（traffic_log，可按 `server_id+instance_id` 筛选）并按实例记内存指标（`?scope=instance&server_id=`）；Server 详情「实例」表直接展示每个实例的 Requests / P95 / Errors |
 | **长程分钟桶趋势（持久化）** | ✅ 已闭合分钟桶每 60s 幂等落库 `trend_minute`（0001..0010）：跨重启可回溯、`?minutes` 可到保留天数（默认 7 天，`trend_retention_days`），支持 `?scope=instance&server_id=` 与 `?dim_key=` 单维聚焦；Console 观测页可切 30m~7d 窗口与维度 |
@@ -93,7 +93,7 @@ internal/
   registry          # Server CRUD + Tool 发现 / 命名空间聚合
   router            # 工具名 → (Server, 实例) 解析
   balancer          # 负载均衡（RoundRobin，健康感知）
-  ratelimit         # memory 令牌桶 / redis 固定窗口
+  ratelimit         # memory/redis N 秒滑动窗口限流
   auth             # 认证（控制面 operator token / 数据面 API Key）
   health            # 周期健康巡检
   observability     # 指标聚合 + 调用日志（采样 / 不记敏感体）

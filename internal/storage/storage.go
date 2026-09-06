@@ -142,6 +142,13 @@ type TrendStore interface {
 	DeleteTrendBucketsBefore(ctx context.Context, beforeMinute int64) error
 }
 
+// RuntimeConfigStore 持久化"运行期治理配置"（IP 黑名单 + 三级限流阈值的单份快照）。
+// 单行存储：exists=false 表示尚无后台保存值，应回退 config.yaml 种子。
+type RuntimeConfigStore interface {
+	GetRuntimeConfig(ctx context.Context) (*model.RuntimeConfig, bool, error)
+	PutRuntimeConfig(ctx context.Context, cfg *model.RuntimeConfig) error
+}
+
 // Store 聚合全部实体存储接口，作为组合注入的入口。
 type Store interface {
 	ServerStore
@@ -158,4 +165,5 @@ type Store interface {
 	AccessKeyQueryStore
 	TrafficQueryStore
 	TrendStore
+	RuntimeConfigStore
 }

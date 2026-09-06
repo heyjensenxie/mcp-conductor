@@ -8,6 +8,7 @@ package config
 import (
 	"encoding/hex"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -23,16 +24,21 @@ type Config struct {
 	Redis         RedisConfig         `yaml:"redis"`
 	Gateway       GatewayConfig       `yaml:"gateway"`
 	RateLimit     RateLimitConfig     `yaml:"ratelimit"`
+	Security      SecurityConfig      `yaml:"security"`
 	Auth          AuthConfig          `yaml:"auth"`
 	Credentials   CredentialsConfig   `yaml:"credentials"`
 	Logging       LoggingConfig       `yaml:"logging"`
 	Observability ObservabilityConfig `yaml:"observability"`
 }
 
-// ServerConfig 控制 HTTP 服务监听地址。
+// ServerConfig 控制 HTTP 服务监听地址与客户端 IP 解析。
 type ServerConfig struct {
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
+	// TrustedProxies 是可信反向代理（IP 或 CIDR）。仅当直连对端命中该列表时，
+	// 才信任 X-Forwarded-For / X-Real-IP 作为客户端来源 IP（默认不信任转发头，
+	// 避免未设代理时客户端伪造来源）。网关在 nginx/docker 网关后时须配置。
+	TrustedProxies []string `yaml:"trusted_proxies"`
 }
 
 // DatabaseConfig 控制持久化后端；driver 支持 memory（默认）与 mysql。
@@ -58,13 +64,40 @@ type GatewayConfig struct {
 	MaxConcurrency int `yaml:"max_concurrency"`
 }
 
-// RateLimitConfig 控制限流；默认关闭（允许所有）。
+// RateLimitConfig 控制数据面 /mcp 三级限流；默认关闭（允许所有）。
+// 采用「N 秒滑动窗口」：任意连续 WindowSeconds 秒内最多放行 该级QPS×WindowSeconds 次。
 type RateLimitConfig struct {
 	Enabled bool `yaml:"enabled"`
-	// QPS 是每个限流维度每秒放行的请求数。
+	// QPS 是每维度的默认速率（每秒）：key 未单独配置时、以及 IP 级未单独配置时沿用。
 	QPS int `yaml:"qps"`
-	// Burst 是令牌桶容量（允许的瞬时突发）。
+	// Burst 已废弃：字段保留兼容既有配置，滑动窗口判定不再使用。
 	Burst int `yaml:"burst"`
+	// WindowSeconds 是滑动窗口长度（秒，默认 60，1..3600）。各 tier 每窗口容量 = 其有效 QPS×此值。
+	WindowSeconds int `yaml:"window_seconds"`
+	// GlobalQPS 是整网关 /mcp 的全局总闸速率；<=0 表示不启用全局级。
+	GlobalQPS   int `yaml:"global_qps"`
+	GlobalBurst int `yaml:"global_burst"`
+	// IPQPS 是单来源 IP 的独立速率；0 表示沿用 QPS。
+	IPQPS   int `yaml:"ip_qps"`
+	IPBurst int `yaml:"ip_burst"`
+	// AutoBan 控制自动封禁：来源在检测窗口内被限流 429 达到次数即临时封禁（TTL 自动解封）。
+	AutoBan AutoBanConfig `yaml:"auto_ban"`
+}
+
+// AutoBanConfig 描述自动封禁参数（IP 与 key 共用一组；运行期可调）。
+type AutoBanConfig struct {
+	Enabled       bool `yaml:"enabled"`
+	WindowSeconds int  `yaml:"window_seconds"` // 检测窗口（秒，默认 60）
+	MaxViolations int  `yaml:"max_violations"` // 窗口内触发次数阈值（默认 5）
+	BanSeconds    int  `yaml:"ban_seconds"`    // 临时封禁时长（秒，默认 300）
+}
+
+// SecurityConfig 控制数据面治理的运行期种子（无后台保存值时生效）。
+type SecurityConfig struct {
+	// IPBlocklist 是启动期的来源 IP/CIDR 封禁种子（后台保存运行期配置后以保存值为准）。
+	IPBlocklist []string `yaml:"ip_blocklist"`
+	// IPWhitelist 是可信豁免名单种子（命中来源不受 IP 黑名单/自动封禁(IP)/单 IP 限流影响）。
+	IPWhitelist []string `yaml:"ip_whitelist"`
 }
 
 // CredentialsConfig 控制 Gateway→Upstream 凭证的加密存储。
@@ -130,9 +163,16 @@ func Default() Config {
 			MaxConcurrency:  0,
 		},
 		RateLimit: RateLimitConfig{
-			Enabled: false,
-			QPS:     0,
-			Burst:   1,
+			Enabled:       false,
+			QPS:           0,
+			Burst:         1,
+			WindowSeconds: 60, // 查询型流量默认 1 分钟滑动窗口
+			AutoBan: AutoBanConfig{
+				Enabled:       false,
+				WindowSeconds: 60,
+				MaxViolations: 5,
+				BanSeconds:    300,
+			},
 		},
 		Auth: AuthConfig{
 			Enabled:       true, // 默认开启控制台/控制面鉴权；凭据为空时应用首启自动生成并打印引导
@@ -191,6 +231,10 @@ func applyEnvOverrides(cfg *Config) {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Server.Port = n
 		}
+	}
+	if v := lookupEnv("CONDUCTOR_SERVER_TRUSTED_PROXIES"); v != "" {
+		// 多个可信代理以逗号分隔（IP 或 CIDR）。
+		cfg.Server.TrustedProxies = splitCSV(v)
 	}
 	if v := lookupEnv("CONDUCTOR_DATABASE_DRIVER"); v != "" {
 		cfg.Database.Driver = v
@@ -268,6 +312,56 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.RateLimit.Burst = n
 		}
 	}
+	if v := lookupEnv("CONDUCTOR_RATELIMIT_WINDOW_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.RateLimit.WindowSeconds = n
+		}
+	}
+	if v := lookupEnv("CONDUCTOR_RATELIMIT_AUTO_BAN_ENABLED"); v != "" {
+		cfg.RateLimit.AutoBan.Enabled = parseBool(v)
+	}
+	if v := lookupEnv("CONDUCTOR_RATELIMIT_AUTO_BAN_WINDOW_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.RateLimit.AutoBan.WindowSeconds = n
+		}
+	}
+	if v := lookupEnv("CONDUCTOR_RATELIMIT_AUTO_BAN_MAX_VIOLATIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.RateLimit.AutoBan.MaxViolations = n
+		}
+	}
+	if v := lookupEnv("CONDUCTOR_RATELIMIT_AUTO_BAN_BAN_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.RateLimit.AutoBan.BanSeconds = n
+		}
+	}
+	if v := lookupEnv("CONDUCTOR_RATELIMIT_GLOBAL_QPS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.RateLimit.GlobalQPS = n
+		}
+	}
+	if v := lookupEnv("CONDUCTOR_RATELIMIT_GLOBAL_BURST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.RateLimit.GlobalBurst = n
+		}
+	}
+	if v := lookupEnv("CONDUCTOR_RATELIMIT_IP_QPS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.RateLimit.IPQPS = n
+		}
+	}
+	if v := lookupEnv("CONDUCTOR_RATELIMIT_IP_BURST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.RateLimit.IPBurst = n
+		}
+	}
+	if v := lookupEnv("CONDUCTOR_SECURITY_IP_BLOCKLIST"); v != "" {
+		// 多个来源 IP/CIDR 以逗号分隔（作为运行期配置无存值时的种子）。
+		cfg.Security.IPBlocklist = splitCSV(v)
+	}
+	if v := lookupEnv("CONDUCTOR_SECURITY_IP_WHITELIST"); v != "" {
+		cfg.Security.IPWhitelist = splitCSV(v)
+	}
 	if v := lookupEnv("CONDUCTOR_OBSERVABILITY_RECORD_ARGS"); v != "" {
 		cfg.Observability.RecordArgs = parseBool(v)
 	}
@@ -310,6 +404,37 @@ func lookupEnv(key string) string {
 func (c Config) validate() error {
 	if c.Server.Port < 0 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port 超出合法范围: %d", c.Server.Port)
+	}
+	for _, p := range c.Server.TrustedProxies {
+		if _, err := netip.ParseAddr(p); err != nil {
+			if _, err := netip.ParsePrefix(p); err != nil {
+				return fmt.Errorf("server.trusted_proxies 项 %q 须为 IP 或 CIDR", p)
+			}
+		}
+	}
+	for _, p := range c.Security.IPBlocklist {
+		if _, err := netip.ParseAddr(p); err != nil {
+			if _, err := netip.ParsePrefix(p); err != nil {
+				return fmt.Errorf("security.ip_blocklist 项 %q 须为 IP 或 CIDR", p)
+			}
+		}
+	}
+	for _, p := range c.Security.IPWhitelist {
+		if _, err := netip.ParseAddr(p); err != nil {
+			if _, err := netip.ParsePrefix(p); err != nil {
+				return fmt.Errorf("security.ip_whitelist 项 %q 须为 IP 或 CIDR", p)
+			}
+		}
+	}
+	if c.RateLimit.WindowSeconds < 1 || c.RateLimit.WindowSeconds > 3600 {
+		return fmt.Errorf("ratelimit.window_seconds 须在 1..3600，收到: %d", c.RateLimit.WindowSeconds)
+	}
+	ab := c.RateLimit.AutoBan
+	if ab.WindowSeconds < 0 || ab.MaxViolations < 0 || ab.BanSeconds < 0 {
+		return fmt.Errorf("ratelimit.auto_ban 各参数不能为负数")
+	}
+	if ab.Enabled && (ab.WindowSeconds < 1 || ab.MaxViolations < 1 || ab.BanSeconds < 1) {
+		return fmt.Errorf("ratelimit.auto_ban 开启时 window_seconds/max_violations/ban_seconds 均须 ≥1")
 	}
 	switch c.Database.Driver {
 	case "memory", "mysql", "":

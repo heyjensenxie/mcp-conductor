@@ -294,11 +294,20 @@ func buildLimiter(cfg config.Config) ratelimit.Limiter {
 		defer cancel()
 		if err := rdb.Ping(ctx).Err(); err != nil {
 			slog.Warn("Redis 不可用，限流回退到进程内内存实现", "addr", cfg.Redis.Addr, "error", err)
-			return ratelimit.NewMemoryLimiter(cfg.RateLimit.QPS, cfg.RateLimit.Burst)
+			return ratelimit.NewMemoryLimiter(cfg.RateLimit.QPS, windowFor(cfg))
 		}
-		return ratelimit.NewRedisLimiter(rdb, cfg.RateLimit.QPS, time.Second)
+		return ratelimit.NewRedisLimiter(rdb, cfg.RateLimit.QPS, windowFor(cfg))
 	}
-	return ratelimit.NewMemoryLimiter(cfg.RateLimit.QPS, cfg.RateLimit.Burst)
+	return ratelimit.NewMemoryLimiter(cfg.RateLimit.QPS, windowFor(cfg))
+}
+
+// windowFor 把 ratelimit.window_seconds 换算为滑动窗口时长（默认 1 分钟）。
+func windowFor(cfg config.Config) time.Duration {
+	w := cfg.RateLimit.WindowSeconds
+	if w <= 0 {
+		w = 60
+	}
+	return time.Duration(w) * time.Second
 }
 
 // runTrendPersist 把指标聚合器的“已闭合分钟桶”每 60s 幂等落库到 trend_minute，

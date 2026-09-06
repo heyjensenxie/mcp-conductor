@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS traffic_log (
   instance_id VARCHAR(64)    NULL    COMMENT '命中的上游实例（可为空；多实例 Server 归属用）',
   tool       VARCHAR(255)    NOT NULL COMMENT '被调用工具（对外名）',
   client     VARCHAR(255)    NULL    COMMENT '调用方标识（如 API Key subject）',
+  client_ip  VARCHAR(64)     NULL    COMMENT '调用方来源 IP（可信代理规则解析；空为未记录）',
   status     VARCHAR(32)     NOT NULL COMMENT 'success 或错误码',
   latency_ms INT             NOT NULL COMMENT '端到端延迟（毫秒）',
   error      TEXT            NULL    COMMENT '失败时的错误文本（成功为空）',
@@ -149,8 +150,9 @@ CREATE TABLE IF NOT EXISTS access_keys (
   subject    VARCHAR(128) NOT NULL COMMENT '唯一主体标识',
   enabled    TINYINT(1)   NOT NULL DEFAULT 1 COMMENT 'Key 启停',
   key_hash   VARCHAR(64)  NOT NULL COMMENT 'HMAC-SHA256(token_secret, key) hex，明文仅创建时返回一次',
-  qps        INT          NOT NULL DEFAULT 0 COMMENT '每 key 限流 QPS，0 表示沿用全局限流配置',
-  burst      INT          NOT NULL DEFAULT 0 COMMENT '突发容量（令牌桶 burst）',
+  qps        INT          NOT NULL DEFAULT 0 COMMENT '每 key 限流 QPS，0 表示沿用安全防护维度默认；>0 专属覆盖',
+  burst      INT          NOT NULL DEFAULT 0 COMMENT '已废弃（不再参与判定，保留兼容）',
+  window_seconds INT      NOT NULL DEFAULT 0 COMMENT '该 key 专属滑动窗口(秒)，0=跟随安全防护全局窗口（0016）',
   created_at DATETIME(3)  NOT NULL COMMENT '创建时间（UTC）',
   updated_at DATETIME(3)  NOT NULL COMMENT '更新时间（UTC）',
   PRIMARY KEY (id),
@@ -187,3 +189,27 @@ CREATE TABLE IF NOT EXISTS trend_minute (
   PRIMARY KEY (scope, dim_key, minute),
   KEY idx_trend_scope_server_minute (scope, server_id, minute)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='已闭合分钟桶趋势（幂等 upsert，按保留天数清理）';
+
+-- -----------------------------------------------------------------------------
+-- 运行期治理配置（0013）：IP 黑名单 + 三级限流阈值的单行快照（id 恒为 1）。
+-- 后台（/api/runtime-config + Console 防护页）保存后即权威；无保存值时网关回退
+-- config.yaml 种子（ratelimit.* 与 security.ip_blocklist）。
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS runtime_config (
+  id             TINYINT UNSIGNED NOT NULL COMMENT '固定主键（恒为 1，单行快照）',
+  qps            INT     NOT NULL DEFAULT 0 COMMENT '维度默认限流 QPS（key/IP 未单独配置时）',
+  burst          INT     NOT NULL DEFAULT 0 COMMENT '已废弃：Burst 不再参与判定（保留兼容）',
+  window_seconds INT     NOT NULL DEFAULT 60 COMMENT '滑动窗口长度(秒,1..3600)，任意 N 秒内≤QPS×N；默认 1 分钟',
+  ip_qps         INT     NOT NULL DEFAULT 0 COMMENT '单来源 IP 限流 QPS（0=沿用 qps）',
+  ip_burst       INT     NOT NULL DEFAULT 0 COMMENT '单来源 IP 突发容量（已废弃，保留兼容）',
+  global_qps     INT     NOT NULL DEFAULT 0 COMMENT '全局总闸 QPS（0=不启用全局级）',
+  global_burst   INT     NOT NULL DEFAULT 0 COMMENT '全局总闸突发容量（已废弃，保留兼容）',
+  auto_ban_enabled TINYINT(1) NOT NULL DEFAULT 0 COMMENT '自动封禁开关',
+  auto_ban_window_seconds INT NOT NULL DEFAULT 60 COMMENT '违规检测窗口(秒)',
+  auto_ban_max_violations INT NOT NULL DEFAULT 5 COMMENT '窗口内触发次数阈值',
+  auto_ban_ban_seconds INT NOT NULL DEFAULT 300 COMMENT '临时封禁时长(秒, TTL 自动解封)',
+  ip_blocklist   TEXT    NULL    COMMENT '来源 IP/CIDR 封禁名单 JSON（仅 /mcp）',
+  ip_whitelist   TEXT    NULL    COMMENT '可信 IP/CIDR 白名单 JSON（豁免黑名单/自动封禁/IP级限流，0017）',
+  updated_at     DATETIME(3) NOT NULL COMMENT '最近保存时间（UTC）',
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='运行期治理配置（IP 黑名单 + 滑动窗口三级限流，Console 维护）';

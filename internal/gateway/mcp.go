@@ -243,6 +243,7 @@ func (g *MCPGateway) record(ctx context.Context, resolved *router.Resolved, name
 		InstanceID: instanceID,
 		Tool:       name,
 		Client:     subject,
+		ClientIP:   ClientIPFrom(ctx),
 		Status:     status,
 		LatencyMS:  latency.Milliseconds(),
 		Timestamp:  time.Now(),

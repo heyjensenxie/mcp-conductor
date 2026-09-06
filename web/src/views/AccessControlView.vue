@@ -24,7 +24,13 @@
         <a-table v-else :data-source="keys" :columns="keyColumns" :loading="keysLoading" :pagination="pagination" @change="onTableChange" :row-key="(r: AccessKey) => r.id">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'enabled'"><a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? t('access.active') : t('access.inactive')" /></template>
-            <template v-else-if="column.key === 'quota'"><span class="mono">{{ record.qps > 0 ? `${record.qps}/s · ${record.burst}` : t('access.globalQuota') }}</span></template>
+            <template v-else-if="column.key === 'quota'">
+              <a-tooltip :title="t('access.quotaTooltip')">
+                <span v-if="record.qps < 0" class="quota-default">{{ t('access.quotaUnlimited') }}</span>
+                <span v-else-if="record.qps > 0" class="mono">{{ record.qps }}/s ≈ {{ Math.round(record.qps * ((record.window_seconds ?? 0) > 0 ? record.window_seconds : winSec)) }}{{ t('access.perMin') }}</span>
+                <span v-else class="quota-default">{{ t('access.quotaFollowDefault') }}</span>
+              </a-tooltip>
+            </template>
             <template v-else-if="column.key === 'tools_count'"><a-tag color="blue">{{ record.grants?.length ?? 0 }} {{ t('access.grantsUnit') }}</a-tag></template>
             <template v-else-if="column.key === 'actions'"><a-space><a-button type="link" @click="openDetail(record.id)">{{ t('access.openWorkspace') }}</a-button><a-popconfirm :title="t('common.confirmDelete')" @confirm="remove(record)"><a-button type="link" danger>{{ t('common.delete') }}</a-button></a-popconfirm></a-space></template>
           </template>
@@ -34,8 +40,10 @@
       <a-form :label-col="{ span: 6 }" :wrapper-col="{ span: 18 }">
         <a-form-item :label="t('access.name')" required><a-input v-model:value="createForm.name" /></a-form-item>
         <a-form-item :label="t('access.subject')" required><a-input v-model:value="createForm.subject" placeholder="partner-a" /></a-form-item>
-        <a-form-item :label="t('access.qps')"><a-input-number v-model:value="createForm.qps" :min="0" :style="{ width: '100%' }" :placeholder="t('access.qupPlaceholder')" /></a-form-item>
-        <a-form-item :label="t('access.burst')"><a-input-number v-model:value="createForm.burst" :min="0" :style="{ width: '100%' }" :placeholder="t('access.burstPlaceholder')" /></a-form-item>
+        <a-form-item :label="t('access.qps')"><a-input-number v-model:value="createForm.qps" :disabled="createForm.unlimited" :min="0" :style="{ width: '100%' }" :placeholder="t('access.qupPlaceholder')" /></a-form-item>
+        <p class="form-hint">{{ t('access.qpsFieldHint') }}</p>
+        <a-form-item :label="t('access.windowLabel')"><a-input-number v-model:value="createForm.window_seconds" :disabled="createForm.unlimited" :min="0" :max="3600" :precision="0" :style="{ width: '100%' }" :placeholder="t('access.windowPlaceholder')" /></a-form-item>
+        <a-form-item :label="t('access.qpsUnlimited')"><a-checkbox v-model:checked="createForm.unlimited" /></a-form-item>
       </a-form>
     </a-modal>
     <a-modal v-model:open="secretVisible" :title="t('access.secret')" :footer="null" width="560px">
@@ -52,7 +60,7 @@ import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { CopyOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons-vue'
-import { createKey, deleteKey, getAuthStatus, listKeys } from '@/api'
+import { createKey, deleteKey, getAuthStatus, getRuntimeConfig, listKeys } from '@/api'
 import type { AccessKey } from '@/types'
 
 const { t } = useI18n()
@@ -75,18 +83,20 @@ const creating = ref(false)
 const secretVisible = ref(false)
 const createdSecret = ref('')
 const createdKeyID = ref('')
-const createForm = reactive({ name: '', subject: '', qps: 0, burst: 0 })
+const createForm = reactive({ name: '', subject: '', qps: 0, burst: 0, window_seconds: 0, unlimited: false })
+// 滑动窗口（秒）来自运行期配置；获取失败回退默认 60（1 分钟）。
+const winSec = ref(60)
 
 const keyColumns = computed<any[]>(() => [
   { title: t('access.name'), key: 'name', dataIndex: 'name' },
   { title: t('access.subject'), key: 'subject', dataIndex: 'subject' },
-  { title: t('access.qps').split(' ')[0], key: 'quota', width: 150 },
+  { title: t('access.qps').split(' ')[0], key: 'quota', width: 180 },
   { title: t('access.toolsCount'), key: 'tools_count', width: 105 },
   { title: t('access.enabled'), key: 'enabled', width: 105 },
   { title: t('access.actions'), key: 'actions', width: 190 },
 ])
 
-function openCreate() { Object.assign(createForm, { name: '', subject: '', qps: 0, burst: 0 }); createVisible.value = true }
+function openCreate() { Object.assign(createForm, { name: '', subject: '', qps: 0, burst: 0, window_seconds: 0, unlimited: false }); createVisible.value = true }
 function openDetail(id: string) { router.push({ name: 'access-key-detail', params: { id } }) }
 function openCreatedDetail() { secretVisible.value = false; openDetail(createdKeyID.value) }
 
@@ -131,7 +141,13 @@ async function submitCreate() {
   if (!createForm.name || !createForm.subject) { message.warning(t('access.subjectRequired')); return }
   creating.value = true
   try {
-    const key = await createKey({ ...createForm, grants: [] })
+    const key = await createKey({
+      name: createForm.name,
+      subject: createForm.subject,
+      qps: createForm.unlimited ? -1 : createForm.qps,
+      window_seconds: createForm.unlimited ? 0 : createForm.window_seconds,
+      grants: [],
+    })
     createdSecret.value = key.secret ?? ''; createdKeyID.value = key.id; createVisible.value = false; secretVisible.value = true
     pagination.current = 1
     await loadKeys()
@@ -140,7 +156,28 @@ async function submitCreate() {
 async function remove(key: AccessKey) { try { await deleteKey(key.id); pagination.current = 1; await loadKeys(); message.success(t('access.deletedOk')) } catch (e) { message.error(String(e)) } }
 async function copySecret() { try { await navigator.clipboard.writeText(createdSecret.value); message.success(t('access.copied')) } catch { message.warning(t('access.copyFailed')) } }
 
-onMounted(async () => { loading.value = true; try { await Promise.all([loadKeys(), getAuthStatus().then((s) => { authRequired.value = s.auth_required })]) } finally { loading.value = false } })
+async function refreshWindow() {
+  try {
+    const rc = await getRuntimeConfig()
+    const w = rc.config.ratelimit.window_seconds
+    if (w > 0) winSec.value = w
+  } catch {
+    // 读取失败按默认 60s 展示
+  }
+}
+
+onMounted(async () => {
+  loading.value = true
+  try {
+    await Promise.all([
+      loadKeys(),
+      refreshWindow(),
+      getAuthStatus().then((s) => { authRequired.value = s.auth_required }),
+    ])
+  } finally {
+    loading.value = false
+  }
+})
 </script>
 
 <style scoped>
@@ -149,6 +186,8 @@ onMounted(async () => { loading.value = true; try { await Promise.all([loadKeys(
 .access-hero p { margin: 0; color: #627d98; max-width: 620px; }
 .eyebrow { color: #1677ff !important; font-family: var(--mc-mono); font-size: 11px; letter-spacing: .12em; }
 .mb { margin-bottom: 16px; }
+.quota-default { font-size: 12px; color: var(--mc-ink-3); }
+.form-hint { margin: -2px 0 10px 0; padding-left: 33.3333%; font-size: 12px; color: var(--mc-ink-3); line-height: 1.5; }
 .filters { margin: 0 0 16px; }
 .secret-row { display: flex; }
 .configure-btn { margin-top: 18px; }

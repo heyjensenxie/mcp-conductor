@@ -89,6 +89,7 @@ export interface AccessKey {
   enabled: boolean
   qps: number
   burst: number
+  window_seconds?: number
   grants: ToolGrant[]
   secret?: string // 仅创建响应返回一次
   created_at: string
@@ -127,6 +128,8 @@ export interface TrafficSample {
   instance_id?: string
   tool: string
   client?: string
+  // client_ip 记录调用方来源 IP（可信代理规则解析；空表示未记录）。
+  client_ip?: string
   status: string
   latency_ms: number
   error?: string
@@ -309,4 +312,42 @@ export interface EvalSuiteResult {
   summary: EvalSuiteSummary
   cases: EvalSuiteCaseResult[]
   by_tool: EvalToolGroup[]
+}
+
+// ---- 运行期治理配置（防护页：IP 黑名单 + 数据面三级限流阈值）----
+
+// 三级限流配额：0 语义见后端（ip_qps=0→沿用 qps；global_qps<=0→不启用全局级）。
+// window_seconds 为滑动窗口长度（秒，默认 60）：任意 N 秒内 ≤ 该级 QPS×N。burst 已废弃。
+export interface RuntimeRateLimit {
+  qps: number
+  burst: number
+  window_seconds: number
+  ip_qps: number
+  ip_burst: number
+  global_qps: number
+  global_burst: number
+}
+
+// 自动封禁：来源在检测窗口内被限流 429 达次数即临时封禁（TTL 自动解封，进程内状态）。
+export interface RuntimeAutoBan {
+  enabled: boolean
+  window_seconds: number
+  max_violations: number
+  ban_seconds: number
+}
+
+// 生效的运行期配置（后台保存值优先，否则为 config.yaml 种子）。
+export interface RuntimeConfig {
+  ratelimit: RuntimeRateLimit
+  auto_ban: RuntimeAutoBan
+  ip_blocklist: string[]
+  ip_whitelist: string[]
+  updated_at?: string
+}
+
+// GET/PUT /api/runtime-config 的统一视图。
+export interface RuntimeConfigView {
+  config: RuntimeConfig
+  persisted: boolean
+  ratelimit_enabled: boolean
 }

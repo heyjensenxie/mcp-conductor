@@ -68,6 +68,9 @@
                 <template v-else-if="column.key === 'client'">
                   <span class="cell-ellipsis">{{ record.client || '-' }}</span>
                 </template>
+                <template v-else-if="column.key === 'client_ip'">
+                  <span class="cell-ellipsis mono">{{ record.client_ip || '-' }}</span>
+                </template>
                 <template v-else-if="column.key === 'request_id'">
                   <a-tooltip :title="t('dashboard.copyRequestId')">
                     <span class="rid mono" @click="copyText(record.request_id)">
@@ -562,6 +565,7 @@ const recentColumns = computed<any[]>(() => [
   { title: t('traffic.latencyMs'), key: 'latency', dataIndex: 'latency_ms', width: 92, align: 'right' },
   { title: t('traffic.server'), key: 'server', dataIndex: 'server_id', width: 120 },
   { title: t('traffic.client'), key: 'client', dataIndex: 'client', width: 92, ellipsis: true },
+  { title: t('traffic.clientIp'), key: 'client_ip', dataIndex: 'client_ip', width: 120, ellipsis: true },
   { title: t('traffic.requestId'), key: 'request_id', dataIndex: 'request_id', width: 170 },
   { title: t('traffic.time'), key: 'time', dataIndex: 'timestamp', width: 120 },
 ])

@@ -37,6 +37,7 @@ type Store struct {
 	keysBySubj  map[string]model.AccessKey // subject -> key
 	traffic     []model.TrafficSample
 	trend       map[trendKey]model.TrendMinute // 已闭合分钟桶（幂等覆盖）
+	runtime     *model.RuntimeConfig           // 单份运行期治理配置（nil=无后台保存值）
 
 	seq        int64 // nextID 字符串 id 递增源
 	trafficSeq int64 // traffic 数字流水主键递增源
@@ -752,6 +753,40 @@ func (s *Store) DeleteTrendBucketsBefore(_ context.Context, beforeMinute int64) 
 			delete(s.trend, key)
 		}
 	}
+	return nil
+}
+
+// ---- RuntimeConfigStore ----
+
+// GetRuntimeConfig 读取运行期治理配置；无后台保存值时返回 (nil, false, nil)。
+func (s *Store) GetRuntimeConfig(_ context.Context) (*model.RuntimeConfig, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.runtime == nil {
+		return nil, false, nil
+	}
+	// 返回独立副本，避免调用方经 blocklist/whitelist 切片改动存储内数据。
+	cp := *s.runtime
+	if s.runtime.IPBlocklist != nil {
+		cp.IPBlocklist = append([]string(nil), s.runtime.IPBlocklist...)
+	}
+	if s.runtime.IPWhitelist != nil {
+		cp.IPWhitelist = append([]string(nil), s.runtime.IPWhitelist...)
+	}
+	return &cp, true, nil
+}
+
+// PutRuntimeConfig 覆盖保存运行期治理配置（单份完整快照）。
+func (s *Store) PutRuntimeConfig(_ context.Context, cfg *model.RuntimeConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("runtime config 不能为空")
+	}
+	cp := *cfg
+	cp.IPBlocklist = append([]string(nil), cfg.IPBlocklist...)
+	cp.IPWhitelist = append([]string(nil), cfg.IPWhitelist...)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runtime = &cp
 	return nil
 }
 

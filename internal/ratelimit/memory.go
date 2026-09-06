@@ -6,68 +6,75 @@ import (
 	"time"
 )
 
-// MemoryLimiter 是基于进程内存的令牌桶限流器。
+// MemoryLimiter 是基于进程内存的「N 秒滑动窗口」限流器。
 //
-// 每个 key 独立维护令牌桶，按速率补充令牌；不足时拒绝请求。
-// 构造参数作为全局默认；Allow 可传入按 key 的 Limit 覆盖默认值。
-// 开发模式默认实现，多个实例间不共享状态。
+// 每个 key 维护最近放行请求的毫秒时间戳 FIFO（长度 ≤ 容量 = qps×window 秒）。
+// Allow 时先修剪落在窗口 (now-W, now] 之外的旧记录；若窗口内计数已达容量则
+// 拒绝，否则记录本次时间戳放行。多实例间不共享状态，开发模式默认实现。
+// 构造参数作为全局默认；Allow 可传入按 key 的 Limit 覆盖（含 WindowSec）。
 type MemoryLimiter struct {
-	mu      sync.Mutex
-	rate    float64 // 每秒补充令牌数；<=0 视为不限流
-	burst   int
-	buckets map[string]*memoryBucket
-	now     func() time.Time // 便于测试注入时钟
+	mu     sync.Mutex
+	rate   int // 每秒放行数（默认，<=0 视为不限流）
+	window time.Duration
+	keys   map[string][]int64 // key → 窗口内放行时间戳（ms，升序，有界）
+	now    func() time.Time   // 便于测试注入时钟
 }
 
-type memoryBucket struct {
-	tokens float64
-	last   time.Time
-}
-
-// NewMemoryLimiter 创建内存限流器。
-func NewMemoryLimiter(rate int, burst int) *MemoryLimiter {
+// NewMemoryLimiter 创建内存滑动窗口限流器。
+// window 为默认窗口长度（秒级，内部取整秒）。
+func NewMemoryLimiter(rate int, window time.Duration) *MemoryLimiter {
 	return &MemoryLimiter{
-		rate:    float64(rate),
-		burst:   burst,
-		buckets: make(map[string]*memoryBucket),
-		now:     time.Now,
+		rate:   rate,
+		window: window,
+		keys:   make(map[string][]int64),
+		now:    time.Now,
 	}
 }
 
-// Allow 判断 key 是否放行：limit 提供该 key 的配额，零值回退到构造时默认；
-// 不限流直接放行；否则补充令牌后按桶余额裁定。
-func (m *MemoryLimiter) Allow(_ context.Context, key string, limit Limit) bool {
-	rate := float64(limit.QPS)
-	if limit.QPS <= 0 {
-		rate = m.rate
+// effective 解析某次 Allow 的有效速率与窗口：limit 提供配额，零值回退构造默认。
+func (m *MemoryLimiter) effective(limit Limit) (qps int, window time.Duration) {
+	qps = limit.QPS
+	if qps <= 0 {
+		qps = m.rate
 	}
-	if rate <= 0 {
+	window = m.window
+	if limit.WindowSec > 0 {
+		window = time.Duration(limit.WindowSec) * time.Second
+	}
+	if window <= 0 {
+		window = time.Second
+	}
+	return qps, window
+}
+
+// Allow 判断 key 是否放行：修剪过期记录后，窗口内计数达容量即拒绝。
+func (m *MemoryLimiter) Allow(_ context.Context, key string, limit Limit) bool {
+	qps, window := m.effective(limit)
+	if qps <= 0 {
 		return true
 	}
-	burst := limit.Burst
-	if burst <= 0 {
-		burst = m.burst
+	capacity := qps * int(window/time.Second)
+	if capacity < 1 {
+		capacity = 1
 	}
-	now := m.now()
+
+	nowMs := m.now().UnixMilli()
+	cutoff := nowMs - window.Milliseconds() // 窗口 = (now-W, now]：修剪 <= cutoff
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	b, ok := m.buckets[key]
-	if !ok {
-		b = &memoryBucket{tokens: float64(burst), last: now}
-		m.buckets[key] = b
+	arr := m.keys[key]
+	start := 0
+	for start < len(arr) && arr[start] <= cutoff {
+		start++
 	}
-	// 先按时间间隔补充令牌。
-	elapsed := now.Sub(b.last).Seconds()
-	b.tokens += elapsed * rate
-	if b.tokens > float64(burst) {
-		b.tokens = float64(burst)
-	}
-	b.last = now
-
-	if b.tokens < 1 {
+	arr = arr[start:]
+	if len(arr) >= capacity {
+		m.keys[key] = arr // 已修剪，避免下次重复扫描
 		return false
 	}
-	b.tokens--
+	arr = append(arr, nowMs)
+	m.keys[key] = arr
 	return true
 }

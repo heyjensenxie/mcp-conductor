@@ -213,9 +213,9 @@ func TestQueryTrafficFilterAndPage(t *testing.T) {
 	base := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
 
 	samples := []model.TrafficSample{
-		{RequestID: m + "-1", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: base},
+		{RequestID: m + "-1", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", ClientIP: "203.0.113.9", Status: "success", Timestamp: base},
 		{RequestID: m + "-2", ServerID: "s2", InstanceID: "i2", Tool: "beta.search", Client: "c2", Status: "upstream_error", Timestamp: base.Add(30 * time.Second)},
-		{RequestID: m + "-3", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: base.Add(60 * time.Second)},
+		{RequestID: m + "-3", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", ClientIP: "203.0.113.9", Status: "success", Timestamp: base.Add(60 * time.Second)},
 	}
 	for _, sample := range samples {
 		if err := store.AppendTraffic(ctx, sample); err != nil {
@@ -232,6 +232,9 @@ func TestQueryTrafficFilterAndPage(t *testing.T) {
 	}
 	if got[0].InstanceID != "i1" || got[1].InstanceID != "i2" {
 		t.Fatalf("instance_id 应随行往返: %+v", got)
+	}
+	if got[0].ClientIP != "203.0.113.9" || got[1].ClientIP != "" {
+		t.Fatalf("client_ip 应随行往返（空行为空串）: %+v", got)
 	}
 
 	got, total, _ = store.QueryTraffic(ctx, query.TrafficQuery{Q: m, ServerID: "s1", Status: "success"})

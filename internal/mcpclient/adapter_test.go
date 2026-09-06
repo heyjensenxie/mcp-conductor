@@ -3,6 +3,7 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/heyjensenxie/mcp-conductor/internal/errs"
 	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/registry"
 )
 
 // instanceFor 构造挂在逻辑 Server "srv-1" 下的一个启用实例。
@@ -209,5 +211,78 @@ func TestAdapter_CallTimeoutMapsToCodeTimeout(t *testing.T) {
 	}
 	if code := errs.CodeOf(err); code != errs.CodeTimeout {
 		t.Fatalf("错误码应归类为 timeout_error，得到 %s", code)
+	}
+}
+
+// TestAdapter_JsonRPCErrorIsBusinessFailure 验证：上游以 JSON-RPC error 响应拒绝
+// 本次调用（参数校验 / 业务异常，如 -32602 Invalid params）应归类为 ToolFailedError
+// （业务失败、实例健康），而**不是**传输/实例故障——网关据此不会触发实例冷却。
+func TestAdapter_JsonRPCErrorIsBusinessFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fmt.Sprintf(
+			`{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"invalid params: missing q"}}`, string(req.ID))))
+	}))
+	defer upstream.Close()
+
+	_, err := New().Call(context.Background(), model.Server{ID: "srv-1"}, instanceFor(upstream.URL),
+		"search", map[string]any{}, nil)
+	if err == nil {
+		t.Fatal("JSON-RPC error 响应应作为错误返回")
+	}
+	var toolFail *registry.ToolFailedError
+	if !errors.As(err, &toolFail) {
+		t.Fatalf("参数校验/业务拒绝应归类为 ToolFailedError（实例健康），得到: %v", err)
+	}
+	// 底层仍透传统一错误码，供调用日志/指标按一次失败调用记录。
+	if code := errs.CodeOf(err); code != errs.CodeUpstream {
+		t.Fatalf("错误码应透传为 upstream_error，得到 %s", code)
+	}
+	// 与传输层失败区分：JSON-RPC 拒绝不应是 timeout_error（实例故障语义）。
+	if errs.IsTimeout(err) {
+		t.Fatal("业务拒绝不应被归类为超时/实例故障")
+	}
+}
+
+// TestAdapter_HTTPStatusClassification 验证 HTTP 4xx（客户端/参数被拒）归类为
+// ToolFailedError（业务失败、实例健康）；HTTP 5xx 仍视为实例/传输级故障（不包
+// ToolFailedError），网关据此决定是否冷却。
+func TestAdapter_HTTPStatusClassification(t *testing.T) {
+	serve := func(status int) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"boom"}}`))
+		}))
+	}
+
+	cases := []struct {
+		name         string
+		status       int
+		wantToolFail bool
+	}{
+		{"HTTP 400 参数被拒应视为业务失败", http.StatusBadRequest, true},
+		{"HTTP 422 参数被拒应视为业务失败", http.StatusUnprocessableEntity, true},
+		{"HTTP 500 仍视为实例故障", http.StatusInternalServerError, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := serve(tc.status)
+			defer upstream.Close()
+			_, err := New().Call(context.Background(), model.Server{ID: "srv-1"}, instanceFor(upstream.URL),
+				"search", map[string]any{}, nil)
+			if err == nil {
+				t.Fatal("非 2xx 应返回错误")
+			}
+			var toolFail *registry.ToolFailedError
+			got := errors.As(err, &toolFail)
+			if got != tc.wantToolFail {
+				t.Fatalf("status=%d ToolFailedError=%v, 期望 %v (%v)", tc.status, got, tc.wantToolFail, err)
+			}
+		})
 	}
 }

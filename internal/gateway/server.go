@@ -43,7 +43,8 @@ type Deps struct {
 }
 
 // NewServer 组装 HTTP 服务器：统一 MCP 端点 + 控制面 REST API + 健康探针，
-// 外面包一层网关中间件链（请求标识 → 访问日志 → 认证 → 限流）。
+// 外面包一层网关中间件链（客户端 IP → 请求标识 → 访问日志 → /mcp 运行期守卫 →
+// 认证 → 限流）。
 func NewServer(cfg config.Config, deps Deps) *http.Server {
 	mux := http.NewServeMux()
 
@@ -56,16 +57,24 @@ func NewServer(cfg config.Config, deps Deps) *http.Server {
 	mux.HandleFunc("POST /api/auth/login", handleLogin(deps.AuthService))
 	mux.HandleFunc("GET /api/auth/status", handleAuthStatus(deps.AuthService))
 
-	registerControlRoutes(mux, deps)
+	// 运行期治理配置缓存：封禁名单 + 三级限流阈值，存值优先、config.yaml 作种子。
+	runtimeCache := newRuntimeConfigCache(deps.Store, fallbackRuntimeConfig(cfg))
+	// 自动封禁管理器（进程内临时封禁状态，随请求惰性过期）。
+	autoBan := newAutoBanManager()
+
+	registerControlRoutes(mux, deps, runtimeCache, cfg.RateLimit.Enabled)
 	registerHealthRoutes(mux)
 	// 内嵌前端 SPA：未匹配 /api 与 /mcp 的路径由 Console 兜底。
 	mux.Handle("/", spaHandler())
 
+	// 中间件链：数据面 /mcp 先经运行期守卫（封禁 + 注入生效配置），认证后再限流。
 	handler := chain(mux,
+		captureClientIPMiddleware(cfg.Server.TrustedProxies),
 		requestIDMiddleware,
 		loggingMiddleware,
+		runtimeGuardMiddleware(runtimeCache, autoBan),
 		authMiddleware(deps.Auth),
-		rateLimitMiddleware(deps.RateLimiter),
+		rateLimitMiddleware(deps.RateLimiter, newRateLimitPolicy(cfg.RateLimit), autoBan),
 	)
 
 	addr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
@@ -77,13 +86,17 @@ func NewServer(cfg config.Config, deps Deps) *http.Server {
 }
 
 // registerControlRoutes 注册控制面 REST 路由（供 Vue3 Console 使用）。
-func registerControlRoutes(mux *http.ServeMux, deps Deps) {
+// runtimeCache 注入运行期配置缓存（含 config.yaml 种子），供 /api/runtime-config
+// 读取/保存后失效。
+func registerControlRoutes(mux *http.ServeMux, deps Deps, runtimeCache *runtimeConfigCache, rateLimitEnabled bool) {
 	control := NewControl(deps.Registry, deps.Store, deps.Metrics, deps.KeyHash)
 	// 注册/启用 Server 后即时触发健康巡检（nil 安全，测试可不注入）。
 	control.probeNow = deps.ProbeNow
 	control.eval = deps.Eval
 	control.keyCall = deps.KeyCall
 	control.replay = deps.Replay
+	control.runtimeCache = runtimeCache
+	control.rateLimitEnabled = rateLimitEnabled
 	if deps.TrendRetentionMinutes > 0 {
 		control.trendRetentionMinutes = deps.TrendRetentionMinutes
 	}
@@ -131,6 +144,9 @@ func registerControlRoutes(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("GET /api/logs", control.handleLogs)
 	mux.HandleFunc("GET /api/logs/{id}", control.handleGetLogDetail)
 	mux.HandleFunc("POST /api/logs/{id}/replay", control.handleReplayLog)
+
+	mux.HandleFunc("GET /api/runtime-config", control.handleGetRuntimeConfig)
+	mux.HandleFunc("PUT /api/runtime-config", control.handlePutRuntimeConfig)
 
 	mux.HandleFunc("GET /api/evaluations/servers/{id}", control.handleEvalMeta)
 	mux.HandleFunc("POST /api/evaluations/servers/{id}/quality", control.handleEvalQuality)

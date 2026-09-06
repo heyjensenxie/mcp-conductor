@@ -5,6 +5,11 @@
 server:
   host: 0.0.0.0
   port: 8080
+  # 客户端 IP 解析：网关处于反向代理/网关之后时，列出可信代理（IP 或 CIDR），
+  # 请求来自这些地址时才信任 X-Forwarded-For / X-Real-IP；留空（默认）只认直连地址。
+  # trusted_proxies:
+  #   - 10.0.0.0/8
+  #   - 127.0.0.1
 
 # driver 支持 memory（默认，无 MySQL 也可运行）| mysql（生产 MySQL 5.7+；DSN 需含 parseTime=true&loc=UTC&charset=utf8mb4）
 database:
@@ -23,8 +28,37 @@ gateway:
 
 ratelimit:
   enabled: false
-  qps: 100 # 示例启用值；代码默认 qps=0 / burst=1（未显式配置时的兜底）
-  burst: 10
+  # 数据面 /mcp 三级限流（仅 /mcp；/api 控制面与 Console 保持单维度默认）。
+  # 采用「N 秒滑动窗口」：任意连续 window_seconds 秒内 ≤ 该级 QPS×window_seconds。
+  #   - key 级：按 AccessKey 各自速率；0 → 沿用 qps。
+  #   - IP 级：单来源 IP，ip_qps = 0 → 沿用 qps。
+  #   - 全局级：整网关 /mcp 总闸，global_qps <= 0 → 不启用。
+  qps: 20 # 维度默认每秒速率（查询型示例：20/s → 每分钟 ~1200 次）；代码默认 qps=0（不限流）
+  burst: 10 # 已废弃（不再参与判定，保留兼容）
+  window_seconds: 60 # 滑动窗口(秒,1..3600，默认 60=1 分钟)：任意 N 秒内 ≤ 该级 QPS×N
+  # ip_qps: 100  # 单来源 IP：100/s → 每分钟 ~6000 次
+  # ip_burst: 20
+  # global_qps: 500 # 全局总闸：500/s → 每分钟 ~30000 次
+  # global_burst: 100
+  # 自动封禁：来源(IP / key)在检测窗口内被限流 429 达次数即临时封禁（TTL 自动解封，进程内）。
+  # auto_ban:
+  #   enabled: true
+  #   window_seconds: 60
+  #   max_violations: 5
+  #   ban_seconds: 300
+
+# 数据面治理的运行期种子：无后台保存值时生效；Console「防护」页保存后以保存值为准。
+security:
+  # 来源 IP/CIDR 封禁名单（仅数据面 /mcp；后台可动态增删并持久化）。
+  ip_blocklist: []
+  # ip_blocklist:
+  #   - 203.0.113.9
+  #   - 198.51.100.0/24
+  # 可信豁免白名单：命中来源不受 IP 黑名单/自动封禁(IP)/单 IP 级限流影响。
+  ip_whitelist: []
+  # ip_whitelist:
+  #   - 127.0.0.1
+  #   - 10.0.0.0/8
 
 # 认证（默认开启）：控制台需登录、/api 控制面需管理凭据。
 #   - Console 登录：账号+密码（auth.admin_username / admin_password），默认 admin；

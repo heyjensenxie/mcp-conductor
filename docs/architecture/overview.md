@@ -21,7 +21,7 @@
 │   ├── registry         # Server CRUD、Tool 发现/聚合、命名空间
 │   ├── router           # 工具名→(Server,实例) 解析
 │   ├── balancer         # 负载均衡接口 + RoundRobin（健康感知）
-│   ├── ratelimit        # Limiter 接口 + memory(令牌桶)/redis(固定窗口)
+│   ├── ratelimit        # Limiter 接口 + memory/redis(N秒滑动窗口)
 │   ├── auth             # 认证：控制面 operator_token/登录会话、数据面 API Key
 │   ├── access           # 按 key×tool 白名单授权 + 调用配置（managed key 模式；Operator 放行）
 │   ├── health           # 周期健康巡检 + 注册/启用即时探活

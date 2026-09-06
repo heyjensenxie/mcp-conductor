@@ -113,6 +113,15 @@ func (a *Adapter) Call(ctx context.Context, server model.Server, instance model.
 	}
 	result, err := c.CallTool(ctx, tool, arguments)
 	if err != nil {
+		var rpcErr *mcp.RPCErrorResponse
+		var httpErr *mcp.UpstreamHTTPError
+		// 上游可达但拒绝本次调用：JSON-RPC error 响应，或 HTTP 4xx（参数/客户端被拒）——
+		// 均非实例故障，与下方 isError 结果同等归类为 ToolFailedError，避免被负载
+		// 均衡的失败冷却误判为实例故障而摘除。
+		if errors.As(err, &rpcErr) || (errors.As(err, &httpErr) && httpErr.Status >= 400 && httpErr.Status < 500) {
+			return nil, registry.NewToolFailedError(errs.Wrap(errs.CodeUpstream, err, "上游工具执行失败"))
+		}
+		// 其余（连接失败 / 超时 / HTTP 5xx 等）视为传输/实例级故障。
 		return nil, errs.Wrap(codeForError(err), err, "调用工具 %q 失败", tool)
 	}
 	if result.IsError {

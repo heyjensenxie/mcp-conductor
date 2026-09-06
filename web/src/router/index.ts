@@ -28,6 +28,7 @@ const router = createRouter({
         { path: 'traffic', name: 'traffic', component: () => import('@/views/TrafficView.vue'), meta: { titleKey: 'traffic' } },
         { path: 'access', name: 'access', component: () => import('@/views/AccessControlView.vue'), meta: { titleKey: 'access' } },
         { path: 'access/keys/:id', name: 'access-key-detail', component: () => import('@/views/AccessKeyDetailView.vue'), meta: { titleKey: 'accessKeyDetail' } },
+        { path: 'security', name: 'security', component: () => import('@/views/SecurityView.vue'), meta: { titleKey: 'security' } },
         { path: 'observability', name: 'observability', component: () => import('@/views/ObservabilityView.vue'), meta: { titleKey: 'observability' } },
         { path: 'evaluation', name: 'evaluation', component: () => import('@/views/EvaluationView.vue'), meta: { titleKey: 'evaluation' } },
         { path: 'settings', name: 'settings', component: () => import('@/views/SettingsView.vue'), meta: { titleKey: 'settings' } },

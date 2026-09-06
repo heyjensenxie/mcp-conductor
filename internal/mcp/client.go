@@ -12,6 +12,32 @@ import (
 	"time"
 )
 
+// RPCErrorResponse 表示一次 JSON-RPC error 响应：上游可达且已应答，仅本次调用被
+// 拒绝（参数校验、业务错误等），区别于传输层/实例故障。上层据此不触发实例级
+// 负载均衡冷却。
+type RPCErrorResponse struct {
+	Code    int
+	Message string
+}
+
+// Error 返回与既往日志一致的文本。
+func (e *RPCErrorResponse) Error() string {
+	return fmt.Sprintf("上游调用失败 [%d] %s", e.Code, e.Message)
+}
+
+// UpstreamHTTPError 表示上游以非 2xx HTTP 状态应答（服务端已可达）。Status 落在
+// 4xx 表示客户端/参数被拒（非实例故障），其余（5xx 等）仍视为实例级故障，
+// 由上层按 Status 分类。
+type UpstreamHTTPError struct {
+	Status int
+	Body   string
+}
+
+// Error 返回与既往日志一致的文本。
+func (e *UpstreamHTTPError) Error() string {
+	return fmt.Sprintf("上游返回非 2xx: %d %s", e.Status, e.Body)
+}
+
 // HTTPClient 是基于 net/http 的最小 MCP 上游客户端。
 //
 // 支持对任意实现了 streamable HTTP（纯 POST JSON-RPC）的 MCP Server 执行
@@ -141,7 +167,9 @@ func (c *HTTPClient) call(ctx context.Context, method string, params any, out an
 		respBody = extractSSEPayload(respBody)
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return fmt.Errorf("上游返回非 2xx: %d %s", httpResp.StatusCode, truncate(string(respBody), 256))
+		// 带状态返回：服务端已可达；4xx 为客户端/参数被拒（上层按业务失败处理），
+		// 5xx 等仍可按实例故障处理。
+		return &UpstreamHTTPError{Status: httpResp.StatusCode, Body: truncate(string(respBody), 256)}
 	}
 
 	var resp struct {
@@ -154,7 +182,8 @@ func (c *HTTPClient) call(ctx context.Context, method string, params any, out an
 		return fmt.Errorf("解析上游响应失败: %w", err)
 	}
 	if resp.Error != nil {
-		return fmt.Errorf("上游调用失败 [%d] %s", resp.Error.Code, resp.Error.Message)
+		// 带类型返回：服务端可达、仅调用被拒（参数校验/业务），供上层与传输故障区分。
+		return &RPCErrorResponse{Code: resp.Error.Code, Message: resp.Error.Message}
 	}
 	if err := json.Unmarshal(resp.Result, out); err != nil {
 		return fmt.Errorf("解码上游结果失败: %w", err)

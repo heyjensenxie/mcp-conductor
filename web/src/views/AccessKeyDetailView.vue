@@ -61,11 +61,19 @@
         </div>
         <div class="bf">
           <span class="bf-label">QPS</span>
-          <a-input-number v-model:value="form.qps" :min="0" :precision="0" :controls="false" size="small" class="bf-num" />
+          <div class="bf-unlimit">
+            <a-switch v-model:checked="form.unlimited" size="small" />
+            <span class="bf-unlimit-txt" :class="{ on: form.unlimited }">{{ t('access.qpsUnlimited') }}</span>
+          </div>
+          <a-input-number v-model:value="form.qps" :disabled="form.unlimited" :min="0" :precision="0" :controls="false" size="small" class="bf-num" />
+          <span v-if="!form.unlimited && form.qps > 0" class="mono bf-min">≈ {{ Math.round(form.qps * (form.windowSeconds > 0 ? form.windowSeconds : winSec)) }}{{ t('access.perMin') }}</span>
+          <span v-if="form.unlimited" class="bf-hint">{{ t('access.qpsUnlimitedHint') }}</span>
+          <span v-else class="bf-hint">{{ t('access.qpsFieldHint') }}</span>
         </div>
         <div class="bf">
-          <span class="bf-label">BURST</span>
-          <a-input-number v-model:value="form.burst" :min="0" :precision="0" :controls="false" size="small" class="bf-num" />
+          <span class="bf-label">WINDOW</span>
+          <a-input-number v-model:value="form.windowSeconds" :disabled="form.unlimited" :min="0" :max="3600" :precision="0" :controls="false" size="small" class="bf-num" />
+          <span class="bf-hint">{{ t('access.windowFieldHint') }}</span>
         </div>
         <div class="bf">
           <span class="bf-label">STATUS</span>
@@ -342,8 +350,10 @@
               allow-clear
               :placeholder="t('access.invokeToolPlaceholder')"
             >
-              <a-select-option v-for="g in enabledTools" :key="g.gateway_name" :value="g.gateway_name">{{ g.gateway_name }}</a-select-option>
+              <a-select-option v-for="g in invokeOptions" :key="g.gateway_name" :value="g.gateway_name">{{ g.gateway_name }}</a-select-option>
             </a-select>
+            <p v-if="invokeOptions.length === 0" class="inv-empty">{{ t('access.invokeNoGranted') }}</p>
+            <p v-else class="inv-hint">{{ t('access.invokeGrantedHint') }}</p>
           </a-form-item>
           <a-form-item :label="t('access.invokeArgs')">
             <a-textarea v-model:value="invokeArgsText" :rows="4" class="mono" placeholder='{ "q": "…" }' />
@@ -380,7 +390,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { ArrowLeftOutlined, CopyOutlined, DeleteOutlined, DownOutlined, ExperimentOutlined, InfoCircleOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
-import { getKey, invokeKey, listAllServers, listAllTools, rotateKey, updateKey } from '@/api'
+import { getKey, getRuntimeConfig, invokeKey, listAllServers, listAllTools, rotateKey, updateKey } from '@/api'
 import type { AccessKey, KeyInvokeResult, MCPServer, Tool, ToolGrant } from '@/types'
 
 interface GrantEditor { gw: string; headers: { k: string; v: string }[]; defargs: { k: string; v: string }[] }
@@ -416,11 +426,26 @@ const invokeRunning = ref(false)
 const invokeOut = ref<{ type: 'ok'; res: KeyInvokeResult } | { type: 'denied'; message: string } | null>(null)
 
 const grants = ref<GrantEditor[]>([])
-const form = reactive({ qps: 0, burst: 0, enabled: true })
+const form = reactive({ qps: 0, burst: 0, windowSeconds: 0, unlimited: false, enabled: true })
+// 滑动窗口（秒）来自运行期配置；获取失败回退默认 60（1 分钟）。
+const winSec = ref(60)
 let baseline = ''
 
 // ---- 派生数据 ----
 const enabledTools = computed(() => tools.value.filter((tool) => tool.enabled))
+
+// toolGranted 判断工具是否落在该 key 的白名单（支持精确、server.* 前缀通配与 *）。
+function toolGranted(name: string): boolean {
+  return grants.value.some((g) => {
+    const p = g.gw
+    if (p === '*') return true
+    if (p.endsWith('.*')) return name.startsWith(p.slice(0, -1))
+    return p === name
+  })
+}
+
+// 试调用只列"该 key 已授权且启用"的平台工具，避免选中未授权工具触发 403 误导。
+const invokeOptions = computed(() => enabledTools.value.filter((t) => toolGranted(t.gateway_name)))
 
 const toolByName = computed(() => new Map<string, Tool>(tools.value.map((tool) => [tool.gateway_name, tool])))
 const toolsByServer = computed(() => {
@@ -566,8 +591,9 @@ function parseArg(raw: string): unknown {
 
 function serialize() {
   return JSON.stringify({
-    qps: form.qps,
+    qps: qpsEffective(),
     burst: form.burst,
+    window_seconds: windowEffective(),
     enabled: form.enabled,
     grants: grants.value.map((g) => [
       g.gw,
@@ -579,6 +605,24 @@ function serialize() {
 
 const dirty = computed(() => Boolean(baseline) && baseline !== serialize())
 
+// unlimited（-1 哨兵）时该 key 不受 key 级限制，QPS/窗口随之清空。
+function qpsEffective(): number {
+  return form.unlimited ? -1 : form.qps
+}
+function windowEffective(): number {
+  return form.unlimited ? 0 : form.windowSeconds
+}
+
+async function refreshWindow() {
+  try {
+    const rc = await getRuntimeConfig()
+    const w = rc.config.ratelimit.window_seconds
+    if (w > 0) winSec.value = w
+  } catch {
+    // 读取失败按默认 60s 展示
+  }
+}
+
 async function load() {
   loading.value = true
   try {
@@ -587,10 +631,17 @@ async function load() {
       listAllTools(),
       listAllServers(),
     ])
+    void refreshWindow()
     key.value = loadedKey
     tools.value = allTools
     servers.value = allServers
-    Object.assign(form, { qps: loadedKey.qps, burst: loadedKey.burst, enabled: loadedKey.enabled })
+    Object.assign(form, {
+      qps: loadedKey.qps,
+      burst: loadedKey.burst,
+      windowSeconds: loadedKey.window_seconds ?? 0,
+      unlimited: loadedKey.qps < 0,
+      enabled: loadedKey.enabled,
+    })
     grants.value = loadedKey.grants.map((grant) => ({
       gw: grant.gateway_name,
       headers: Object.entries(grant.headers ?? {}).map(([k, v]) => ({ k, v })),
@@ -615,8 +666,9 @@ async function save() {
       default_args: Object.fromEntries(grant.defargs.filter((item) => item.k).map((item) => [item.k, parseArg(item.v)])),
     }))
     key.value = await updateKey(key.value.id, {
-      qps: form.qps,
+      qps: qpsEffective(),
       burst: form.burst,
+      window_seconds: windowEffective(),
       enabled: form.enabled,
       grants: payload,
     })
@@ -791,6 +843,12 @@ onMounted(load)
 .bf-value { font-size: 13px; color: var(--mc-ink); line-height: 1; }
 .bf-subject { font-weight: 650; }
 .bf-num { width: 108px; }
+.bf-qps { display: flex; align-items: center; gap: 8px; }
+.bf-min { font-size: 11px; color: var(--mc-ink-2); white-space: nowrap; }
+.bf-hint { max-width: 230px; font-size: 10.5px; line-height: 1.45; color: var(--mc-ink-3); }
+.bf-unlimit { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.bf-unlimit-txt { font-size: 11px; color: var(--mc-ink-3); }
+.bf-unlimit-txt.on { color: var(--mc-warn); }
 .bf-toggle { display: flex; align-items: center; gap: 8px; min-height: 22px; }
 .bf-toggle-txt { font-size: 12px; color: var(--mc-ok); }
 .bf-toggle-txt.off { color: var(--mc-ink-3); }
@@ -1180,6 +1238,8 @@ onMounted(load)
 
 /* ===== 试调用 modal ===== */
 .inv-desc { margin: 0 0 6px; color: var(--mc-ink-2); font-size: 12px; line-height: 1.6; }
+.inv-empty { margin: 6px 0 0; color: var(--mc-warn); font-size: 12px; line-height: 1.5; }
+.inv-hint { margin: 4px 0 0; color: var(--mc-ink-3); font-size: 11.5px; line-height: 1.5; }
 .inv-actions { margin: 2px 0 10px; }
 .inv-result { margin-top: 4px; }
 .inv-meta { font-size: 11.5px; color: var(--mc-ink-2); margin: 10px 0 6px; }

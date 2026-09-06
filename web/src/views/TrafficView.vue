@@ -76,6 +76,10 @@
             <a-descriptions-item :label="t('traffic.requestId')" :span="2">
               <span class="mono">{{ replayDetail.request_id }}</span>
             </a-descriptions-item>
+            <a-descriptions-item :label="t('traffic.client')">{{ replayDetail.client || '-' }}</a-descriptions-item>
+            <a-descriptions-item :label="t('traffic.clientIp')">
+              <span class="mono">{{ replayDetail.client_ip || '-' }}</span>
+            </a-descriptions-item>
             <a-descriptions-item :label="t('replay.args')" :span="2">
               <pre v-if="replayArgsText" class="args-pre">{{ replayArgsText }}</pre>
               <span v-else class="hint">{{ t('traffic.noArgsHint') }}</span>
@@ -192,6 +196,7 @@ const columns = computed<any[]>(() => [
   { title: t('traffic.server'), key: 'server_id', dataIndex: 'server_id', width: 90 },
   { title: t('traffic.instance'), key: 'instance_id', dataIndex: 'instance_id', width: 110 },
   { title: t('traffic.client'), key: 'client', dataIndex: 'client', width: 100 },
+  { title: t('traffic.clientIp'), key: 'client_ip', dataIndex: 'client_ip', width: 130 },
   { title: t('traffic.status'), key: 'status', dataIndex: 'status', width: 100 },
   { title: t('traffic.latencyMs'), key: 'latency_ms', dataIndex: 'latency_ms', width: 100 },
   { title: t('traffic.error'), key: 'error', dataIndex: 'error', ellipsis: true },

@@ -23,7 +23,7 @@ func TestTrafficRequestArgsRoundTrip(t *testing.T) {
 
 	if err := store.AppendTraffic(ctx, model.TrafficSample{
 		RequestID: marker, ServerID: "srv-it", Tool: "demo", Client: "it",
-		Status: "success", LatencyMS: 9, Timestamp: time.Now().UTC(), RequestArgs: args,
+		ClientIP: "203.0.113.9", Status: "success", LatencyMS: 9, Timestamp: time.Now().UTC(), RequestArgs: args,
 	}); err != nil {
 		t.Fatalf("AppendTraffic: %v", err)
 	}
@@ -41,6 +41,9 @@ func TestTrafficRequestArgsRoundTrip(t *testing.T) {
 	if rows[0].RequestArgs != nil {
 		t.Fatal("列表不得携带 RequestArgs（隐私）")
 	}
+	if rows[0].ClientIP != "203.0.113.9" {
+		t.Fatalf("列表应保留 client_ip, 得到 %q", rows[0].ClientIP)
+	}
 
 	got, err := store.GetTraffic(ctx, rows[0].ID)
 	if err != nil {
@@ -48,6 +51,9 @@ func TestTrafficRequestArgsRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.RequestArgs, args) {
 		t.Fatalf("入参未往返: %+v", got.RequestArgs)
+	}
+	if got.ClientIP != "203.0.113.9" {
+		t.Fatalf("详情应保留 client_ip, 得到 %q", got.ClientIP)
 	}
 	if _, err := store.GetTraffic(ctx, -1); err == nil {
 		t.Fatal("GetTraffic 缺失 id 应报错")

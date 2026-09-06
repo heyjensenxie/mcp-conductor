@@ -26,6 +26,9 @@
         <a-menu-item key="access">
           <template #icon><SafetyCertificateOutlined /></template>{{ t('menu.access') }}
         </a-menu-item>
+        <a-menu-item key="security">
+          <template #icon><SafetyOutlined /></template>{{ t('menu.security') }}
+        </a-menu-item>
         <a-menu-item key="observability">
           <template #icon><BarChartOutlined /></template>{{ t('menu.observability') }}
         </a-menu-item>
@@ -82,6 +85,7 @@ import {
   DashboardOutlined,
   FundOutlined,
   SafetyCertificateOutlined,
+  SafetyOutlined,
   SettingOutlined,
   ShareAltOutlined,
   ToolOutlined,
@@ -111,7 +115,7 @@ function onLogout() {
 // 菜单高亮：按路径首段推导，使 `/servers/:id` 等子页保持所属菜单选中。
 const selectedKeys = computed(() => {
   const path = route.path
-  for (const key of ['dashboard', 'servers', 'tools', 'routes', 'traffic', 'access', 'observability', 'evaluation', 'settings']) {
+  for (const key of ['dashboard', 'servers', 'tools', 'routes', 'traffic', 'access', 'security', 'observability', 'evaluation', 'settings']) {
     if (path === `/${key}` || path.startsWith(`/${key}/`)) return [key]
   }
   return ['dashboard']
