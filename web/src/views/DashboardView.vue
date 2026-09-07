@@ -266,11 +266,29 @@
                 </ul>
                 <div v-else class="issue-none"><span class="mc-dot mc-dot--ok"></span>{{ t('dashboard.issueNone') }}</div>
               </div>
-              <a v-if="issues.length" class="hd-link issues-more" @click.prevent="go('/observability')">{{ t('dashboard.viewAll') }}</a>
+              <a v-if="issues.length" class="hd-link issues-more" @click.prevent="go('/traffic')">{{ t('dashboard.viewAll') }}</a>
             </template>
           </section>
         </a-col>
       </a-row>
+
+      <!-- ===== 来源 IP TOP：窗口内日志口径，点击下钻日志页按该 IP 筛选 ===== -->
+      <section class="mc-panel panel row-gap reveal">
+        <header class="panel-head">
+          {{ t('dashboard.ipAnalytics') }}
+          <span class="hd-note mono">{{ t('dashboard.toolsTopN', { n: 5 }) }}</span>
+        </header>
+        <ul v-if="ipTop.length" class="ip-list">
+          <li v-for="(row, i) in ipTop" :key="row.ip" class="ip-row">
+            <span class="tl-rank mono">{{ i + 1 }}</span>
+            <a class="ip-link mono" :title="row.ip" @click.prevent="go(`/traffic?client_ip=${encodeURIComponent(row.ip)}`)">{{ row.ip }}</a>
+            <span class="calls-track"><i class="calls-fill" :style="{ width: `${(row.totals / ipMax) * 100}%` }"></i></span>
+            <span class="ip-fail mono" :class="row.failure > 0 ? 'text-slow' : ''">{{ row.failure }}%</span>
+            <span class="ip-total mono">{{ row.errors }} / {{ row.totals }}</span>
+          </li>
+        </ul>
+        <div v-else class="empty"><a-empty :description="t('dashboard.noLogs')" :image-style="{ height: '44px' }" /></div>
+      </section>
 
       <!-- ===== 多 Server 时：路由 / 流量分布 ===== -->
       <section v-if="serverRows.length > 1" class="mc-panel panel row-gap reveal">
@@ -681,6 +699,8 @@ const activeTrend = computed<{ categories: string[]; series: TrendSeries[]; unit
 const toolStats = computed(() => {
   const byTool = new Map<string, TrafficSample[]>()
   for (const l of logs.value) {
+    // 拒绝事件（tool 空）不属于工具调用，跳过避免空桶污染工具榜单。
+    if (!l.tool) continue
     const arr = byTool.get(l.tool)
     if (arr) arr.push(l)
     else byTool.set(l.tool, [l])
@@ -710,6 +730,25 @@ const failTop = computed(() =>
     .slice(0, 6)
     .map((s) => ({ name: s.name, errors: s.errors, totals: s.totals, failure: s.failure })),
 )
+
+// 来源 IP 统计：与顶部流量卡片同源（窗口内日志样本），按 IP 聚合调用量/失败率。
+// 拒绝事件（tool 空）同样携带来源 IP，一并计入，便于识别攻击/异常来源。
+const ipStats = computed(() => {
+  const byIp = new Map<string, TrafficSample[]>()
+  for (const l of logs.value) {
+    if (!l.client_ip) continue
+    const arr = byIp.get(l.client_ip)
+    if (arr) arr.push(l)
+    else byIp.set(l.client_ip, [l])
+  }
+  return Array.from(byIp.entries()).map(([ip, rows]) => {
+    const totals = rows.length
+    const errors = rows.filter((r) => r.status !== 'success').length
+    return { ip, totals, errors, failure: totals ? Math.round((errors / totals) * 100) : 0 }
+  })
+})
+const ipTop = computed(() => ipStats.value.slice().sort((a, b) => b.totals - a.totals).slice(0, 5))
+const ipMax = computed(() => ipTop.value[0]?.totals ?? 1)
 
 // ---------- Exception Overview ----------
 const excRows = computed(() =>
@@ -1407,6 +1446,46 @@ onBeforeUnmount(() => {
   color: var(--mc-ink-3);
   text-align: right;
 }
+
+/* ===== 来源 IP TOP ===== */
+.ip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ip-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 2px;
+}
+.ip-link {
+  width: 230px;
+  max-width: 32%;
+  flex: none;
+  font-size: 12.5px;
+  color: var(--mc-accent);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px dashed transparent;
+}
+.ip-link:hover {
+  border-bottom-color: var(--mc-accent);
+}
+.ip-fail {
+  width: 48px;
+  text-align: right;
+  font-size: 12px;
+}
+.ip-total {
+  width: 66px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--mc-ink-3);
+}
+
 .empty {
   padding: 18px 4px;
   display: flex;

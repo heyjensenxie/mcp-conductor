@@ -157,19 +157,19 @@ func (g *MCPGateway) CallTool(ctx context.Context, name string, arguments map[st
 
 	// 1. 授权（managed key 白名单 / Operator 放行）
 	if err := g.authorizer.Authorize(ctx, identity, name); err != nil {
-		return g.fail(name, start, err)
+		return g.fail(ctx, name, start, err)
 	}
 
 	// 2. 路由解析
 	resolved, err := g.resolver.Resolve(ctx, name)
 	if err != nil {
-		return g.fail(name, start, err)
+		return g.fail(ctx, name, start, err)
 	}
 
 	// 3. 负载均衡（从健康实例中选一个做本次拨测目标）
 	target, err := g.balancer.Pick(ctx, resolved.Targets)
 	if err != nil {
-		return g.fail(name, start, errs.Wrap(errs.CodeRoute, err, "无可用上游实例"))
+		return g.fail(ctx, name, start, errs.Wrap(errs.CodeRoute, err, "无可用上游实例"))
 	}
 	dialInstance := model.Instance{
 		ID:        target.ID,
@@ -185,7 +185,7 @@ func (g *MCPGateway) CallTool(ctx context.Context, name string, arguments map[st
 		case g.sem <- struct{}{}:
 			defer func() { <-g.sem }()
 		default:
-			return g.fail(name, start, errs.New(errs.CodeRateLimit, "网关并发已满，请稍后重试"))
+			return g.fail(ctx, name, start, errs.New(errs.CodeRateLimit, "网关并发已满，请稍后重试"))
 		}
 	}
 
@@ -271,11 +271,32 @@ func (g *MCPGateway) record(ctx context.Context, resolved *router.Resolved, name
 	g.recorder.Record(ctx, sample)
 }
 
-// fail 封装"目标尚未解析"阶段的失败为 isError 结果并计入指标（此时无法
-// 写按 Server 维度的调用日志）。目标解析后的失败由 record + failResult 处理。
-func (g *MCPGateway) fail(name string, start time.Time, err error) (*mcp.CallToolResult, error) {
-	g.metrics.Record(name, false, time.Since(start))
+// fail 封装"目标尚未解析"阶段的失败为 isError 结果，记指标并写调用日志。
+// 此类失败（授权拒绝 / 路由失败 / 无可用上游 / 并发满）有工具名但无归属
+// Server，调用日志只落 status/error/IP，server_id/instance_id 留空——与
+// post-resolve 的 record + failResult 路径不重复计数（fail 只被本函数调用）。
+func (g *MCPGateway) fail(ctx context.Context, name string, start time.Time, err error) (*mcp.CallToolResult, error) {
+	latency := time.Since(start)
+	g.metrics.Record(name, false, latency)
+	g.auditFailure(ctx, name, latency, err)
 	return g.failResult(err)
+}
+
+// auditFailure 写一条"解析前失败"调用日志（授权/路由/无上游/并发满），便于失败与
+// 异常按来源 IP 追溯。此阶段尚无归属 Server/实例，故两列留空；主体、IP、请求标识
+// 与错误摘要均取自身份/上下文，与 record() 的样本构造口径一致。
+func (g *MCPGateway) auditFailure(ctx context.Context, tool string, latency time.Duration, err error) {
+	g.recorder.Record(ctx, model.TrafficSample{
+		RequestID: RequestIDFrom(ctx),
+		TraceID:   TraceIDFrom(ctx),
+		Tool:      tool,
+		Client:    IdentityFrom(ctx).Subject,
+		ClientIP:  ClientIPFrom(ctx),
+		Status:    string(errs.CodeOf(err)),
+		LatencyMS: latency.Milliseconds(),
+		Error:     errs.SafeMessage(err),
+		Timestamp: model.Now(),
+	})
 }
 
 // failResult 把错误组装为 isError 结果返回，不重复计数：上游失败场景的

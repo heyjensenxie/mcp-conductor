@@ -174,10 +174,14 @@ func (s *Store) QueryTraffic(_ context.Context, q query.TrafficQuery) ([]model.T
 		if q.Status != "" && sample.Status != q.Status {
 			continue
 		}
+		if q.ClientIP != "" && sample.ClientIP != q.ClientIP {
+			continue
+		}
 		if q.Q != "" &&
 			!containsFold(sample.Tool, q.Q) &&
 			!containsFold(sample.Client, q.Q) &&
-			!containsFold(sample.RequestID, q.Q) {
+			!containsFold(sample.RequestID, q.Q) &&
+			!containsFold(sample.ClientIP, q.Q) {
 			continue
 		}
 		if !q.From.IsZero() && sample.Timestamp.Before(q.From) {

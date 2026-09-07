@@ -56,6 +56,7 @@ export interface LogListParams extends ListParams {
   server_id?: string
   instance_id?: string
   status?: string
+  client_ip?: string
   from?: string
   to?: string
 }

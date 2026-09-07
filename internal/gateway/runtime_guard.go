@@ -118,8 +118,9 @@ func runtimeGuardMiddleware(cache *runtimeConfigCache, ab ...*autoBanManager) Mi
 			trusted := ipInEntries(ip, snap.cfg.IPWhitelist)
 			if !trusted && (blockedByPrefix(ip, snap.prefixes) || (ban != nil && ban.isIPBanned(ip))) {
 				// 对外只回通用 403，不暴露"黑名单/自动封禁"，避免让被封方得知策略细节。
-				writeGatewayError(w, r, http.StatusForbidden,
-					errs.New(errs.CodeAuthorization, "请求被拒绝"))
+				err := errs.New(errs.CodeAuthorization, "请求被拒绝")
+				rejectAudit(r.Context(), r, string(errs.CodeAuthorization), err)
+				writeGatewayError(w, r, http.StatusForbidden, err)
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))

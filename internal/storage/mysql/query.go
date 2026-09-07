@@ -342,8 +342,8 @@ func (s *Store) loadKeyGrants(ctx context.Context, keys []model.AccessKey) error
 
 // QueryTraffic 分页查询调用日志（按 id 倒序）。
 func (s *Store) QueryTraffic(ctx context.Context, q query.TrafficQuery) ([]model.TrafficSample, int, error) {
-	cond := make([]string, 0, 6)
-	args := make([]any, 0, 6)
+	cond := make([]string, 0, 7)
+	args := make([]any, 0, 7)
 	if q.ServerID != "" {
 		cond = append(cond, "server_id = ?")
 		args = append(args, q.ServerID)
@@ -356,10 +356,14 @@ func (s *Store) QueryTraffic(ctx context.Context, q query.TrafficQuery) ([]model
 		cond = append(cond, "status = ?")
 		args = append(args, q.Status)
 	}
+	if q.ClientIP != "" {
+		cond = append(cond, "client_ip = ?")
+		args = append(args, q.ClientIP)
+	}
 	if q.Q != "" {
-		cond = append(cond, "(tool LIKE ? OR client LIKE ? OR request_id LIKE ?)")
+		cond = append(cond, "(tool LIKE ? OR client LIKE ? OR request_id LIKE ? OR client_ip LIKE ?)")
 		pat := likePattern(q.Q)
-		args = append(args, pat, pat, pat)
+		args = append(args, pat, pat, pat, pat)
 	}
 	if !q.From.IsZero() {
 		cond = append(cond, "ts >= ?")

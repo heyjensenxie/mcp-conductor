@@ -1,0 +1,1 @@
+import{bC as o,dj as i,dk as s}from"./index-BRquMzc4.js";var b="[object Symbol]";function f(e){return typeof e=="symbol"||o(e)&&i(e)==b}var a=(function(){try{var e=s(Object,"defineProperty");return e({},"",{}),e}catch{}})();function u(e,r,t){r=="__proto__"&&a?a(e,r,{configurable:!0,enumerable:!0,value:t,writable:!0}):e[r]=t}export{u as b,a as d,f as i};

@@ -109,10 +109,13 @@ func authMiddleware(authenticator auth.Authenticator) Middleware {
 			identity, err := authenticator.Authenticate(r.Context(), extractToken(r))
 			if err != nil {
 				status := http.StatusUnauthorized
-				if errs.Is(err, errs.CodeAuthentication) {
-					status = http.StatusUnauthorized
-				} else {
+				if !errs.Is(err, errs.CodeAuthentication) {
 					status = http.StatusInternalServerError
+				}
+				// /mcp 认证失败落拒绝审计（供按 IP 追溯刷证来源）；500 非认证错误
+				// 不误计（与 authFailGuardMiddleware 口径一致）。
+				if status == http.StatusUnauthorized {
+					rejectAudit(r.Context(), r, string(errs.CodeAuthentication), err)
 				}
 				writeGatewayError(w, r, status, err)
 				return
@@ -188,8 +191,9 @@ func rateLimitMiddleware(limiter ratelimit.Limiter, p rateLimitPolicy, ab ...*au
 			if isMcp {
 				// key 已被自动停用（临时）→ 直接拒绝，不再走限流判定。
 				if key := IdentityFrom(ctx).Key; key != nil && ban != nil && ban.isKeySuspended(key.Subject) {
-					writeGatewayError(w, r, http.StatusForbidden,
-						errs.New(errs.CodeAuthorization, "请求被拒绝"))
+					err := errs.New(errs.CodeAuthorization, "请求被拒绝")
+					rejectAudit(ctx, r, string(errs.CodeAuthorization), err)
+					writeGatewayError(w, r, http.StatusForbidden, err)
 					return
 				}
 			}
@@ -204,8 +208,9 @@ func rateLimitMiddleware(limiter ratelimit.Limiter, p rateLimitPolicy, ab ...*au
 				if isMcp && ban != nil {
 					recordAutoBan(ctx, ban, r)
 				}
-				writeGatewayError(w, r, http.StatusTooManyRequests,
-					errs.New(errs.CodeRateLimit, "服务繁忙，请稍后再试"))
+				err := errs.New(errs.CodeRateLimit, "服务繁忙，请稍后再试")
+				rejectAudit(ctx, r, string(errs.CodeRateLimit), err)
+				writeGatewayError(w, r, http.StatusTooManyRequests, err)
 				return
 			}
 			next.ServeHTTP(w, r)

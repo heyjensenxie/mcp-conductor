@@ -23,6 +23,8 @@ export default {
   filter: {
     total: '共 {total} 条',
     keyword: '搜索关键词',
+    ipPlaceholder: '来源 IP',
+    ipJump: '点击按此 IP 筛选',
     enabled: '启用',
     disabled: '停用',
     statusPlaceholder: '状态',
@@ -241,6 +243,7 @@ export default {
     recentIssues: '最近问题',
     issueNone: '运行正常，暂无异常',
     routeDistribution: '路由 / 流量分布',
+    ipAnalytics: '来源 IP',
     routeNote: '所选时间范围内各 Server 承接调用量占比',
     routeHealthy: '健康 {ok}/{total}',
   },

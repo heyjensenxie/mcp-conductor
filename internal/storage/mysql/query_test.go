@@ -260,4 +260,18 @@ func TestQueryTrafficFilterAndPage(t *testing.T) {
 	if len(got) != 2 || total != 3 {
 		t.Fatalf("分页异常: %d / %d", len(got), total)
 	}
+
+	// 来源 IP 精确过滤（-1/-3 为 203.0.113.9，-2 无 IP）；q 模糊命中 IP 片段。
+	got, total, _ = store.QueryTraffic(ctx, query.TrafficQuery{Q: m, ClientIP: "203.0.113.9"})
+	if len(got) != 2 || total != 2 {
+		t.Fatalf("client_ip 精确过滤异常: %d / %d", len(got), total)
+	}
+	got, total, _ = store.QueryTraffic(ctx, query.TrafficQuery{Q: m, ClientIP: "198.51.100.7"})
+	if len(got) != 0 || total != 0 {
+		t.Fatalf("client_ip 未命中不应返回行: %d / %d", len(got), total)
+	}
+	got, total, _ = store.QueryTraffic(ctx, query.TrafficQuery{Q: "113.9"})
+	if len(got) != 2 || total != 2 {
+		t.Fatalf("q 命中 IP 片段异常: %d / %d", len(got), total)
+	}
 }

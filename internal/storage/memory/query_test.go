@@ -263,3 +263,45 @@ func TestQueryTraffic_filterTimeAndPage(t *testing.T) {
 		t.Fatalf("分页异常: %d / total=%d", len(got), total)
 	}
 }
+
+func TestQueryTraffic_filterClientIP(t *testing.T) {
+	st := New()
+	ctx := context.Background()
+	samples := []model.TrafficSample{
+		{RequestID: "req-1", Tool: "alpha.search", ClientIP: "203.0.113.9", Status: "success", Timestamp: model.Now()},
+		{RequestID: "req-2", Tool: "beta.search", ClientIP: "203.0.113.9", Status: "rate_limit_error", Timestamp: model.Now()},
+		{RequestID: "req-3", Tool: "alpha.search", ClientIP: "198.51.100.7", Status: "success", Timestamp: model.Now()},
+		{RequestID: "req-4", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: model.Now()}, // 无 IP（旧行）
+	}
+	for _, sample := range samples {
+		if err := st.AppendTraffic(ctx, sample); err != nil {
+			t.Fatalf("AppendTraffic: %v", err)
+		}
+	}
+
+	// 精确过滤：同 IP 两条（含一条拒绝行）。
+	got, total, err := st.QueryTraffic(ctx, query.TrafficQuery{ClientIP: "203.0.113.9"})
+	if err != nil || len(got) != 2 || total != 2 {
+		t.Fatalf("client_ip 精确过滤异常: %d / total=%d err=%v", len(got), total, err)
+	}
+
+	// 另一 IP 一条；未出现 IP 的空行不命中。
+	got, total, _ = st.QueryTraffic(ctx, query.TrafficQuery{ClientIP: "198.51.100.7"})
+	if len(got) != 1 || total != 1 {
+		t.Fatalf("client_ip 单命中异常: %d / %d", len(got), total)
+	}
+	got, total, _ = st.QueryTraffic(ctx, query.TrafficQuery{ClientIP: "10.0.0.1"})
+	if len(got) != 0 || total != 0 {
+		t.Fatalf("client_ip 未命中不应返回行: %d / %d", len(got), total)
+	}
+
+	// 关键词模糊命中 IP 片段。
+	got, total, _ = st.QueryTraffic(ctx, query.TrafficQuery{Q: "113.9"})
+	if len(got) != 2 || total != 2 {
+		t.Fatalf("q 命中 IP 片段异常: %d / %d", len(got), total)
+	}
+	got, total, _ = st.QueryTraffic(ctx, query.TrafficQuery{Q: "198.51"})
+	if len(got) != 1 || total != 1 {
+		t.Fatalf("q 命中另一 IP 片段异常: %d / %d", len(got), total)
+	}
+}

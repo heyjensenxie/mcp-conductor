@@ -144,6 +144,7 @@ func bindTrafficQuery(r *http.Request) (query.TrafficQuery, error) {
 		Q:          keyword(v),
 		ServerID:   strings.TrimSpace(v.Get("server_id")),
 		InstanceID: strings.TrimSpace(v.Get("instance_id")),
+		ClientIP:   strings.TrimSpace(v.Get("client_ip")),
 	}
 	if status := strings.TrimSpace(v.Get("status")); status != "" {
 		if err := validTrafficStatus(status); err != nil {

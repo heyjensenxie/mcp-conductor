@@ -71,7 +71,7 @@ type CredentialQuery struct {
 // TrafficQuery 是调用日志列表的查询条件。
 type TrafficQuery struct {
 	Paging
-	// Q 对 tool / client / request_id 做模糊匹配。
+	// Q 对 tool / client / request_id / client_ip 做模糊匹配。
 	Q string
 	// ServerID 为空表示不过滤。注意流量行 server_id 可空，等值过滤不命中空行。
 	ServerID string
@@ -80,6 +80,9 @@ type TrafficQuery struct {
 	InstanceID string
 	// Status 为空表示不过滤；否则取 "success" 或 errs.Code 字符串。
 	Status string
+	// ClientIP 为空表示不过滤；非空对来源 IP 精确等值（列存归一后的地址，
+	// 空行不命中）。配合 Q 可对 IP 片段做模糊匹配。
+	ClientIP string
 	// From / To 为闭区间时间过滤（对写入时间 ts），零值表示对应端不设界。
 	// 统一按 UTC 语义处理（库内 DATETIME(3) 存 UTC）。
 	From time.Time

@@ -23,6 +23,9 @@
         <a-input v-model:value="logFilters.q" allow-clear :placeholder="t('filter.keyword')" style="width: 200px" @press-enter="onFilterChange">
           <template #prefix><SearchOutlined /></template>
         </a-input>
+        <a-input v-model:value="logFilters.clientIp" allow-clear :placeholder="t('filter.ipPlaceholder')" style="width: 180px" @press-enter="onFilterChange">
+          <template #prefix><GlobalOutlined /></template>
+        </a-input>
         <a-select v-model:value="logFilters.status" allow-clear :placeholder="t('filter.statusPlaceholder')" style="width: 170px" @change="onFilterChange">
           <a-select-option value="success">{{ t('traffic.statusSuccess') }}</a-select-option>
           <a-select-option v-for="code in statusOptions" :key="code" :value="code">{{ code }}</a-select-option>
@@ -50,7 +53,13 @@
       @change="onTableChange"
     >
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'status'">
+        <template v-if="column.key === 'client_ip'">
+          <a-tooltip :title="t('filter.ipJump')">
+            <a v-if="record.client_ip" class="ip-cell mono" @click.prevent="setIpFilter(record.client_ip)">{{ record.client_ip }}</a>
+            <span v-else>-</span>
+          </a-tooltip>
+        </template>
+        <template v-else-if="column.key === 'status'">
           <a-tag :color="record.status === 'success' ? 'green' : 'red'">{{ record.status }}</a-tag>
         </template>
         <template v-else-if="column.key === 'instance_id'">
@@ -131,12 +140,14 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
+import { useRoute } from 'vue-router'
+import { ReloadOutlined, GlobalOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { getLogs, getMetricsTrend, getTrafficLog, listAllServers, listServerInstances, replayTraffic } from '@/api'
 import type { MCPServer, ServerInstance, TrafficDetail, TrafficReplayResult, TrafficSample, TrendPoint } from '@/types'
 import TrafficTrend from '@/components/TrafficTrend.vue'
 
 const { t } = useI18n()
+const route = useRoute()
 const logs = ref<TrafficSample[]>([])
 const servers = ref<MCPServer[]>([])
 const instances = ref<ServerInstance[]>([])
@@ -165,6 +176,7 @@ const logFilters = reactive<{
   serverId?: string
   instanceId?: string
   status?: string
+  clientIp?: string
   from: string
   to: string
 }>({ q: '', from: '', to: '' })
@@ -214,6 +226,9 @@ const columns = computed<any[]>(() => [
 ])
 
 onMounted(async () => {
+  // 支持从路由 query 带 client_ip 进入（Dashboard 来源 IP 下钻）：预填并立即生效。
+  const ipFromRoute = typeof route.query.client_ip === 'string' ? route.query.client_ip : ''
+  if (ipFromRoute) logFilters.clientIp = ipFromRoute
   try {
     servers.value = await listAllServers()
   } catch {
@@ -221,6 +236,12 @@ onMounted(async () => {
   }
   await load()
 })
+
+// 点击日志行中的来源 IP → 回填筛选框并按该 IP 过滤（IP 排查闭环）。
+function setIpFilter(ip: string) {
+  logFilters.clientIp = ip
+  onFilterChange()
+}
 
 async function load() {
   loading.value = true
@@ -231,6 +252,7 @@ async function load() {
         instance_id: logFilters.instanceId || undefined,
         q: logFilters.q.trim() || undefined,
         status: logFilters.status || undefined,
+        client_ip: logFilters.clientIp?.trim() || undefined,
         from: logFilters.from || undefined,
         to: logFilters.to || undefined,
         page: pagination.current,
@@ -359,6 +381,14 @@ async function runReplay() {
 }
 .mono {
   font-family: var(--mc-mono);
+}
+.ip-cell {
+  color: var(--mc-accent);
+  cursor: pointer;
+  border-bottom: 1px dashed transparent;
+}
+.ip-cell:hover {
+  border-bottom-color: var(--mc-accent);
 }
 .args-pre {
   max-height: 260px;

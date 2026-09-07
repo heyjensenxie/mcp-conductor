@@ -375,3 +375,46 @@ func TestCallTool_toolFailureDoesNotCool(t *testing.T) {
 		t.Fatalf("业务失败不应冷却实例，Server 维应记 2 次拨测失败，得到 %+v", srv)
 	}
 }
+
+// TestCallTool_parseStageFailure_recordsLog 验证"解析前失败"（授权拒绝 / 路由失败 /
+// 并发满）除记指标外同时落一条调用日志：tool/status/错误摘要/来源 IP/主体均写入，
+// 但无归属 Server 与实例（两列留空）。这是失败/异常按 IP 追溯的落库基座。
+func TestCallTool_parseStageFailure_recordsLog(t *testing.T) {
+	g, store, metrics := seedGatewayFull(t, nil)
+	// 被管理 key 未授权该工具 → authorizer 拒绝，走 fail()（解析前失败）。
+	ctx := WithIdentity(context.Background(), &auth.Identity{Subject: "limited", Key: &model.AccessKey{
+		Subject: "limited",
+		Grants:  []model.ToolGrant{},
+	}})
+	ctx = WithClientIP(ctx, "203.0.113.9")
+
+	res, err := g.CallTool(ctx, "mock.search", map[string]any{})
+	if err != nil || !res.IsError {
+		t.Fatalf("未授权 key 调用应 isError：err=%v res=%+v", err, res)
+	}
+
+	if tool, ok := snapshotOfKey(metrics.SnapshotAll(), "mock.search"); !ok || tool.Totals != 1 || tool.Errors != 1 {
+		t.Fatalf("解析前失败仍应记工具维 1 次失败：%+v", tool)
+	}
+
+	logs, err := store.RecentTraffic(ctx, 10)
+	if err != nil {
+		t.Fatalf("RecentTraffic: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("应写入 1 条调用日志，得到 %d", len(logs))
+	}
+	row := logs[0]
+	if row.Status != "authorization_error" {
+		t.Fatalf("status 应为 authorization_error，得到 %q", row.Status)
+	}
+	if row.Tool != "mock.search" || row.Client != "limited" || row.ClientIP != "203.0.113.9" {
+		t.Fatalf("解析前失败行应带 tool/client/client_ip，得到 %+v", row)
+	}
+	if row.ServerID != "" || row.InstanceID != "" {
+		t.Fatalf("解析前失败行不应归属 Server/实例，得到 %+v", row)
+	}
+	if row.Error == "" {
+		t.Fatal("解析前失败行应带脱敏错误摘要")
+	}
+}

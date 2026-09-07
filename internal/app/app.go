@@ -131,6 +131,7 @@ func Run(ctx context.Context) error {
 		MCPService:  mcpGateway,
 		Metrics:     metrics,
 		Store:       store,
+		Recorder:    recorder,
 		Auth:        authSvc,
 		AuthService: authSvc,
 		RateLimiter: limiter,

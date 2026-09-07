@@ -20,10 +20,13 @@ import (
 
 // Deps 是构成 HTTP 服务器所需的全部服务依赖。
 type Deps struct {
-	Registry    *registry.Service
-	MCPService  mcp.ToolService
-	Metrics     *observability.Metrics
-	Store       storage.Store
+	Registry   *registry.Service
+	MCPService mcp.ToolService
+	Metrics    *observability.Metrics
+	Store      storage.Store
+	// Recorder 是调用日志记录器；同时作为 /mcp 拒绝事件审计器注入中间件链
+	// （认证/限流/封禁拒绝落审计，nil 时不注入、不记录）。
+	Recorder    *observability.Recorder
 	Auth        auth.Authenticator
 	AuthService *auth.Service
 	RateLimiter ratelimit.Limiter
@@ -70,11 +73,13 @@ func NewServer(cfg config.Config, deps Deps) *http.Server {
 	mux.Handle("/", spaHandler())
 
 	// 中间件链：数据面 /mcp 先经运行期守卫（封禁 + 注入生效配置），认证失败计入
-	// 自动封禁违规（刷无效凭据达阈值即拉黑 IP），认证成功后再限流。
+	// 自动封禁违规（刷无效凭据达阈值即拉黑 IP），认证成功后再限流。拒绝审计注入在
+	// 守卫之前，使认证/限流/封禁拒绝都能落一条调用日志（工具维度留空，按 IP/状态追溯）。
 	handler := chain(mux,
 		captureClientIPMiddleware(cfg.Server.TrustedProxies),
 		requestIDMiddleware,
 		loggingMiddleware,
+		rejectionAuditMiddleware(deps.Recorder),
 		runtimeGuardMiddleware(runtimeCache, autoBan),
 		authFailGuardMiddleware(autoBan),
 		authMiddleware(deps.Auth),

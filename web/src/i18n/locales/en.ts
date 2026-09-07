@@ -23,6 +23,8 @@ export default {
   filter: {
     total: 'Total {total}',
     keyword: 'Search keywords',
+    ipPlaceholder: 'Source IP',
+    ipJump: 'Click to filter by this IP',
     enabled: 'Enabled',
     disabled: 'Disabled',
     statusPlaceholder: 'Status',
@@ -241,6 +243,7 @@ export default {
     recentIssues: 'Recent Issues',
     issueNone: 'Healthy — no exceptions',
     routeDistribution: 'Route / Traffic Distribution',
+    ipAnalytics: 'Top Clients',
     routeNote: 'Share of calls served per server within the selected window',
     routeHealthy: '{ok}/{total} healthy',
   },
