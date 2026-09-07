@@ -58,7 +58,7 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | 工具详情页编辑 + 恢复源定义 | ✅ `/tools/:id` 支持改名/描述/入参 Schema 编辑，逐字段「恢复上游定义」 |
 | Docker / Docker Compose / Makefile | ✅ |
 
-**明确不属于 v0.1**：LLM Judge、Python Evaluation Worker、AI Optimization、Traffic Replay、复杂 ABAC、Kafka、ClickHouse、Kubernetes Operator、Service Mesh、微服务拆分。
+**明确不属于 v0.1**：LLM Judge、Python Evaluation Worker、AI Optimization、复杂 ABAC、Kafka、ClickHouse、Kubernetes Operator、Service Mesh、微服务拆分。
 
 ## Architecture
 
@@ -123,7 +123,7 @@ CONDUCTOR_DB_PASSWORD=<你的本地 MySQL 密码> docker compose up --build
 # MCP 端点: http://localhost:8080/mcp
 ```
 
-- 数据库：默认 `mysql`，连宿主机 `host.docker.internal:3306` 的 `conductor` 库（库表需先执行 `migrations/0001..0011`，宿主机已有 MySQL 时用 `CONDUCTOR_DATABASE_DSN='root:***@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate`）。账号可用 `CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME` 覆盖；`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。
+- 数据库：默认 `mysql`，连宿主机 `host.docker.internal:3306` 的 `conductor` 库（库表需先执行 `migrations/0001..0017`，宿主机已有 MySQL 时用 `CONDUCTOR_DATABASE_DSN='root:***@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate`）。账号可用 `CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME` 覆盖；`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。
 - Redis：仅当同时开启 `CONDUCTOR_REDIS_ENABLED=true` 与 `CONDUCTOR_RATELIMIT_ENABLED=true` 时才用于分布式 per-key 限流，默认关闭（本机 Redis 若只监听 `127.0.0.1` 需放开监听才能被容器访问）。
 
 ### 方式二：一键构建（带真实 Console 的单二进制，推荐）
@@ -284,14 +284,14 @@ make build-backend # 仅编译后端（用当前 internal/console/dist，调试�
 make web-dev       # 前端热更新 :5173（代理 /api、/mcp）
 make test          # 后端单元测试
 make vet           # go vet 静态检查
+make check         # 本地质量门禁：vet + test + 前端构建/类型检查
 make docker-up     # Compose 仅启动应用（数据库/Redis 用宿主机实例）
 make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATABASE_DSN）
 ```
 
 - **后端约定**：统一错误模型与结构化日志（不打印 Credential、Token 与完整敏感 MCP payload）；核心模块测试优先（Router / Balancer / Rate Limiter / Tool Namespace）。
 - **前端约定**：基础设施管理平台风格（现代、克制、高信息密度），Ant Design Vue + ECharts + Pinia，Payload 不可达时保持空态。
-- **测试**：`go test ./...` 覆盖 17 个包（含 Tool Name Collision 回归、真实 JSON-RPC 握手链路、metrics 单次计数/实例维度隔离、per-instance 评测、调用日志脱敏、趋势持久化合并与回放直连）。
-- **前端约定**：基础设施管理平台风格（现代、克制、高信息密度），Ant Design Vue + ECharts + Pinia，Payload 不可达时保持空态。
+- **测试**：`make check` 是提交前的本地质量门禁；真实 MySQL 5.7 集成测试需在应用 `0001..0017` 迁移后，显式设置 `MYSQL_TEST_DSN` 运行。启用 CGO 的环境可额外运行 `go test -race ./...`。
 
 ## Examples
 
@@ -300,9 +300,9 @@ make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATA
 ## Roadmap
 
 - **v0.1（当前）**：最小闭环 + 运维基础（Registry / 聚合 / 路由 / 治理 / 观测 / Console / Docker）。其中 **MySQL 5.7+ 持久化驱动已先行落地**（`internal/storage/mysql`，实测通过）。
-- **v0.2 候选**：SSE/stdio 上游接入、Route 管理页完善、观测时间序列（Traffic Replay，已完成雏形见上表）、CI 接通（GitHub Actions 目前有意移除，需要时再加）。注：Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）已随 v0.1 落地；Server 多实例 + 健康感知 Round-Robin 随多实例化落地；**实例级流量归属（traffic/metrics 记 `instance_id`）+ 按实例定向评测 + 长程分钟桶趋势持久化 + 按入参回放已随本轮落地**。
-- **v0.3 候选**：Evaluation 深化（本阶段已落地 Server 质量分 + 回归用例的 MCP Score 雏形，见上表；后续 Dataset/TestCase 落库、对比与 LLM Judge 另行列版）、协议/Schema/性能测试、CI Quality Gate。
-- **远期**：独立 Python Evaluation Worker、AI 优化建议、Traffic Replay、Route 灰度/分组转发。
+- **v0.2 候选**：SSE/stdio 上游接入、Route 管理页完善。注：Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）、Server 多实例 + 健康感知 Round-Robin、实例级流量归属、按实例定向评测、长程分钟桶趋势持久化与按入参回放均已随 v0.1 落地。
+- **v0.3 候选**：Evaluation 深化（本阶段已落地 Server 质量分 + 回归用例的 MCP Score 雏形，见上表；后续 Dataset/TestCase 落库、对比与 LLM Judge 另行列版）、协议/Schema/性能测试。
+- **远期**：独立 Python Evaluation Worker、AI 优化建议、Route 灰度/分组转发。
 
 ## Contributing
 

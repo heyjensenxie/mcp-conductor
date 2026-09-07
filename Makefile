@@ -3,7 +3,7 @@
 
 BIN := bin/mcp-conductor
 
-.PHONY: build run test vet fmt web-install web-dev web-build build-backend build-console dev docker-up docker-down db-migrate
+.PHONY: build run test vet check fmt web-install web-dev web-build build-backend build-console dev docker-up docker-down db-migrate
 
 ## 一键构建（默认：先构建前端，嵌入真实 Console 后产出单二进制）
 ## 前端经 go:embed 打包进二进制；不跑这一步、直接 go build 会得到占位 Console。
@@ -28,7 +28,10 @@ test:
 vet:
 	go vet ./...
 
-## 格式化（仅改动的包由 IDE/CI 校验，此处供整库使用）
+## 本地质量门禁（Go 静态检查、单元测试、前端构建与类型检查）
+check: vet test web-build
+
+## 格式化（仅改动的包由 IDE 校验，此处供整库使用）
 fmt:
 	gofmt -w ./cmd ./internal
 

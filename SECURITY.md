@@ -25,7 +25,7 @@ MCP Conductor 的安全基线：
 
 - **错误设计与日志**：凭据、Token、完整敏感 MCP payload 一律禁止输出到日志或返回前端；统一错误只暴露 `code/message/request_id`。
 - **Credential 边界**：Client→Gateway 与 Gateway→Upstream 两类凭据分离，敏感值不落明文。
-- **默认关闭**：`auth`、`ratelimit`、`redis` 默认关闭，启用须显式配置（见 `config.example.yaml`）。
+- **安全默认值**：`auth` 默认开启；`ratelimit` 与 `redis` 默认关闭，按容量与部署需求显式配置（见 `config.example.yaml`）。
 - **依赖**：使用 Go 官方渠道与镜像托管的第三方库，发布前运行 `govulncheck` 与 `npm audit`。
 
 我们会在确认漏洞后 72 小时内回复，并尽快在可复现时发布修复。
