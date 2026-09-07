@@ -356,7 +356,16 @@
             <p v-else class="inv-hint">{{ t('access.invokeGrantedHint') }}</p>
           </a-form-item>
           <a-form-item :label="t('access.invokeArgs')">
-            <a-textarea v-model:value="invokeArgsText" :rows="4" class="mono" placeholder='{ "q": "…" }' />
+            <a-radio-group v-model:value="invokeArgMode" button-style="solid" size="small" class="inv-mode">
+              <a-radio-button value="form">{{ t('access.invokeArgsForm') }}</a-radio-button>
+              <a-radio-button value="json">{{ t('access.invokeArgsJson') }}</a-radio-button>
+            </a-radio-group>
+
+            <div v-if="invokeArgMode === 'form'" class="inv-fields">
+              <ParamEditor v-if="invokeNodes.length" :fields="invokeNodes" :model="invokeModel" />
+              <p v-else class="inv-hint">{{ t('access.invokeNoProps') }}</p>
+            </div>
+            <a-textarea v-else v-model:value="invokeArgsText" :rows="4" class="mono" placeholder='{ "q": "…" }' />
           </a-form-item>
           <div class="inv-actions">
             <a-button type="primary" :loading="invokeRunning" :disabled="!invokeTool" @click="runInvoke">
@@ -385,13 +394,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { ArrowLeftOutlined, CopyOutlined, DeleteOutlined, DownOutlined, ExperimentOutlined, InfoCircleOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { getKey, getRuntimeConfig, invokeKey, listAllServers, listAllTools, rotateKey, updateKey } from '@/api'
 import type { AccessKey, KeyInvokeResult, MCPServer, Tool, ToolGrant } from '@/types'
+import ParamEditor from '@/components/ParamEditor.vue'
+import { collectNodes, jsonScaffold, objectSkeleton, schemaToNodes } from '@/utils/schema'
+import type { ParamNode } from '@/utils/schema'
 
 interface GrantEditor { gw: string; headers: { k: string; v: string }[]; defargs: { k: string; v: string }[] }
 type GrantKind = 'tool' | 'global' | 'pattern'
@@ -424,6 +436,11 @@ const invokeTool = ref<string | undefined>(undefined)
 const invokeArgsText = ref('')
 const invokeRunning = ref(false)
 const invokeOut = ref<{ type: 'ok'; res: KeyInvokeResult } | { type: 'denied'; message: string } | null>(null)
+// 参数编辑双模式，与工具详情页一致：form 按选中工具的 input_schema 生成表格，json 编辑原始文本。
+const invokeArgMode = ref<'form' | 'json'>('form')
+const invokeNodes = ref<ParamNode[]>([])
+const invokeModel = ref<Record<string, any>>({})
+const invokeJsonInjected = ref(false)
 
 const grants = ref<GrantEditor[]>([])
 const form = reactive({ qps: 0, burst: 0, windowSeconds: 0, unlimited: false, enabled: true })
@@ -699,17 +716,51 @@ async function doRotateKey() {
 
 function openInvoke() {
   invokeTool.value = undefined
+  invokeArgMode.value = 'form'
+  buildInvokeForm()
   invokeArgsText.value = ''
+  invokeJsonInjected.value = false
   invokeOut.value = null
   invokeVisible.value = true
 }
+
+// 按当前选中工具的 input_schema 重建表格参数骨架；未选中时清空。
+function buildInvokeForm() {
+  const spec = invokeTool.value ? toolByName.value.get(invokeTool.value) : undefined
+  invokeNodes.value = schemaToNodes((spec?.input_schema ?? null) as Record<string, unknown> | null)
+  invokeModel.value = reactive(objectSkeleton(invokeNodes.value))
+  invokeJsonInjected.value = false
+  invokeOut.value = null
+}
+
+// 切换工具时回到表格模式并重建；切到 JSON 模式首次注入按 Schema 生成的骨架。
+watch(invokeTool, () => {
+  invokeArgMode.value = 'form'
+  buildInvokeForm()
+})
+watch(invokeArgMode, (m) => {
+  if (m === 'json' && !invokeJsonInjected.value) {
+    invokeArgsText.value = invokeNodes.value.length ? jsonScaffold(invokeNodes.value) : '{}'
+    invokeJsonInjected.value = true
+  }
+})
 
 async function runInvoke() {
   const ak = key.value
   const tool = invokeTool.value
   if (!ak || !tool) return
   let args: Record<string, unknown> = {}
-  if (invokeArgsText.value.trim()) {
+  if (invokeArgMode.value === 'form') {
+    const res = collectNodes(invokeNodes.value, invokeModel.value, {
+      required: t('access.invokeRequired'),
+      jsonInvalid: t('access.invokeJsonInvalid'),
+    })
+    if ('error' in res) {
+      message.warning(res.error)
+      return
+    }
+    args = res.args
+  } else if (invokeArgsText.value.trim()) {
     try {
       const v = JSON.parse(invokeArgsText.value)
       if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error('obj')
@@ -1240,6 +1291,16 @@ onMounted(load)
 .inv-desc { margin: 0 0 6px; color: var(--mc-ink-2); font-size: 12px; line-height: 1.6; }
 .inv-empty { margin: 6px 0 0; color: var(--mc-warn); font-size: 12px; line-height: 1.5; }
 .inv-hint { margin: 4px 0 0; color: var(--mc-ink-3); font-size: 11.5px; line-height: 1.5; }
+.inv-mode { margin-bottom: 8px; }
+.inv-fields {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--mc-line-soft);
+  border-radius: 8px;
+  background: #fafbfd;
+  max-height: 320px;
+  overflow: auto;
+}
 .inv-actions { margin: 2px 0 10px; }
 .inv-result { margin-top: 4px; }
 .inv-meta { font-size: 11.5px; color: var(--mc-ink-2); margin: 10px 0 6px; }

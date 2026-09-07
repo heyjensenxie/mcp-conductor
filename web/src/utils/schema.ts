@@ -340,3 +340,148 @@ export function objectSkeleton(fields: ParamNode[]): Record<string, any> {
   }
   return o
 }
+
+// ---------------------------------------------------------------------------
+// 手动调用入参收集：读表单模型 → 最终 arguments 对象。
+// 纯函数，错误文案（必填 / JSON 非法）由调用方按 i18n 注入；ToolDetailView 与
+// AccessKeyDetailView 的“试调用 / 手动调用”共用同一套读法与校验，保证同一
+// Schema 在两端收集出的参数一致。
+// ---------------------------------------------------------------------------
+
+// 可选标量留空时跳过该键的标记；required 与空对象/数组处理在 readNode 内判定。
+export const ABSENT = Symbol('absent')
+
+// 收集 / 校验文案；required 为“必填”提示，jsonInvalid 为“JSON 非法”提示。
+export interface CollectTexts {
+  required: string
+  jsonInvalid: string
+}
+
+// 带字段路径的收集错误，写入文案时已拼好路径前缀，供 collectNodes 统一兜底。
+class CollectError extends Error {}
+
+// 读一个标量：boolean 始终有值；string/number 空值按必填抛错或 ABSENT 跳过。
+function readScalar(
+  texts: CollectTexts,
+  scalar: ScalarKind,
+  raw: unknown,
+  path: string,
+  required: boolean,
+): unknown | typeof ABSENT {
+  if (scalar === 'boolean') return Boolean(raw)
+  if (scalar === 'string') {
+    const s = raw == null ? '' : String(raw).trim()
+    if (!s) {
+      if (required) throw new CollectError(`${path}: ${texts.required}`)
+      return ABSENT
+    }
+    return s
+  }
+  if (raw === null || raw === undefined || raw === '') {
+    if (required) throw new CollectError(`${path}: ${texts.required}`)
+    return ABSENT
+  }
+  const n = Number(raw)
+  if (Number.isNaN(n)) throw new CollectError(`${path}: ${texts.jsonInvalid}`)
+  return scalar === 'integer' ? Math.trunc(n) : n
+}
+
+// 递归读取一个节点的值；必填缺失 / JSON 非法抛带路径的错误，由 collectNodes 提示。
+function readNode(texts: CollectTexts, n: ParamNode, container: Record<string, any>): unknown | typeof ABSENT {
+  const kind = editorKindFor(n)
+  if (kind === 'scalar') {
+    return readScalar(texts, n.scalar as ScalarKind, container[n.key], n.path, n.required)
+  }
+  if (kind === 'object') {
+    const sub =
+      container[n.key] && typeof container[n.key] === 'object' && !Array.isArray(container[n.key])
+        ? container[n.key]
+        : {}
+    const val = gather(texts, n.props ?? [], sub)
+    if (!Object.keys(val).length) return n.required ? {} : ABSENT
+    return val
+  }
+  const arr = Array.isArray(container[n.key]) ? container[n.key] : []
+  if (kind === 'arrMulti') {
+    if (!arr.length) {
+      if (n.required) throw new CollectError(`${n.path}: ${texts.required}`)
+      return ABSENT
+    }
+    return arr.filter((v: unknown) => v !== null && v !== undefined && v !== '')
+  }
+  if (kind === 'arrRows') {
+    const out: unknown[] = []
+    for (const r of arr) {
+      const raw = r && typeof r === 'object' ? (r as Record<string, any>).v : undefined
+      const v = readScalar(texts, n.itemScalar as ScalarKind, raw, n.path, false)
+      if (v !== ABSENT) out.push(v)
+    }
+    if (!out.length) {
+      if (n.required) throw new CollectError(`${n.path}: ${texts.required}`)
+      return ABSENT
+    }
+    return out
+  }
+  if (kind === 'arrObj') {
+    if (!arr.length) {
+      if (n.required) throw new CollectError(`${n.path}: ${texts.required}`)
+      return ABSENT
+    }
+    return arr.map((el: unknown) =>
+      gather(texts, n.elementProps ?? [], el && typeof el === 'object' && !Array.isArray(el) ? el : {}),
+    )
+  }
+  // json 回退：整体 JSON 解析，空文本视为未填。
+  const text = container[n.key] == null ? '' : String(container[n.key]).trim()
+  if (!text) {
+    if (n.required) throw new CollectError(`${n.path}: ${texts.required}`)
+    return ABSENT
+  }
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new CollectError(`${n.path}: ${texts.jsonInvalid}`)
+  }
+}
+
+// 组装一层对象的参数；跳过 ABSENT（可选未填）的字段。
+function gather(texts: CollectTexts, fields: ParamNode[], container: Record<string, any>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const n of fields) {
+    const v = readNode(texts, n, container)
+    if (v !== ABSENT) out[n.key] = v
+  }
+  return out
+}
+
+// 入口：读表单模型收集入参；校验失败时返回带路径的错误，成功时返回 arguments。
+export function collectNodes(
+  fields: ParamNode[],
+  model: Record<string, any>,
+  texts: CollectTexts,
+): { args: Record<string, unknown> } | { error: string } {
+  try {
+    return { args: gather(texts, fields, model) }
+  } catch (e) {
+    return { error: e instanceof CollectError ? e.message : String(e) }
+  }
+}
+
+// 按 Schema 生成“含全部字段、值为空”的 JSON 参数骨架（手动调用 JSON 模式首次注入用），
+// 与 ToolDetailView / AccessKeyDetailView 的表格态一致，方便对照结构补值。
+export function jsonScaffold(fields: ParamNode[]): string {
+  const scaffoldValue = (n: ParamNode): unknown => {
+    const kind = editorKindFor(n)
+    if (kind === 'object') return scaffoldFields(n.props ?? [])
+    // 预填一个空元素对象，提示该数组元素的结构；可自行增删。
+    if (kind === 'arrObj' && n.elementProps?.length) return [scaffoldFields(n.elementProps)]
+    if (kind === 'arrMulti' || kind === 'arrRows') return []
+    return n.scalar === 'string' ? '' : null
+  }
+  const scaffoldFields = (list: ParamNode[]): Record<string, unknown> => {
+    const o: Record<string, unknown> = {}
+    for (const f of list) o[f.key] = scaffoldValue(f)
+    return o
+  }
+  return JSON.stringify(scaffoldFields(fields), null, 2)
+}

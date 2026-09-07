@@ -116,8 +116,8 @@ import { getTool, listAllServers, updateTool } from '@/api'
 import InputSchemaView from '@/components/InputSchemaView.vue'
 import InputSchemaEditor from '@/components/InputSchemaEditor.vue'
 import ParamEditor from '@/components/ParamEditor.vue'
-import { schemaToNodes, objectSkeleton, editorKindFor } from '@/utils/schema'
-import type { ParamNode, ScalarKind } from '@/utils/schema'
+import { schemaToNodes, objectSkeleton, collectNodes, jsonScaffold } from '@/utils/schema'
+import type { ParamNode } from '@/utils/schema'
 import type { MCPServer, Tool } from '@/types'
 
 const { t } = useI18n()
@@ -193,7 +193,7 @@ function buildFields() {
 function resetArgs() {
   buildFields()
   if (argMode.value === 'json') {
-    jsonArgs.value = scaffoldJson()
+    jsonArgs.value = jsonScaffold(rootNodes.value)
     jsonInjected.value = true
   }
   resultText.value = ''
@@ -201,29 +201,11 @@ function resetArgs() {
   resultError.value = false
 }
 
-// —— 以 JSON 指定参数：按 Schema 生成“含全部字段、值为空”的骨架 ——
-function scaffoldValue(n: ParamNode): unknown {
-  const kind = editorKindFor(n)
-  if (kind === 'object') return scaffoldFields(n.props ?? [])
-  if (kind === 'arrObj' && n.elementProps?.length) {
-    // 预填一个空元素对象，提示该数组元素的结构；可自行增删。
-    return [scaffoldFields(n.elementProps)]
-  }
-  if (kind === 'arrMulti' || kind === 'arrRows') return []
-  return n.scalar === 'string' ? '' : null
-}
-function scaffoldFields(fields: ParamNode[]): Record<string, unknown> {
-  const o: Record<string, unknown> = {}
-  for (const f of fields) o[f.key] = scaffoldValue(f)
-  return o
-}
-function scaffoldJson(): string {
-  return JSON.stringify(scaffoldFields(rootNodes.value), null, 2)
-}
+// —— 以 JSON 指定参数：JSON 骨架由 @/utils/schema 的 jsonScaffold 统一生成 ——
 // 首次切到 JSON 模式时注入骨架；已注入/用户手改后不再覆盖。
 function ensureJsonScaffold() {
   if (!jsonInjected.value) {
-    jsonArgs.value = scaffoldJson()
+    jsonArgs.value = jsonScaffold(rootNodes.value)
     jsonInjected.value = true
   }
 }
@@ -231,98 +213,7 @@ watch(argMode, (m) => {
   if (m === 'json') ensureJsonScaffold()
 })
 
-// 可选标量留空时跳过该键的标记；required 与空对象/数组处理在 readNode 内判定。
-const ABSENT = Symbol('absent')
-const needMsg = (path: string) => `${path}: ${t('toolDetail.required')}`
-const badJsonMsg = (path: string) => `${path}: ${t('toolDetail.jsonInvalid')}`
-
-// 读一个标量：boolean 始终有值；string/number 空值按必填抛错或 ABSENT 跳过。
-function readScalar(scalar: ScalarKind, raw: unknown, path: string, required: boolean): unknown | typeof ABSENT {
-  if (scalar === 'boolean') return Boolean(raw)
-  if (scalar === 'string') {
-    const s = raw == null ? '' : String(raw).trim()
-    if (!s) {
-      if (required) throw new Error(needMsg(path))
-      return ABSENT
-    }
-    return s
-  }
-  if (raw === null || raw === undefined || raw === '') {
-    if (required) throw new Error(needMsg(path))
-    return ABSENT
-  }
-  const n = Number(raw)
-  if (Number.isNaN(n)) throw new Error(badJsonMsg(path))
-  return scalar === 'integer' ? Math.trunc(n) : n
-}
-
-// 递归读取一个节点的值；必填缺失 / JSON 非法抛带路径的错误，交给外层提示。
-function readNode(n: ParamNode, container: Record<string, any>): unknown | typeof ABSENT {
-  const kind = editorKindFor(n)
-  if (kind === 'scalar') {
-    return readScalar(n.scalar as ScalarKind, container[n.key], n.path, n.required)
-  }
-  if (kind === 'object') {
-    const sub =
-      container[n.key] && typeof container[n.key] === 'object' && !Array.isArray(container[n.key])
-        ? container[n.key]
-        : {}
-    const val = gather(n.props ?? [], sub)
-    if (!Object.keys(val).length) return n.required ? {} : ABSENT
-    return val
-  }
-  const arr = Array.isArray(container[n.key]) ? container[n.key] : []
-  if (kind === 'arrMulti') {
-    if (!arr.length) {
-      if (n.required) throw new Error(needMsg(n.path))
-      return ABSENT
-    }
-    return arr.filter((v: unknown) => v !== null && v !== undefined && v !== '')
-  }
-  if (kind === 'arrRows') {
-    const out: unknown[] = []
-    for (const r of arr) {
-      const raw = r && typeof r === 'object' ? (r as Record<string, any>).v : undefined
-      const v = readScalar(n.itemScalar as ScalarKind, raw, n.path, false)
-      if (v !== ABSENT) out.push(v)
-    }
-    if (!out.length) {
-      if (n.required) throw new Error(needMsg(n.path))
-      return ABSENT
-    }
-    return out
-  }
-  if (kind === 'arrObj') {
-    if (!arr.length) {
-      if (n.required) throw new Error(needMsg(n.path))
-      return ABSENT
-    }
-    return arr.map((el: unknown) =>
-      gather(n.elementProps ?? [], el && typeof el === 'object' && !Array.isArray(el) ? el : {}),
-    )
-  }
-  // json 回退：整体 JSON 解析，空文本视为未填。
-  const text = container[n.key] == null ? '' : String(container[n.key]).trim()
-  if (!text) {
-    if (n.required) throw new Error(needMsg(n.path))
-    return ABSENT
-  }
-  try {
-    return JSON.parse(text)
-  } catch {
-    throw new Error(badJsonMsg(n.path))
-  }
-}
-
-// 组装一层对象的参数；跳过 ABSENT（可选未填）的字段。
-function gather(fields: ParamNode[], container: Record<string, any>): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const n of fields) {
-    const v = readNode(n, container)
-    if (v !== ABSENT) out[n.key] = v
-  }
-  return out
-}
+// ---- 参数收集（必填 / JSON 校验）由 @/utils/schema 的 collectNodes 统一提供 ----
 
 // 收集并校验参数；非法时提示并返回 null。
 function collectArgs(): Record<string, unknown> | null {
@@ -337,12 +228,15 @@ function collectArgs(): Record<string, unknown> | null {
       return null
     }
   }
-  try {
-    return gather(rootNodes.value, rootModel.value)
-  } catch (e) {
-    message.warning(e instanceof Error ? e.message : String(e))
+  const res = collectNodes(rootNodes.value, rootModel.value, {
+    required: t('toolDetail.required'),
+    jsonInvalid: t('toolDetail.jsonInvalid'),
+  })
+  if ('error' in res) {
+    message.warning(res.error)
     return null
   }
+  return res.args
 }
 
 async function invoke() {
