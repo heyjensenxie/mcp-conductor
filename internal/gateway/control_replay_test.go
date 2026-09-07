@@ -66,7 +66,7 @@ func TestGetLogDetail(t *testing.T) {
 	// 种子一行含入参。
 	if err := store.AppendTraffic(t.Context(), model.TrafficSample{
 		RequestID: "req-1", ServerID: "srv-1", Tool: "demo", Status: "success",
-		LatencyMS: 3, Timestamp: time.Now().UTC(), RequestArgs: map[string]any{"q": "hi"},
+		LatencyMS: 3, Timestamp: model.Now(), RequestArgs: map[string]any{"q": "hi"},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}

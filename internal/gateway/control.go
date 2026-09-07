@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/errs"
 	"github.com/heyjensenxie/mcp-conductor/internal/eval"
@@ -316,7 +315,7 @@ func (c *Control) handleCreateRoute(w http.ResponseWriter, r *http.Request) {
 	if in.Enabled != nil {
 		enabled = *in.Enabled
 	}
-	now := time.Now().UTC()
+	now := model.Now()
 	route := &model.Route{Name: in.Name, ServerID: in.ServerID, ToolNames: in.ToolNames, Enabled: enabled, CreatedAt: now, UpdatedAt: now}
 	if err := c.validateRoute(r.Context(), route); err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
@@ -359,7 +358,7 @@ func (c *Control) handleUpdateRoute(w http.ResponseWriter, r *http.Request) {
 	if patch.Enabled != nil {
 		route.Enabled = *patch.Enabled
 	}
-	route.UpdatedAt = time.Now().UTC()
+	route.UpdatedAt = model.Now()
 	if err := c.validateRoute(r.Context(), route); err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
@@ -387,7 +386,7 @@ func (c *Control) handleToggleRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	route.Enabled = *body.Enabled
-	route.UpdatedAt = time.Now().UTC()
+	route.UpdatedAt = model.Now()
 	if route.Enabled {
 		if err := c.validateRoute(r.Context(), route); err != nil {
 			writeGatewayError(w, r, statusForError(err), err)
@@ -709,7 +708,7 @@ func (c *Control) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 		writeGatewayError(w, r, http.StatusInternalServerError, errs.Wrap(errs.CodeInternal, err, "生成密钥哈希失败"))
 		return
 	}
-	now := time.Now().UTC()
+	now := model.Now()
 	key := &model.AccessKey{
 		Name:          input.Name,
 		Subject:       input.Subject,
@@ -790,7 +789,7 @@ func (c *Control) handleUpdateKey(w http.ResponseWriter, r *http.Request) {
 	if input.Grants != nil {
 		key.Grants = *input.Grants
 	}
-	key.UpdatedAt = time.Now().UTC()
+	key.UpdatedAt = model.Now()
 	if err := c.store.UpdateAccessKey(r.Context(), key); err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
@@ -824,7 +823,7 @@ func (c *Control) handleRotateKeySecret(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	key.KeyHash = keyHash
-	key.UpdatedAt = time.Now().UTC()
+	key.UpdatedAt = model.Now()
 	if err := c.store.UpdateAccessKey(r.Context(), key); err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return

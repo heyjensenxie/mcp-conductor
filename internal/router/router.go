@@ -160,8 +160,8 @@ func (r *DefaultResolver) pickRouteOverride(ctx context.Context, gatewayTool, ow
 
 // routeBefore 按 (created_at, id) 稳定比较两条路由，用于确定命中的最早覆盖。
 func routeBefore(a, b *model.Route) bool {
-	if !a.CreatedAt.Equal(b.CreatedAt) {
-		return a.CreatedAt.Before(b.CreatedAt)
+	if !a.CreatedAt.Equal(b.CreatedAt.Time) {
+		return a.CreatedAt.Before(b.CreatedAt.Time)
 	}
 	return a.ID < b.ID
 }

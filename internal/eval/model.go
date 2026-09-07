@@ -6,7 +6,7 @@
 // P95/错误率）与健康聚合，输出分维度 MCP Score 与可执行的改进建议。
 package eval
 
-import "time"
+import "github.com/heyjensenxie/mcp-conductor/internal/model"
 
 // 严重级别与维度 key 常量。
 const (
@@ -123,5 +123,5 @@ type Report struct {
 	ToolChecks        []ToolCheck       `json:"tool_checks"`
 	Runtime           *RuntimeInfo      `json:"runtime,omitempty"`
 	PlatformOverrides *OverrideNote     `json:"platform_overrides,omitempty"`
-	GeneratedAt       time.Time         `json:"generated_at"`
+	GeneratedAt       model.Time      `json:"generated_at"`
 }

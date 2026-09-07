@@ -247,7 +247,7 @@ func (g *MCPGateway) record(ctx context.Context, resolved *router.Resolved, name
 		ClientIP:   ClientIPFrom(ctx),
 		Status:     status,
 		LatencyMS:  latency.Milliseconds(),
-		Timestamp:  time.Now(),
+		Timestamp:  model.Now(),
 	}
 	if !ok {
 		sample.Error = errs.SafeMessage(callErr)

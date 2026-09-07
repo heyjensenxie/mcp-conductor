@@ -34,7 +34,7 @@ func (c *countingChecker) calls() int {
 func seedServer(id string, enabled bool, status model.ServerStatus) *memory.Store {
 	store := memory.New()
 	ctx := context.Background()
-	now := time.Now().UTC()
+	now := model.Now()
 	_ = store.CreateServer(ctx, &model.Server{
 		ID: id, Name: "mock", Enabled: enabled,
 		HealthStatus: status, CreatedAt: now, UpdatedAt: now,

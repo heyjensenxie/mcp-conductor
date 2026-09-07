@@ -300,6 +300,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import { getLogs, getMetricsTrend, listAllServers, listServerToolsAll } from '@/api'
+import { backendTimeMs, parseBackendTime } from '@/utils/time'
 import type { MCPServer, TrafficSample, TrendPoint } from '@/types'
 import CallTrendChart, { type TrendSeries } from '@/components/CallTrendChart.vue'
 
@@ -368,11 +369,11 @@ function fmtAxis(ts: number): string {
   return hh
 }
 function fmtTime(iso: string): string {
-  const d = new Date(iso)
+  const d = parseBackendTime(iso)
   return isNaN(d.getTime()) ? '—' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 function fmtFull(iso: string): string {
-  const d = new Date(iso)
+  const d = parseBackendTime(iso)
   return isNaN(d.getTime()) ? iso : d.toLocaleString()
 }
 function fmtClockOf(ts: number): string {
@@ -613,7 +614,7 @@ const windowOptions = computed(() =>
 function bucketLatency(list: TrafficSample[]): { ts: number; avg: number; p95: number | null }[] {
   const byMin = new Map<number, number[]>()
   for (const l of list) {
-    const ms = Date.parse(l.timestamp)
+    const ms = backendTimeMs(l.timestamp)
     if (isNaN(ms)) continue
     const min = Math.floor(ms / 60000)
     const arr = byMin.get(min) ?? []
@@ -725,7 +726,7 @@ const issues = computed(() =>
     request_id: l.request_id,
     id: l.id,
     tool: l.tool,
-    ts: Date.parse(l.timestamp),
+    ts: backendTimeMs(l.timestamp),
     tone: EXC_TONE[catOf(l.status)],
     detail: `${l.error || statusText(l.status)} · ${fmtTime(l.timestamp)}`,
   })),

@@ -26,6 +26,52 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Auth.OperatorToken != "" || cfg.Auth.TokenSecret != "" {
 		t.Fatalf("默认不应携带凭据: %+v", cfg.Auth)
 	}
+	if cfg.Observability.TrendRetentionDays != 7 {
+		t.Fatalf("默认趋势保留应为 7 天，得到 %d", cfg.Observability.TrendRetentionDays)
+	}
+	if cfg.Observability.TrafficRetentionDays != 90 {
+		t.Fatalf("默认调用日志保留应为 90 天，得到 %d", cfg.Observability.TrafficRetentionDays)
+	}
+}
+
+// TestTrafficRetentionDaysEnv 验证 traffic_retention_days 的 env 覆盖与校验边界：
+// 正数生效、0 合法（关闭）；校验层拒绝负值与超 365。
+func TestTrafficRetentionDaysEnv(t *testing.T) {
+	t.Setenv("CONDUCTOR_OBSERVABILITY_TRAFFIC_RETENTION_DAYS", "120")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load(120): %v", err)
+	}
+	if cfg.Observability.TrafficRetentionDays != 120 {
+		t.Fatalf("env 覆盖失败，得到 %d", cfg.Observability.TrafficRetentionDays)
+	}
+
+	t.Setenv("CONDUCTOR_OBSERVABILITY_TRAFFIC_RETENTION_DAYS", "0")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatalf("Load(0 关闭): %v", err)
+	}
+	if cfg.Observability.TrafficRetentionDays != 0 {
+		t.Fatalf("0 应视为关闭，得到 %d", cfg.Observability.TrafficRetentionDays)
+	}
+
+	// 负值 env 与趋势保留一致：按「未设置」忽略并回退默认，不报错。
+	t.Setenv("CONDUCTOR_OBSERVABILITY_TRAFFIC_RETENTION_DAYS", "-3")
+	if cfg, err = Load(""); err != nil {
+		t.Fatalf("负数 env 应忽略回退默认: %v", err)
+	}
+	if cfg.Observability.TrafficRetentionDays != 90 {
+		t.Fatalf("负数 env 应回退默认 90，得到 %d", cfg.Observability.TrafficRetentionDays)
+	}
+
+	// 校验层边界：负值与超 365 必须报错。
+	for _, bad := range []int{-1, 366} {
+		c := Default()
+		c.Observability.TrafficRetentionDays = bad
+		if err := c.validate(); err == nil {
+			t.Fatalf("traffic_retention_days=%d 应校验失败", bad)
+		}
+	}
 }
 
 // TestLoadEnvOverridesNewKeys 验证 config.yaml 有但此前缺 env 覆盖的项现在生效。

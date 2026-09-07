@@ -214,9 +214,9 @@ func TestQueryTraffic_filterTimeAndPage(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	samples := []model.TrafficSample{
-		{RequestID: "req-1", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: base.Add(1 * time.Minute)},
-		{RequestID: "req-2", ServerID: "s2", InstanceID: "i2", Tool: "beta.search", Client: "c2", Status: "upstream_error", Timestamp: base.Add(2 * time.Minute)},
-		{RequestID: "req-3", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: base.Add(3 * time.Minute)},
+		{RequestID: "req-1", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: model.T(base.Add(1 * time.Minute))},
+		{RequestID: "req-2", ServerID: "s2", InstanceID: "i2", Tool: "beta.search", Client: "c2", Status: "upstream_error", Timestamp: model.T(base.Add(2 * time.Minute))},
+		{RequestID: "req-3", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", Status: "success", Timestamp: model.T(base.Add(3 * time.Minute))},
 	}
 	for _, sample := range samples {
 		if err := st.AppendTraffic(ctx, sample); err != nil {

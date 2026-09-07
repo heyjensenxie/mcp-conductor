@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/model"
 	"github.com/heyjensenxie/mcp-conductor/internal/storage/memory"
@@ -86,7 +85,7 @@ func TestCallAsKey_noAvailableInstance(t *testing.T) {
 	if err := store.UpdateInstance(context.Background(), &model.Instance{
 		ID: "inst-1", ServerID: "srv-1", Endpoint: "http://localhost:9000/mcp",
 		Transport: model.TransportStreamableHTTP, Enabled: false,
-		HealthStatus: model.ServerStatusUnknown, UpdatedAt: time.Now().UTC(),
+		HealthStatus: model.ServerStatusUnknown, UpdatedAt: model.Now(),
 	}); err != nil {
 		t.Fatalf("UpdateInstance: %v", err)
 	}
@@ -109,7 +108,7 @@ func (s *stubKeyCall) CallAsKey(context.Context, *model.AccessKey, string, map[s
 func seedKeyInvokeControl(t *testing.T) (*Control, *memory.Store) {
 	t.Helper()
 	store := memory.New()
-	now := time.Now().UTC()
+	now := model.Now()
 	if err := store.CreateAccessKey(context.Background(), &model.AccessKey{
 		ID: "key-1", Name: "Partner A", Subject: "partner-a", Enabled: true,
 		Grants:    []model.ToolGrant{{GatewayName: "mock.search"}},
@@ -146,7 +145,7 @@ func TestHandleKeyInvoke_errorPaths(t *testing.T) {
 	store := ctrl.store.(*memory.Store)
 	if err := store.UpdateAccessKey(context.Background(), &model.AccessKey{
 		ID: "key-1", Name: "Partner A", Subject: "partner-a", Enabled: false,
-		UpdatedAt: time.Now().UTC(),
+		UpdatedAt: model.Now(),
 	}); err != nil {
 		t.Fatalf("UpdateAccessKey: %v", err)
 	}
@@ -157,7 +156,7 @@ func TestHandleKeyInvoke_errorPaths(t *testing.T) {
 	// 授权拒绝（keyCall 返回 Allowed=false）→ 403。
 	if err := store.UpdateAccessKey(context.Background(), &model.AccessKey{
 		ID: "key-1", Name: "Partner A", Subject: "partner-a", Enabled: true,
-		UpdatedAt: time.Now().UTC(),
+		UpdatedAt: model.Now(),
 	}); err != nil {
 		t.Fatalf("恢复 key: %v", err)
 	}

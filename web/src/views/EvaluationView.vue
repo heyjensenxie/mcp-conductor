@@ -208,6 +208,7 @@ import { useI18n } from 'vue-i18n'
 import { message } from 'ant-design-vue'
 import { AuditOutlined, DeleteOutlined, FilePdfOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { getEvalMeta, listAllServers, primaryEndpoint, runEvalQuality, runEvalSuite } from '@/api'
+import { parseBackendTime } from '@/utils/time'
 import type { EvalMeta, EvalReport, EvalSuiteResult, MCPServer, ServerInstance } from '@/types'
 
 const { t } = useI18n()
@@ -426,7 +427,7 @@ function msText(v: number) {
 }
 
 function formatTime(iso: string) {
-  const d = new Date(iso)
+  const d = parseBackendTime(iso)
   return isNaN(d.getTime()) ? iso : d.toLocaleString()
 }
 </script>

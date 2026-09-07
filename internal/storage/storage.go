@@ -6,6 +6,7 @@ package storage
 
 import (
 	"context"
+	"time"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/model"
 	"github.com/heyjensenxie/mcp-conductor/internal/storage/query"
@@ -92,6 +93,10 @@ type TrafficStore interface {
 	RecentTraffic(ctx context.Context, limit int) ([]model.TrafficSample, error)
 	// RecentTrafficByServer 返回指定 Server 最近 limit 条调用采样（按写入倒序）。
 	RecentTrafficByServer(ctx context.Context, serverID string, limit int) ([]model.TrafficSample, error)
+	// DeleteTrafficBefore 删除 ts < before 的旧调用日志（保留收敛）。limit>0 时单次
+	// 最多删除 limit 行（供 app 分块限制单条 DELETE 的锁范围，MySQL 5.7 单表 DELETE
+	// 支持 LIMIT），返回实际删除行数；limit<=0 删除全部匹配。
+	DeleteTrafficBefore(ctx context.Context, before time.Time, limit int64) (int64, error)
 }
 
 // ---- 管理面列表查询（分页 + 关键词/字段筛选）----

@@ -232,10 +232,10 @@ func TestResolver_RouteMultiHitPicksEarliest(t *testing.T) {
 	store, _, b, c := routeFixture(t)
 	ctx := context.Background()
 	base := time.Now().UTC()
-	if err := store.CreateRoute(ctx, &model.Route{Name: "后来到C", ServerID: c.ID, ToolNames: []string{"univ.search"}, Enabled: true, CreatedAt: base.Add(2 * time.Minute)}); err != nil {
+	if err := store.CreateRoute(ctx, &model.Route{Name: "后来到C", ServerID: c.ID, ToolNames: []string{"univ.search"}, Enabled: true, CreatedAt: model.T(base.Add(2 * time.Minute))}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateRoute(ctx, &model.Route{Name: "最早到B", ServerID: b.ID, ToolNames: []string{"univ.search"}, Enabled: true, CreatedAt: base}); err != nil {
+	if err := store.CreateRoute(ctx, &model.Route{Name: "最早到B", ServerID: b.ID, ToolNames: []string{"univ.search"}, Enabled: true, CreatedAt: model.T(base)}); err != nil {
 		t.Fatal(err)
 	}
 	r := NewResolver(store, store).WithRoutes(store).WithInstances(store)

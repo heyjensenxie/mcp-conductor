@@ -120,6 +120,8 @@ func Run(ctx context.Context) error {
 	// 分钟桶趋势持久化：已闭合分钟每 60s 幂等落库 + 每小时按保留天数清理。
 	replaySvc := gateway.NewReplayService(store, adapter, cfg.Gateway.UpstreamTimeout)
 	go runTrendPersist(ctx, store, metrics, cfg.Observability.TrendRetentionDays)
+	// 调用日志保留清理：每小时按保留天数分块收敛 traffic_log（默认 90 天，0 关闭）。
+	go runTrafficRetention(ctx, store, cfg.Observability.TrafficRetentionDays)
 
 	server := gateway.NewServer(cfg, gateway.Deps{
 		Registry:    registrySvc,
@@ -217,7 +219,7 @@ func seedBootstrapKeys(ctx context.Context, store storage.AccessKeyStore, apiKey
 		if err != nil {
 			return err
 		}
-		now := time.Now().UTC()
+		now := model.Now()
 		k := &model.AccessKey{
 			Name:      subject,
 			Subject:   subject,
@@ -343,6 +345,62 @@ func runTrendPersist(ctx context.Context, store storage.TrendStore, metrics *obs
 			}
 		}
 	}
+}
+
+// runTrafficRetention 每小时按保留天数清理超过保留期的调用日志（traffic_log），
+// 遏制观察流水无限膨胀。retentionDays<=0 表示关闭自动清理（默认 90）。
+// traffic_log 是最大流水表，单条大 DELETE 在 MySQL 上持锁过久，故分块清理；
+// 启动先清一轮，让新配置立即生效。
+func runTrafficRetention(ctx context.Context, store storage.TrafficStore, retentionDays int) {
+	if retentionDays <= 0 {
+		return
+	}
+	purge := func(now time.Time) {
+		cutoff := now.UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+		purgeTrafficBefore(ctx, store, cutoff, trafficPurgeChunk, trafficPurgeMaxPerRun)
+	}
+	purge(time.Now()) // 启动先清一轮
+	tick := time.NewTicker(time.Hour)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-tick.C:
+			purge(now)
+		}
+	}
+}
+
+// trafficPurgeChunk / trafficPurgeMaxPerRun 约束单轮调用日志清理的语句粒度：
+// 每批 DELETE 最多删 trafficPurgeChunk 行（MySQL 5.7 单表 DELETE 支持 LIMIT），
+// 单轮累计上限 trafficPurgeMaxPerRun，控制整点/启动清理的持锁范围与耗时，即使
+// 存量庞大也在多小时中渐进收敛。
+const (
+	trafficPurgeChunk     int64 = 5000
+	trafficPurgeMaxPerRun int64 = 200_000
+)
+
+// purgeTrafficBefore 分块删除 ts < cutoff 的旧调用日志，返回本轮实际删除行数。
+// 每批最多 chunk 行；累计达 maxPerRun 或剩余不足一批即停；失败写告警日志并中止
+// （观测流水清理失败不阻断数据面）。
+func purgeTrafficBefore(ctx context.Context, store storage.TrafficStore, cutoff time.Time, chunk, maxPerRun int64) int64 {
+	var total int64
+	for total < maxPerRun {
+		if ctx.Err() != nil {
+			return total
+		}
+		deleted, err := store.DeleteTrafficBefore(ctx, cutoff, chunk)
+		if err != nil {
+			slog.Warn("调用日志清理失败", "error", err, "cutoff", cutoff, "deleted", total)
+			return total
+		}
+		total += deleted
+		if deleted < chunk {
+			return total
+		}
+	}
+	return total
 }
 
 // runWithSignal 启动 HTTP 服务，并在收到退出信号时优雅关闭。

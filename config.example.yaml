@@ -108,3 +108,6 @@ observability:
   # 分钟桶趋势（trend_minute）保留天数（1..365）：已闭合分钟每 60s 幂等落库，
   # 趋势跨重启可回溯；超过该天数由后台每小时清理。
   trend_retention_days: 7
+  # 调用日志（traffic_log）保留天数（0=关闭自动清理；1..365，默认 90）：超过该
+  # 天数由后台每小时分块删除，遏制观察流水无限膨胀。
+  traffic_retention_days: 90

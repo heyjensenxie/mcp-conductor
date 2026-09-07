@@ -153,6 +153,7 @@ import { message } from 'ant-design-vue'
 import { CopyOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { currentLocale, setLocale, type AppLocale } from '@/i18n'
+import { parseBackendTime } from '@/utils/time'
 import { DEFAULT_INSTANCE_NAME, useAppStore } from '@/stores/app'
 
 const { t } = useI18n()
@@ -298,7 +299,7 @@ function copySecret() {
 }
 
 function formatDateTime(iso: string): string {
-  const d = new Date(iso)
+  const d = parseBackendTime(iso)
   if (Number.isNaN(d.getTime())) return '—'
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`

@@ -58,7 +58,7 @@ func replayFixture(t *testing.T) (*memory.Store, string, int64) {
 	}
 	if err := store.AppendTraffic(ctx, model.TrafficSample{
 		RequestID: "req-1", ServerID: srv.ID, InstanceID: "i1", Tool: "mock.search",
-		Status: "success", LatencyMS: 5, Timestamp: time.Now().UTC(),
+		Status: "success", LatencyMS: 5, Timestamp: model.Now(),
 		RequestArgs: map[string]any{"q": "hello"},
 	}); err != nil {
 		t.Fatalf("seed traffic: %v", err)
@@ -96,7 +96,7 @@ func TestReplayServiceStructuralFailures(t *testing.T) {
 	// 追加无入参行 → invalid_argument。
 	if err := store.AppendTraffic(t.Context(), model.TrafficSample{
 		RequestID: "req-2", ServerID: "srv-1", Tool: "mock.search", Status: "success", LatencyMS: 1,
-		Timestamp: time.Now().UTC(),
+		Timestamp: model.Now(),
 	}); err != nil {
 		t.Fatalf("append: %v", err)
 	}

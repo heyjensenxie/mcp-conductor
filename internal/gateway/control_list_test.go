@@ -123,9 +123,9 @@ func TestControlLogsFilter(t *testing.T) {
 	ctrl := NewControl(nil, store, nil, nil)
 	now := time.Now().UTC().Truncate(time.Second)
 	samples := []model.TrafficSample{
-		{RequestID: "req-1", ServerID: "s1", InstanceID: "i1", Tool: "svc.search", Client: "c1", Status: "success", Timestamp: now.Add(-2 * time.Minute)},
-		{RequestID: "req-2", ServerID: "s2", InstanceID: "i2", Tool: "svc.search", Client: "c1", Status: "upstream_error", Timestamp: now.Add(-4 * time.Minute)},
-		{RequestID: "req-3", ServerID: "s1", InstanceID: "i2", Tool: "svc.detail", Client: "c1", Status: "success", Timestamp: now.Add(-5 * time.Minute)},
+		{RequestID: "req-1", ServerID: "s1", InstanceID: "i1", Tool: "svc.search", Client: "c1", Status: "success", Timestamp: model.T(now.Add(-2 * time.Minute))},
+		{RequestID: "req-2", ServerID: "s2", InstanceID: "i2", Tool: "svc.search", Client: "c1", Status: "upstream_error", Timestamp: model.T(now.Add(-4 * time.Minute))},
+		{RequestID: "req-3", ServerID: "s1", InstanceID: "i2", Tool: "svc.detail", Client: "c1", Status: "success", Timestamp: model.T(now.Add(-5 * time.Minute))},
 	}
 	for _, sample := range samples {
 		if err := store.AppendTraffic(context.Background(), sample); err != nil {

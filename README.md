@@ -48,7 +48,7 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | Request Logging + 基础 Metrics（P50/P95/P99） | ✅ 应用层聚合；`?scope=server` 按 Server 聚合 |
 | **实例级流量归属（多实例观测下沉）** | ✅ 每次调用把 `instance_id` 落调用日志（traffic_log，可按 `server_id+instance_id` 筛选）并按实例记内存指标（`?scope=instance&server_id=`）；Server 详情「实例」表直接展示每个实例的 Requests / P95 / Errors |
 | **长程分钟桶趋势（持久化）** | ✅ 已闭合分钟桶每 60s 幂等落库 `trend_minute`（0001..0010）：跨重启可回溯、`?minutes` 可到保留天数（默认 7 天，`trend_retention_days`），支持 `?scope=instance&server_id=` 与 `?dim_key=` 单维聚焦；Console 观测页可切 30m~7d 窗口与维度 |
-| Traffic 调用筛选 + Observability | ✅ 日志按 Server/实例/状态/关键词/时间分页筛选（page/page_size，上限 200）；指标按 Tool/Server/实例查看；趋势为真时序分钟桶（默认近 30 分钟折线，可拉长窗） |
+| Traffic 调用筛选 + Observability | ✅ 日志按 Server/实例/状态/关键词/时间分页筛选（page/page_size，上限 200）；指标按 Tool/Server/实例查看；趋势为真时序分钟桶（默认近 30 分钟折线，可拉长窗）。调用日志**保留清理**：默认保留最近 90 天（`observability.traffic_retention_days`，0 关闭），app 每小时分块删除超过保留期的日志，遏制流水无限膨胀 |
 | **Traffic Replay（按捕获入参回放）** | ✅ `record_args=true` 时捕获 tools/call **入参**（响应永不落库）到调用日志；Traffic 行「回放」把该调用重发到其命中的上游实例复现（直连实例、诊断流量不写 metrics/调用日志） |
 | **stdio 上游接入（本地子进程）** | ✅ 实例 `transport=stdio` 以子进程方式接入本地 MCP Server：`endpoint`=可执行命令 + `args`=启动参数（JSON 数组，不经过 shell）；按官方 stdio 规范换行 JSON-RPC over stdin/stdout，初始化生命周期（initialize→initialized）完整；spawn-per-request 每次操作新建并回收进程；stdio 无 HTTP 头部，Header 凭据注入仅适用 https/sse |
 | Vue3 Console（Ant Design Vue + ECharts） | ✅ 构建后嵌入二进制 |
@@ -281,7 +281,7 @@ go run ./cmd/conductor
 | `auth` | session_ttl（登录会话有效期，默认 12h） | `CONDUCTOR_AUTH_SESSION_TTL_MINUTES=720` |
 | `credentials` | encryption_key（AES-256，64 位 hex） | `CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY=<hex>` |
 | `logging` | level / format | `CONDUCTOR_LOGGING_LEVEL=info` |
-| `observability` | record_args（捕获入参供回放，默认关）/ sample_rate / trend_retention_days（默认 7） | `CONDUCTOR_OBSERVABILITY_RECORD_ARGS=false` · `CONDUCTOR_OBSERVABILITY_SAMPLE_RATE=1.0` · `CONDUCTOR_OBSERVABILITY_TREND_RETENTION_DAYS=7` |
+| `observability` | record_args（捕获入参供回放，默认关）/ sample_rate / trend_retention_days（默认 7）/ traffic_retention_days（默认 90，0=关闭清理） | `CONDUCTOR_OBSERVABILITY_RECORD_ARGS=false` · `CONDUCTOR_OBSERVABILITY_SAMPLE_RATE=1.0` · `CONDUCTOR_OBSERVABILITY_TREND_RETENTION_DAYS=7` · `CONDUCTOR_OBSERVABILITY_TRAFFIC_RETENTION_DAYS=90` |
 
 完整说明见 [config.example.yaml](config.example.yaml) 与 [.env.example](.env.example)。
 
@@ -322,7 +322,7 @@ make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATA
 ## Roadmap
 
 - **v0.1（当前）**：最小闭环 + 运维基础（Registry / 聚合 / 路由 / 治理 / 观测 / Console / Docker）。其中 **MySQL 5.7+ 持久化驱动已先行落地**（`internal/storage/mysql`，实测通过）。
-- **v0.2 候选**：Route 管理页完善、stdio 长驻会话缓存（降低子进程启动开销）。注：stdio 上游接入、Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）、Server 多实例 + 健康感知 Round-Robin、实例级流量归属、按实例定向评测、长程分钟桶趋势持久化与按入参回放均已随 v0.1 落地。
+- **v0.2 候选**：Route 管理页完善、stdio 长驻会话缓存（降低子进程启动开销）。注：stdio 上游接入、Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）、Server 多实例 + 健康感知 Round-Robin、实例级流量归属、按实例定向评测、长程分钟桶趋势持久化与按入参回放、调用日志保留清理（`traffic_retention_days`）均已随 v0.1 落地。
 - **v0.3 候选**：Evaluation 深化（本阶段已落地 Server 质量分 + 回归用例的 MCP Score 雏形，见上表；后续 Dataset/TestCase 落库、对比与 LLM Judge 另行列版）、协议/Schema/性能测试。
 - **远期**：独立 Python Evaluation Worker、AI 优化建议、Route 灰度/分组转发。
 

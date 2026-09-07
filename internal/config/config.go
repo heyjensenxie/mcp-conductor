@@ -157,6 +157,9 @@ type ObservabilityConfig struct {
 	// TrendRetentionDays 控制分钟桶趋势（trend_minute）保留天数（1..365，默认 7）。
 	// 已闭合分钟每 60s 幂等落库，超过该天数由 app 每小时清理。
 	TrendRetentionDays int `yaml:"trend_retention_days"`
+	// TrafficRetentionDays 控制调用日志（traffic_log）保留天数（默认 90；0=关闭
+	// 自动清理）。app 每小时按该天数分块删除超过保留期的调用日志，遏制流水无限膨胀。
+	TrafficRetentionDays int `yaml:"traffic_retention_days"`
 }
 
 // Default 返回适合本地开发的最小配置，保证无外部依赖也可启动。
@@ -212,9 +215,10 @@ func Default() Config {
 			Format: "text",
 		},
 		Observability: ObservabilityConfig{
-			RecordArgs:         false,
-			SampleRate:         1.0,
-			TrendRetentionDays: 7,
+			RecordArgs:           false,
+			SampleRate:           1.0,
+			TrendRetentionDays:   7,
+			TrafficRetentionDays: 90,
 		},
 	}
 }
@@ -414,6 +418,11 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Observability.TrendRetentionDays = n
 		}
 	}
+	if v := lookupEnv("CONDUCTOR_OBSERVABILITY_TRAFFIC_RETENTION_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Observability.TrafficRetentionDays = n
+		}
+	}
 }
 
 // parseBool 将环境变量字符串解析为布尔值，无法解析时视为 false。
@@ -506,6 +515,9 @@ func (c Config) validate() error {
 	}
 	if c.Observability.TrendRetentionDays < 1 || c.Observability.TrendRetentionDays > 365 {
 		return fmt.Errorf("observability.trend_retention_days 须在 1..365，收到: %d", c.Observability.TrendRetentionDays)
+	}
+	if c.Observability.TrafficRetentionDays < 0 || c.Observability.TrafficRetentionDays > 365 {
+		return fmt.Errorf("observability.traffic_retention_days 须在 0(关闭)..365，收到: %d", c.Observability.TrafficRetentionDays)
 	}
 	return nil
 }

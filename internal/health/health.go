@@ -131,7 +131,7 @@ func (m *Monitor) probeServer(ctx context.Context, server model.Server) {
 			continue
 		}
 		inst.HealthStatus = status
-		inst.UpdatedAt = time.Now().UTC()
+		inst.UpdatedAt = model.Now()
 		if err := m.store.UpdateInstance(ctx, inst); err != nil {
 			slog.Warn("回写实例健康状态失败", "instance", inst.ID, "error", err)
 		}
@@ -142,7 +142,7 @@ func (m *Monitor) probeServer(ctx context.Context, server model.Server) {
 		return
 	}
 	server.HealthStatus = agg
-	server.UpdatedAt = time.Now().UTC()
+	server.UpdatedAt = model.Now()
 	if err := m.store.UpdateServer(ctx, &server); err != nil {
 		slog.Warn("回写 Server 聚合健康状态失败", "server", server.ID, "error", err)
 	}

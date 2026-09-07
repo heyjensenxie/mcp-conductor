@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/access"
 	"github.com/heyjensenxie/mcp-conductor/internal/auth"
@@ -44,7 +43,7 @@ func seedGatewayFull(t *testing.T, caller registry.ToolCaller, opts ...Option) (
 	t.Helper()
 	store := memory.New()
 	ctx := context.Background()
-	now := time.Now().UTC()
+	now := model.Now()
 	if err := store.CreateServer(ctx, &model.Server{
 		ID: "srv-1", Name: "mock", Enabled: true,
 		HealthStatus: model.ServerStatusHealthy, CreatedAt: now, UpdatedAt: now,

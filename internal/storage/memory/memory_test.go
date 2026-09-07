@@ -102,7 +102,7 @@ func TestRecentTrafficByServerMemory(t *testing.T) {
 	for _, sid := range []string{"srv-1", "srv-2"} {
 		for range 3 {
 			// 各 Server 固定归属一个实例，验证实例字段随整 struct 往返。
-			sample := model.TrafficSample{ServerID: sid, InstanceID: "inst-" + sid, Tool: "t", Status: "success", Timestamp: now}
+			sample := model.TrafficSample{ServerID: sid, InstanceID: "inst-" + sid, Tool: "t", Status: "success", Timestamp: model.T(now)}
 			if err := store.AppendTraffic(ctx, sample); err != nil {
 				t.Fatal(err)
 			}
@@ -182,7 +182,7 @@ func TestRouteLifecycleMemory(t *testing.T) {
 	if got.Name != "改名" || got.Enabled || len(got.ToolNames) != 1 || got.ToolNames[0] != "b.search" {
 		t.Fatalf("更新后回读不一致: %+v", got)
 	}
-	if !got.CreatedAt.Equal(created) {
+	if !got.CreatedAt.Equal(created.Time) {
 		t.Fatal("UpdateRoute 不应改变 created_at")
 	}
 
@@ -409,10 +409,10 @@ func TestListInstancesByServerOrderingMemory(t *testing.T) {
 	// 构造 4 条（含一条他 Server 的），用显式 id 控制同 created_at 时的次级排序：
 	// 先按 created_at 升序，同 created_at 再按 id 升序。
 	seed := []model.Instance{
-		{ID: "i-1", ServerID: "srv-1", Endpoint: "http://late-1", CreatedAt: base.Add(2 * time.Hour)},
-		{ID: "i-2", ServerID: "srv-1", Endpoint: "http://early-1", CreatedAt: base},
-		{ID: "i-3", ServerID: "srv-1", Endpoint: "http://early-2", CreatedAt: base},
-		{ID: "i-4", ServerID: "srv-2", Endpoint: "http://other", CreatedAt: base.Add(-time.Hour)},
+		{ID: "i-1", ServerID: "srv-1", Endpoint: "http://late-1", CreatedAt: model.T(base.Add(2 * time.Hour))},
+		{ID: "i-2", ServerID: "srv-1", Endpoint: "http://early-1", CreatedAt: model.T(base)},
+		{ID: "i-3", ServerID: "srv-1", Endpoint: "http://early-2", CreatedAt: model.T(base)},
+		{ID: "i-4", ServerID: "srv-2", Endpoint: "http://other", CreatedAt: model.T(base.Add(-time.Hour))},
 	}
 	for i := range seed {
 		if err := store.CreateInstance(ctx, &seed[i]); err != nil {

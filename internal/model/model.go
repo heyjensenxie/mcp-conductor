@@ -6,7 +6,6 @@ package model
 
 import (
 	"strings"
-	"time"
 )
 
 // Transport 描述 MCP Server 使用的传输方式。
@@ -52,8 +51,8 @@ type Server struct {
 	// Instances 是对外 API 响应水合出来的实例列表（endpoint/transport/健康展示
 	// 与实例管理入口）。存储层不读写本字段（不落库），仅控制面在序列化前填充。
 	Instances []Instance `json:"instances,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	CreatedAt Time  `json:"created_at"`
+	UpdatedAt Time  `json:"updated_at"`
 }
 
 // Instance 代表一个逻辑 Server 下的具体上游实例（endpoint+transport 的承载单位）。
@@ -73,8 +72,8 @@ type Instance struct {
 	Args         []string     `json:"args,omitempty"`
 	Enabled      bool         `json:"enabled"`
 	HealthStatus ServerStatus `json:"health_status"`
-	CreatedAt    time.Time    `json:"created_at"`
-	UpdatedAt    time.Time    `json:"updated_at"`
+	CreatedAt    Time    `json:"created_at"`
+	UpdatedAt    Time    `json:"updated_at"`
 }
 
 // IsCallable 报告该实例是否可作为调用目标：启用且未被探测为 unhealthy。
@@ -134,8 +133,8 @@ type Tool struct {
 	InputSchemaOverridden bool           `json:"input_schema_overridden"`
 	RiskLevel             string         `json:"risk_level,omitempty"`
 	Enabled               bool           `json:"enabled"`
-	CreatedAt             time.Time      `json:"created_at"`
-	UpdatedAt             time.Time      `json:"updated_at"`
+	CreatedAt             Time      `json:"created_at"`
+	UpdatedAt             Time      `json:"updated_at"`
 }
 
 // Route 描述"对外工具（或匹配规则）→ 目标 Server"的路由定义。
@@ -146,8 +145,8 @@ type Route struct {
 	ServerID  string    `json:"server_id"`
 	ToolNames []string  `json:"tool_names,omitempty"`
 	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	CreatedAt Time `json:"created_at"`
+	UpdatedAt Time `json:"updated_at"`
 }
 
 // CredentialKind 表示 Gateway 调用上游 MCP Server 时使用的凭据类型。
@@ -174,8 +173,8 @@ type Credential struct {
 	HasValue bool `json:"has_value"`
 	// Value 是敏感凭证值（上游注入用）。json:"-" 保证不随 API 下发。
 	Value     string    `json:"-"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	CreatedAt Time `json:"created_at"`
+	UpdatedAt Time `json:"updated_at"`
 }
 
 // ToolGrant 是"某个 key 对某个工具"的白名单条目（含调用配置）。
@@ -213,8 +212,8 @@ type AccessKey struct {
 	Grants        []ToolGrant `json:"grants"`
 	KeyHash       string      `json:"-"` // HMAC-SHA256 哈希，落库不下发
 	Secret        string      `json:"-"`
-	CreatedAt     time.Time   `json:"created_at"`
-	UpdatedAt     time.Time   `json:"updated_at"`
+	CreatedAt     Time   `json:"created_at"`
+	UpdatedAt     Time   `json:"updated_at"`
 }
 
 // bestGrant 返回与工具（GatewayName）命中的白名单条目中"最特异"的那条；
@@ -304,7 +303,7 @@ type TrafficSample struct {
 	Status    string    `json:"status"`
 	LatencyMS int64     `json:"latency_ms"`
 	Error     string    `json:"error,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
+	Timestamp Time `json:"timestamp"`
 }
 
 // TrendMinute 是单个维度在某个已闭合分钟桶的计数（进程内分钟桶落库的持久形态）。
@@ -350,5 +349,5 @@ type RuntimeConfig struct {
 	IPBlocklist []string `json:"ip_blocklist"`
 	// IPWhitelist 可信豁免名单：命中来源不受 IP 黑名单 / 自动封禁(IP) / 单 IP 级限流影响。
 	IPWhitelist []string  `json:"ip_whitelist"`
-	UpdatedAt   time.Time `json:"updated_at,omitempty"`
+	UpdatedAt   Time `json:"updated_at,omitempty"`
 }

@@ -113,12 +113,12 @@ func unmarshalJSON(text string, out any) error {
 	return json.Unmarshal([]byte(text), out)
 }
 
-// nowOr 返回给定时间，零值时回退到当前 UTC 时间。
-func nowOr(t time.Time) time.Time {
+// nowOr 返回给定时间，零值时回退到当前 UTC 时间（域内 model.Time）。
+func nowOr(t model.Time) model.Time {
 	if t.IsZero() {
-		return time.Now().UTC()
+		return model.Now()
 	}
-	return t.UTC()
+	return t
 }
 
 // isNoRows 判定是否为无记录错误。
@@ -152,7 +152,7 @@ func (s *Store) CreateServer(ctx context.Context, server *model.Server) error {
 		`INSERT INTO servers (id, name, description, enabled, health_status, created_at, updated_at)
 		 VALUES (?,?,?,?,?,?,?)`,
 		server.ID, server.Name, nullIfEmpty(server.Description), server.Enabled, server.HealthStatus,
-		fmtTimeUTC(server.CreatedAt), fmtTimeUTC(server.UpdatedAt),
+		fmtTimeUTC(server.CreatedAt.Time), fmtTimeUTC(server.UpdatedAt.Time),
 	)
 	if err != nil {
 		return fmt.Errorf("insert servers: %w", err)
@@ -204,7 +204,7 @@ func (s *Store) UpdateServer(ctx context.Context, server *model.Server) error {
 		 SET name=?, description=?, enabled=?, health_status=?, updated_at=?
 		 WHERE id=?`,
 		server.Name, nullIfEmpty(server.Description), server.Enabled, server.HealthStatus,
-		fmtTimeUTC(server.UpdatedAt), server.ID,
+		fmtTimeUTC(server.UpdatedAt.Time), server.ID,
 	)
 	if err != nil {
 		return err

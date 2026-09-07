@@ -182,7 +182,7 @@ func TestInstanceCRUDMySQL(t *testing.T) {
 
 func TestServerUpdateMissing(t *testing.T) {
 	store := openTest(t)
-	if err := store.UpdateServer(context.Background(), &model.Server{ID: "no-such-id", UpdatedAt: time.Now().UTC()}); err == nil {
+	if err := store.UpdateServer(context.Background(), &model.Server{ID: "no-such-id", UpdatedAt: model.Now()}); err == nil {
 		t.Fatal("更新不存在的 Server 应报错")
 	}
 }
@@ -461,7 +461,7 @@ func TestTrafficAppendRecent(t *testing.T) {
 			InstanceID: "inst-1",
 			Tool:       "mock.search", Status: "success",
 			ClientIP:  "198.51.100.7",
-			LatencyMS: int64(i + 1), Timestamp: now,
+			LatencyMS: int64(i + 1), Timestamp: model.T(now),
 		}); err != nil {
 			t.Fatalf("AppendTraffic: %v", err)
 		}

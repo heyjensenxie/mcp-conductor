@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
-	"time"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/errs"
 	"github.com/heyjensenxie/mcp-conductor/internal/model"
@@ -44,7 +43,7 @@ func (c *Control) handlePutRuntimeConfig(w http.ResponseWriter, r *http.Request)
 		writeGatewayError(w, r, http.StatusBadRequest, err)
 		return
 	}
-	cfg.UpdatedAt = time.Now().UTC()
+	cfg.UpdatedAt = model.Now()
 	if err := c.store.PutRuntimeConfig(r.Context(), &cfg); err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return

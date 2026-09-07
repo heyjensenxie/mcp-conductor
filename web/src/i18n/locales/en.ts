@@ -490,6 +490,7 @@ export default {
     actions: 'Actions',
     replay: 'Replay',
     noArgsHint: 'This call has no captured arguments to replay',
+    retentionHint: 'Call logs are kept for the latest 90 days (observability.traffic_retention_days; set 0 to disable cleanup)',
   },
   replay: {
     title: 'Replay call',

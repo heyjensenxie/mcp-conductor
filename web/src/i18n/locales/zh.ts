@@ -490,6 +490,7 @@ export default {
     actions: '操作',
     replay: '回放',
     noArgsHint: '该调用未捕获入参，无法回放',
+    retentionHint: '调用日志仅保留最近 90 天（observability.traffic_retention_days 可调；设为 0 则关闭自动清理）',
   },
   replay: {
     title: '调用回放',

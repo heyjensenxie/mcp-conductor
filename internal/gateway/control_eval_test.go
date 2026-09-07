@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/eval"
 	"github.com/heyjensenxie/mcp-conductor/internal/mcpclient"
@@ -51,7 +50,7 @@ func seedEvalControl(t *testing.T) (*Control, string, string, string) {
 
 	store := memory.New()
 	ctx := context.Background()
-	now := time.Now().UTC()
+	now := model.Now()
 	server := &model.Server{Name: "Mock", Enabled: true, HealthStatus: model.ServerStatusHealthy, CreatedAt: now, UpdatedAt: now}
 	if err := store.CreateServer(ctx, server); err != nil {
 		t.Fatal(err)

@@ -79,7 +79,7 @@ func (s *Store) PutRuntimeConfig(ctx context.Context, cfg *model.RuntimeConfig) 
 		   ip_blocklist=VALUES(ip_blocklist), ip_whitelist=VALUES(ip_whitelist), updated_at=VALUES(updated_at)`,
 		runtimeConfigID, rl.QPS, rl.Burst, rl.WindowSeconds, rl.IPQPS, rl.IPBurst, rl.GlobalQPS, rl.GlobalBurst,
 		ab.Enabled, ab.WindowSeconds, ab.MaxViolations, ab.BanSeconds,
-		nullIfEmpty(blocklistJSON), nullIfEmpty(whitelistJSON), fmtTimeUTC(nowOr(cfg.UpdatedAt)))
+		nullIfEmpty(blocklistJSON), nullIfEmpty(whitelistJSON), fmtTimeUTC(nowOr(cfg.UpdatedAt).Time))
 	if err != nil {
 		return fmt.Errorf("upsert runtime_config: %w", err)
 	}

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/model"
 )
@@ -33,7 +32,7 @@ func TestRecorderLogIncludesInstanceID(t *testing.T) {
 		Client:     "p",
 		Status:     "success",
 		LatencyMS:  3,
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  model.Now(),
 	})
 
 	out := buf.String()
@@ -58,7 +57,7 @@ func TestRecorderCaptureArgsGate(t *testing.T) {
 	args := map[string]any{"q": "hello"}
 	base := model.TrafficSample{
 		RequestID: "req-1", ServerID: "srv-1", Tool: "demo",
-		Status: "success", LatencyMS: 3, Timestamp: time.Now().UTC(), RequestArgs: args,
+		Status: "success", LatencyMS: 3, Timestamp: model.Now(), RequestArgs: args,
 	}
 
 	// 开启捕获 → 入参随行保留。

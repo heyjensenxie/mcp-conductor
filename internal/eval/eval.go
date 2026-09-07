@@ -163,7 +163,7 @@ func (s *Service) RunQuality(ctx context.Context, id, instanceID string) (*Repor
 		ToolChecks:        score.ToolChecks,
 		Runtime:           &score.Runtime,
 		PlatformOverrides: score.PlatformOverrides,
-		GeneratedAt:       time.Now().UTC(),
+		GeneratedAt:       model.Now(),
 	}, nil
 }
 

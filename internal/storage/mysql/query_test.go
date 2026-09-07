@@ -213,9 +213,9 @@ func TestQueryTrafficFilterAndPage(t *testing.T) {
 	base := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
 
 	samples := []model.TrafficSample{
-		{RequestID: m + "-1", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", ClientIP: "203.0.113.9", Status: "success", Timestamp: base},
-		{RequestID: m + "-2", ServerID: "s2", InstanceID: "i2", Tool: "beta.search", Client: "c2", Status: "upstream_error", Timestamp: base.Add(30 * time.Second)},
-		{RequestID: m + "-3", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", ClientIP: "203.0.113.9", Status: "success", Timestamp: base.Add(60 * time.Second)},
+		{RequestID: m + "-1", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", ClientIP: "203.0.113.9", Status: "success", Timestamp: model.T(base)},
+		{RequestID: m + "-2", ServerID: "s2", InstanceID: "i2", Tool: "beta.search", Client: "c2", Status: "upstream_error", Timestamp: model.T(base.Add(30 * time.Second))},
+		{RequestID: m + "-3", ServerID: "s1", InstanceID: "i1", Tool: "alpha.search", Client: "c1", ClientIP: "203.0.113.9", Status: "success", Timestamp: model.T(base.Add(60 * time.Second))},
 	}
 	for _, sample := range samples {
 		if err := store.AppendTraffic(ctx, sample); err != nil {

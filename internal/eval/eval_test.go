@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/mcpclient"
 	"github.com/heyjensenxie/mcp-conductor/internal/model"
@@ -45,7 +44,7 @@ func seedEvalFixture(t *testing.T, upstreamURL string) (*memory.Store, *model.Se
 	t.Helper()
 	store := memory.New()
 	ctx := context.Background()
-	now := time.Now().UTC()
+	now := model.Now()
 	server := &model.Server{Name: "Mock", Enabled: true, HealthStatus: model.ServerStatusUnknown, CreatedAt: now, UpdatedAt: now}
 	if err := store.CreateServer(ctx, server); err != nil {
 		t.Fatal(err)
@@ -189,7 +188,7 @@ func TestService_TargetsNonCallableInstance(t *testing.T) {
 	defer upstream.Close()
 	store, server, good := seedEvalFixture(t, upstream.URL)
 	ctx := context.Background()
-	now := time.Now().UTC()
+	now := model.Now()
 
 	disabled := &model.Instance{
 		ServerID: server.ID, Endpoint: upstream.URL, Transport: model.TransportStreamableHTTP,

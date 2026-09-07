@@ -232,8 +232,8 @@ func (s *Store) DeleteInstancesByServer(_ context.Context, serverID string) erro
 // sortInstances 按 (created_at, id) 稳定升序排列（"主实例"为升序首条）。
 func sortInstances(instances []model.Instance) {
 	sort.Slice(instances, func(i, j int) bool {
-		if !instances[i].CreatedAt.Equal(instances[j].CreatedAt) {
-			return instances[i].CreatedAt.Before(instances[j].CreatedAt)
+		if !instances[i].CreatedAt.Equal(instances[j].CreatedAt.Time) {
+			return instances[i].CreatedAt.Before(instances[j].CreatedAt.Time)
 		}
 		return instances[i].ID < instances[j].ID
 	})
@@ -356,7 +356,7 @@ func (s *Store) SetToolEnabled(_ context.Context, id string, enabled bool) error
 		return fmt.Errorf("tool %q 不存在", id)
 	}
 	tool.Enabled = enabled
-	tool.UpdatedAt = time.Now().UTC()
+	tool.UpdatedAt = model.Now()
 	s.tools[id] = tool
 	s.toolsByName[tool.GatewayName] = tool
 	return nil
@@ -387,7 +387,7 @@ func (s *Store) CreateRoute(_ context.Context, route *model.Route) error {
 	if route.ID == "" {
 		route.ID = s.nextID("route")
 	}
-	now := time.Now().UTC()
+	now := model.Now()
 	if route.CreatedAt.IsZero() {
 		route.CreatedAt = now
 	}
@@ -419,7 +419,7 @@ func (s *Store) UpdateRoute(_ context.Context, route *model.Route) error {
 	existing.ServerID = route.ServerID
 	existing.ToolNames = route.ToolNames
 	existing.Enabled = route.Enabled
-	existing.UpdatedAt = time.Now().UTC()
+	existing.UpdatedAt = model.Now()
 	s.routes[existing.ID] = existing
 	return nil
 }
@@ -453,7 +453,7 @@ func (s *Store) CreateCredential(_ context.Context, credential *model.Credential
 	if credential.ID == "" {
 		credential.ID = s.nextID("cred")
 	}
-	now := time.Now().UTC()
+	now := model.Now()
 	if credential.CreatedAt.IsZero() {
 		credential.CreatedAt = now
 	}
@@ -498,7 +498,7 @@ func (s *Store) UpdateCredential(_ context.Context, credential *model.Credential
 		existing.Value = credential.Value
 		existing.HasValue = true
 	}
-	existing.UpdatedAt = time.Now().UTC()
+	existing.UpdatedAt = model.Now()
 	s.credentials[existing.ID] = existing
 	return nil
 }
@@ -706,6 +706,26 @@ func (s *Store) GetTraffic(_ context.Context, id int64) (*model.TrafficSample, e
 		return &sample, nil
 	}
 	return nil, fmt.Errorf("traffic %d 不存在", id)
+}
+
+// DeleteTrafficBefore 删除 ts < before 的旧调用采样（保留天数收敛，见 app
+// runTrafficRetention）。limit>0 时单次最多删除 limit 行（供调用方分块，与
+// MySQL 端 LIMIT 语义对齐）；limit<=0 删除全部匹配。返回实际删除条数。
+func (s *Store) DeleteTrafficBefore(_ context.Context, before time.Time, limit int64) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// 用新切片而非原地覆盖：被删除样本（含 RequestArgs）不应残留在底层数组尾部阻止 GC。
+	out := make([]model.TrafficSample, 0, len(s.traffic))
+	var deleted int64
+	for _, sample := range s.traffic {
+		if !sample.Timestamp.Before(before) || (limit > 0 && deleted >= limit) {
+			out = append(out, sample)
+			continue
+		}
+		deleted++
+	}
+	s.traffic = out
+	return deleted, nil
 }
 
 // ---- TrendStore ----

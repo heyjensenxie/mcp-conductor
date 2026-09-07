@@ -84,7 +84,7 @@ func (s *Store) UpsertTool(ctx context.Context, tool *model.Tool) error {
 		tool.ID, tool.ServerID, tool.OriginalName, tool.GatewayName,
 		nullIfEmpty(tool.Description), schema, nullIfEmpty(tool.SourceDescription), sourceSchema,
 		tool.NameOverridden, tool.DescriptionOverridden, tool.InputSchemaOverridden, nullIfEmpty(tool.RiskLevel),
-		tool.Enabled, fmtTimeUTC(tool.CreatedAt), fmtTimeUTC(tool.UpdatedAt),
+		tool.Enabled, fmtTimeUTC(tool.CreatedAt.Time), fmtTimeUTC(tool.UpdatedAt.Time),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert tools: %w", err)
@@ -198,7 +198,7 @@ func (s *Store) UpdateTool(ctx context.Context, tool *model.Tool) error {
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE tools SET gateway_name=?, description=?, input_schema=?, name_overridden=?, description_overridden=?, input_schema_overridden=?, updated_at=? WHERE id=?`,
 		tool.GatewayName, nullIfEmpty(tool.Description), schema, tool.NameOverridden,
-		tool.DescriptionOverridden, tool.InputSchemaOverridden, fmtTimeUTC(tool.UpdatedAt), tool.ID)
+		tool.DescriptionOverridden, tool.InputSchemaOverridden, fmtTimeUTC(tool.UpdatedAt.Time), tool.ID)
 	if err != nil {
 		return fmt.Errorf("update tools: %w", err)
 	}
@@ -228,7 +228,7 @@ func (s *Store) CreateRoute(ctx context.Context, route *model.Route) error {
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO routes (id, name, server_id, tool_names, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`,
 		route.ID, route.Name, route.ServerID, names, route.Enabled,
-		fmtTimeUTC(route.CreatedAt), fmtTimeUTC(route.UpdatedAt),
+		fmtTimeUTC(route.CreatedAt.Time), fmtTimeUTC(route.UpdatedAt.Time),
 	)
 	if err != nil {
 		return fmt.Errorf("insert routes: %w", err)
@@ -286,7 +286,7 @@ func (s *Store) UpdateRoute(ctx context.Context, route *model.Route) error {
 	route.UpdatedAt = nowOr(route.UpdatedAt)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE routes SET name = ?, server_id = ?, tool_names = ?, enabled = ?, updated_at = ? WHERE id = ?`,
-		route.Name, route.ServerID, names, route.Enabled, fmtTimeUTC(route.UpdatedAt), route.ID)
+		route.Name, route.ServerID, names, route.Enabled, fmtTimeUTC(route.UpdatedAt.Time), route.ID)
 	if err != nil {
 		return fmt.Errorf("update routes: %w", err)
 	}
@@ -333,7 +333,7 @@ func (s *Store) CreateCredential(ctx context.Context, credential *model.Credenti
 		`INSERT INTO credentials (id, server_id, name, kind, header, encrypted_value, has_value, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`,
 		credential.ID, credential.ServerID, credential.Name, credential.Kind,
 		nullIfEmpty(credential.Header), nullIfEmpty(encrypted), credential.HasValue,
-		fmtTimeUTC(credential.CreatedAt), fmtTimeUTC(credential.UpdatedAt),
+		fmtTimeUTC(credential.CreatedAt.Time), fmtTimeUTC(credential.UpdatedAt.Time),
 	)
 	if err != nil {
 		return fmt.Errorf("insert credentials: %w", err)
@@ -578,7 +578,7 @@ func (s *Store) CreateAccessKey(ctx context.Context, key *model.AccessKey) error
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO access_keys (id, name, subject, enabled, key_hash, qps, burst, window_seconds, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		key.ID, key.Name, key.Subject, key.Enabled, key.KeyHash, key.QPS, key.Burst, key.WindowSeconds,
-		fmtTimeUTC(key.CreatedAt), fmtTimeUTC(key.UpdatedAt)); err != nil {
+		fmtTimeUTC(key.CreatedAt.Time), fmtTimeUTC(key.UpdatedAt.Time)); err != nil {
 		return fmt.Errorf("insert access_keys: %w", err)
 	}
 	if err := s.replaceGrants(ctx, tx, key.ID, key.Grants); err != nil {
@@ -619,7 +619,7 @@ func (s *Store) UpdateAccessKey(ctx context.Context, key *model.AccessKey) error
 	res, err := tx.ExecContext(ctx,
 		`UPDATE access_keys SET name=?, subject=?, enabled=?, key_hash=?, qps=?, burst=?, window_seconds=?, updated_at=? WHERE id=?`,
 		key.Name, key.Subject, key.Enabled, key.KeyHash, key.QPS, key.Burst, key.WindowSeconds,
-		fmtTimeUTC(key.UpdatedAt), key.ID)
+		fmtTimeUTC(key.UpdatedAt.Time), key.ID)
 	if err != nil {
 		return err
 	}
@@ -681,7 +681,7 @@ func (s *Store) AppendTraffic(ctx context.Context, sample model.TrafficSample) e
 		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		sample.RequestID, nullIfEmpty(sample.TraceID), nullIfEmpty(sample.ServerID),
 		nullIfEmpty(sample.InstanceID), sample.Tool, nullIfEmpty(sample.Client), nullIfEmpty(sample.ClientIP), sample.Status,
-		sample.LatencyMS, nullIfEmpty(sample.Error), nullIfEmpty(argsJSON), fmtTimeUTC(sample.Timestamp),
+		sample.LatencyMS, nullIfEmpty(sample.Error), nullIfEmpty(argsJSON), fmtTimeUTC(sample.Timestamp.Time),
 	)
 	if err != nil {
 		return fmt.Errorf("insert traffic_log: %w", err)
@@ -752,4 +752,24 @@ func (s *Store) GetTraffic(ctx context.Context, id int64) (*model.TrafficSample,
 	}
 	sample.HasArgs = requestArgs != ""
 	return &sample, nil
+}
+
+// DeleteTrafficBefore 删除 ts < before 的旧调用日志（保留天数收敛，见 app
+// runTrafficRetention）。limit>0 时单次最多删除 limit 行：MySQL 5.7 支持单表
+// DELETE ... LIMIT，限额内联为整数字面量（受控常量，非用户输入），避免对
+// prepared LIMIT ? 的兼容边界；返回实际删除行数，供调用方分块循环收敛。
+func (s *Store) DeleteTrafficBefore(ctx context.Context, before time.Time, limit int64) (int64, error) {
+	sql := `DELETE FROM traffic_log WHERE ts < '` + fmtTimeUTC(before) + `'`
+	if limit > 0 {
+		sql += ` LIMIT ` + fmt.Sprintf("%d", limit)
+	}
+	res, err := s.db.ExecContext(ctx, sql)
+	if err != nil {
+		return 0, fmt.Errorf("delete traffic_log before %v: %w", before, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete traffic_log rows affected: %w", err)
+	}
+	return n, nil
 }

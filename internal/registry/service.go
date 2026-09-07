@@ -13,7 +13,6 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/errs"
 	"github.com/heyjensenxie/mcp-conductor/internal/model"
@@ -110,7 +109,7 @@ func (s *Service) CreateServer(ctx context.Context, in CreateServerInput) (*mode
 	if err := validateArgsForTransport(transport, endpoint, in.Args); err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
+	now := model.Now()
 
 	// 注册即启用；后续通过 toggle 操作禁用。
 	server := &model.Server{
@@ -179,7 +178,7 @@ func (s *Service) ToggleServer(ctx context.Context, id string, enabled bool) (*m
 		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
 	}
 	server.Enabled = enabled
-	server.UpdatedAt = time.Now().UTC()
+	server.UpdatedAt = model.Now()
 	if !enabled {
 		server.HealthStatus = model.ServerStatusDisabled
 	} else if server.HealthStatus == model.ServerStatusDisabled {
@@ -227,7 +226,7 @@ func (s *Service) UpdateServer(ctx context.Context, id string, patch UpdateServe
 	if patch.Description != nil {
 		server.Description = strings.TrimSpace(*patch.Description)
 	}
-	server.UpdatedAt = time.Now().UTC()
+	server.UpdatedAt = model.Now()
 	if err := s.stores.UpdateServer(ctx, server); err != nil {
 		return nil, errs.Wrap(errs.CodeInternal, err, "更新 Server 失败")
 	}
@@ -251,7 +250,7 @@ func (s *Service) AddInstance(ctx context.Context, serverID string, endpoint str
 	if err := validateArgsForTransport(transport, endpoint, args); err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
+	now := model.Now()
 	instance := &model.Instance{
 		ServerID:     server.ID,
 		Endpoint:     endpoint,
@@ -318,7 +317,7 @@ func (s *Service) UpdateInstance(ctx context.Context, serverID, instanceID strin
 	}
 	// 端点/传输变更后旧健康结论失效，复位待探。
 	instance.HealthStatus = model.ServerStatusUnknown
-	instance.UpdatedAt = time.Now().UTC()
+	instance.UpdatedAt = model.Now()
 	if err := s.stores.UpdateInstance(ctx, instance); err != nil {
 		return nil, errs.Wrap(errs.CodeInternal, err, "更新实例失败")
 	}
@@ -338,7 +337,7 @@ func (s *Service) ToggleInstance(ctx context.Context, serverID, instanceID strin
 		return instance, nil
 	}
 	instance.Enabled = enabled
-	instance.UpdatedAt = time.Now().UTC()
+	instance.UpdatedAt = model.Now()
 	if err := s.stores.UpdateInstance(ctx, instance); err != nil {
 		return nil, errs.Wrap(errs.CodeInternal, err, "更新实例失败")
 	}
@@ -389,7 +388,7 @@ func (s *Service) TestInstance(ctx context.Context, serverID, instanceID string)
 	if probeErr != nil {
 		instance.HealthStatus = model.ServerStatusUnhealthy
 	}
-	instance.UpdatedAt = time.Now().UTC()
+	instance.UpdatedAt = model.Now()
 	if err := s.stores.UpdateInstance(ctx, instance); err != nil {
 		return nil, errs.Wrap(errs.CodeInternal, err, "更新实例失败")
 	}
@@ -508,7 +507,7 @@ func (s *Service) ToggleTool(ctx context.Context, id string, enabled bool) (*mod
 		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Tool 失败")
 	}
 	tool.Enabled = enabled
-	tool.UpdatedAt = time.Now().UTC()
+	tool.UpdatedAt = model.Now()
 	if err := s.stores.SetToolEnabled(ctx, id, enabled); err != nil {
 		return nil, errs.Wrap(errs.CodeInternal, err, "更新 Tool 失败")
 	}
@@ -559,7 +558,7 @@ func (s *Service) UpdateTool(ctx context.Context, id string, patch UpdateToolPat
 		tool.InputSchema = *patch.InputSchema
 		tool.InputSchemaOverridden = !reflect.DeepEqual(tool.InputSchema, tool.SourceInputSchema)
 	}
-	tool.UpdatedAt = time.Now().UTC()
+	tool.UpdatedAt = model.Now()
 	if err := s.stores.UpdateTool(ctx, tool); err != nil {
 		return nil, errs.Wrap(errs.CodeInternal, err, "更新 Tool 失败")
 	}
@@ -689,7 +688,7 @@ func (s *Service) syncAggregate(ctx context.Context, serverID string) error {
 		return nil
 	}
 	server.HealthStatus = agg
-	server.UpdatedAt = time.Now().UTC()
+	server.UpdatedAt = model.Now()
 	if err := s.stores.UpdateServer(ctx, server); err != nil {
 		return errs.Wrap(errs.CodeInternal, err, "更新 Server 聚合状态失败")
 	}
@@ -706,7 +705,7 @@ func (s *Service) markInstanceHealth(ctx context.Context, instanceID string, sta
 		return
 	}
 	instance.HealthStatus = status
-	instance.UpdatedAt = time.Now().UTC()
+	instance.UpdatedAt = model.Now()
 	if err := s.stores.UpdateInstance(ctx, instance); err != nil {
 		return
 	}
@@ -740,7 +739,7 @@ func (s *Service) discover(ctx context.Context, server model.Server) error {
 	}
 	s.markInstanceHealth(ctx, instance.ID, model.ServerStatusHealthy)
 
-	now := time.Now().UTC()
+	now := model.Now()
 	for _, dt := range tools {
 		gw := namespace + "." + dt.Name
 		// 保留既有启停状态：重新发现（rediscover / 注册 / test）不应清掉

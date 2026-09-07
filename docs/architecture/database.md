@@ -63,8 +63,10 @@ Server 多实例后，调用观测从 Server 粒度下沉到实例粒度：`traf
 过滤）。应用写入见 `internal/gateway/mcp.go`（metrics 另按 `instance:<sid>:<iid>`
 维度记录，供 `/api/metrics?scope=instance` 展示，纯进程内不落库）。
 
-> 注意：`traffic_log` 是**高增长流水且无自动保留/清理策略**（应用不 DELETE 该表），
-> 生产需自行规划归档/分区；管理面列表只读最近分页（`page_size` 上限 200）以限制扫描。
+> 注意：`traffic_log` 是**高增长流水**，app 每小时按 `observability.traffic_retention_days`
+> （默认 90，0=关闭自动清理）分块 `DELETE ts < cutoff` 收敛（`runTrafficRetention`，
+> 单批 `LIMIT 5000`、单轮上限 20 万行，后续轮次继续收敛）；已有 `idx_traffic_ts` 支撑该
+> 删除扫描。管理面列表只读最近分页（`page_size` 上限 200）以限制扫描。
 
 ## trend_minute 分钟桶趋势（0010 起）
 

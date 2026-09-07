@@ -31,6 +31,8 @@
       </a-space>
     </div>
 
+    <div class="hint">{{ t('traffic.retentionHint') }}</div>
+
     <a-table
       :data-source="logs"
       :columns="columns"

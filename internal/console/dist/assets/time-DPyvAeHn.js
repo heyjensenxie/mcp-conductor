@@ -1,0 +1,1 @@
+const t=/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/;function a(n){const e=t.exec(n);return e?new Date(Date.UTC(+e[1],+e[2]-1,+e[3],+e[4],+e[5],+e[6])):new Date(n)}function d(n){return a(n).getTime()}export{d as b,a as p};

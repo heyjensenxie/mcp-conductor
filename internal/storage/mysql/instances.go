@@ -48,7 +48,7 @@ func (s *Store) CreateInstance(ctx context.Context, instance *model.Instance) er
 		`INSERT INTO server_instances (id, server_id, endpoint, transport, args, enabled, health_status, created_at, updated_at)
 		 VALUES (?,?,?,?,?,?,?,?,?)`,
 		instance.ID, instance.ServerID, instance.Endpoint, instance.Transport, argsJSON,
-		instance.Enabled, instance.HealthStatus, fmtTimeUTC(instance.CreatedAt), fmtTimeUTC(instance.UpdatedAt),
+		instance.Enabled, instance.HealthStatus, fmtTimeUTC(instance.CreatedAt.Time), fmtTimeUTC(instance.UpdatedAt.Time),
 	)
 	if err != nil {
 		return fmt.Errorf("insert server_instances: %w", err)
@@ -117,7 +117,7 @@ func (s *Store) UpdateInstance(ctx context.Context, instance *model.Instance) er
 		 SET endpoint=?, transport=?, args=?, enabled=?, health_status=?, updated_at=?
 		 WHERE id=?`,
 		instance.Endpoint, instance.Transport, argsJSON, instance.Enabled, instance.HealthStatus,
-		fmtTimeUTC(instance.UpdatedAt), instance.ID,
+		fmtTimeUTC(instance.UpdatedAt.Time), instance.ID,
 	)
 	if err != nil {
 		return err
