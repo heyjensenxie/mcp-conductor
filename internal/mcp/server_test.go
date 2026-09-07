@@ -134,6 +134,24 @@ func TestHandler_UnknownMethod(t *testing.T) {
 	}
 }
 
+// TestHandler_Ping 覆盖 ping：客户端（Cherry Studio 等）按规范用 ping 探测连接
+// 健康，接收方必须立即回空 result（{}）而非“方法不支持”，否则客户端会判定连接
+// 不健康并主动回收。
+func TestHandler_Ping(t *testing.T) {
+	handler := NewHandler(fakeService{})
+	rec := doPost(t, handler, `{"jsonrpc":"2.0","id":7,"method":"ping"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ping 应返回 200，得到 %d", rec.Code)
+	}
+	resp := decodeResp(t, rec)
+	if resp["error"] != nil {
+		t.Fatalf("ping 不应报错: %v", resp["error"])
+	}
+	if _, ok := resp["result"].(map[string]any); !ok {
+		t.Fatalf("ping 应返回空 result 对象，得到 %#v", resp["result"])
+	}
+}
+
 func TestHandler_GetMethodNotAllowed(t *testing.T) {
 	handler := NewHandler(fakeService{})
 	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)

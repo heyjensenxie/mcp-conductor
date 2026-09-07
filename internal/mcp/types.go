@@ -1,6 +1,6 @@
 // Package mcp 实现 MCP（Model Context Protocol）协议类型与最小 JSON-RPC 2.0 传输。
 //
-// 范围：MVP 第一版只实现 initialize / tools/list / tools/call 三个方法，
+// 范围：MVP 第一版只实现 initialize / ping / tools/list / tools/call 四个方法，
 // 采用 streamable HTTP 的无状态模式（GET 返回 405 表示不支持 SSE，客户端
 // 走纯 POST JSON-RPC），符合规范且便于在 Gateway 链路中插入中间件与审计。
 package mcp

@@ -73,6 +73,10 @@ func (h *Handler) dispatch(ctx context.Context, method string, params json.RawMe
 	switch method {
 	case "initialize":
 		return h.handleInitialize(params)
+	case "ping":
+		// 规范要求：收到 ping 必须立即回空 result（{}），用于对端探测连接健康。
+		// 缺失会让客户端（如 Cherry Studio）判定连接不健康、加重主动回收连接。
+		return struct{}{}, nil
 	case "tools/list":
 		return h.handleListTools(ctx)
 	case "tools/call":
