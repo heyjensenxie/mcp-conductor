@@ -40,7 +40,7 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | 路由解析 + Round Robin 负载均衡（健康感知） | ✅ |
 | **Server 多实例**：实例 CRUD · 启停 · 单实例测试 · 列表/详情水合 | ✅ |
 | **tools/call 多实例健康感知 Round-Robin 真实生效**（拨测被选实例；故障/停用实例剔除） | ✅ **带失败反馈**：单实例调用失败（传输/超时，不含工具的 `isError` 业务失败）即短期冷却约 5s，不再把后续调用打向疑似故障实例，并触发该 Server 快速健康探活；探活确认健康后放回 |
-| Tool/Route 管理闭环 + Route 覆盖转发 | ✅ Tool 启停；Route 编辑·启停·删除；启用 Route 命中 `tool_names` 时把该工具调用目标 Server 覆盖为 route 指向的 Server（恒等即原样；目标不可调用返回 `route_error`） |
+| Tool/Route 管理闭环 + Route 覆盖转发 | ✅ Tool 启停；Route 编辑·启停·删除；启用 Route 命中 `tool_names` 时把该工具调用目标 Server 覆盖为 route 指向的 Server（恒等即原样；目标须已发现同名上游工具；同一工具仅允许一条启用覆盖规则） |
 | 鉴权（默认开启） | ✅ Console 用管理员账号（`admin`/`admin_password`）登录换会话；/api 接受会话或 `operator_token`；/mcp 数据面用 API Key（HMAC 哈希落库、按 key×工具白名单），与登录分离 |
 | Gateway→上游 Credential 管理（API Key / Static Token） | ✅ 值 AES-256-GCM 加密落库；经 `json:"-"` 不下发 API、不入日志；按 Server 注入上游请求头 |
 | 按 Key×Tool 白名单授权（跨 Server 聚合） | ✅ 每个 key 只可见/可调被授权工具（支持 `server.*`/`*` 通配）；每工具可配调用参数与请求头 |

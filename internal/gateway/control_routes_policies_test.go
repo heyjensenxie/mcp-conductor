@@ -67,6 +67,112 @@ func TestCreateRoute_RejectsUnknownTool(t *testing.T) {
 	}
 }
 
+// addRouteTarget 新建可作为 Route 目标的 Server，并按需登记其已发现的上游工具。
+func addRouteTarget(t *testing.T, store *memory.Store, name string, toolNames ...string) *model.Server {
+	t.Helper()
+	ctx := context.Background()
+	srv := &model.Server{Name: name, Enabled: true, HealthStatus: model.ServerStatusHealthy}
+	if err := store.CreateServer(ctx, srv); err != nil {
+		t.Fatalf("CreateServer(%s): %v", name, err)
+	}
+	for _, toolName := range toolNames {
+		if err := store.UpsertTool(ctx, &model.Tool{
+			ServerID:     srv.ID,
+			OriginalName: toolName,
+			GatewayName:  strings.ToLower(name) + "." + toolName,
+			Enabled:      true,
+		}); err != nil {
+			t.Fatalf("UpsertTool(%s.%s): %v", name, toolName, err)
+		}
+	}
+	return srv
+}
+
+func TestCreateRoute_RejectsTargetMissingSourceTool(t *testing.T) {
+	store, ctrl, _ := rpFixture(t)
+	target := addRouteTarget(t, store, "B")
+
+	rec := httptest.NewRecorder()
+	ctrl.handleCreateRoute(rec, httptest.NewRequest(http.MethodPost, "/api/routes",
+		strings.NewReader(`{"name":"to-b","server_id":"`+target.ID+`","tool_names":["a.search"]}`)))
+	if rec.Code != http.StatusBadRequest || envelopeCode(t, rec) != "invalid_argument" {
+		t.Fatalf("目标缺少同名工具应拒绝，状态 %d / %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateRoute_RejectsOverlappingEnabledTool(t *testing.T) {
+	store, ctrl, _ := rpFixture(t)
+	b := addRouteTarget(t, store, "B", "search")
+	c := addRouteTarget(t, store, "C", "search")
+
+	first := httptest.NewRecorder()
+	ctrl.handleCreateRoute(first, httptest.NewRequest(http.MethodPost, "/api/routes",
+		strings.NewReader(`{"name":"to-b","server_id":"`+b.ID+`","tool_names":["a.search"],"enabled":true}`)))
+	if first.Code != http.StatusCreated {
+		t.Fatalf("创建首条路由失败: %d / %s", first.Code, first.Body.String())
+	}
+
+	second := httptest.NewRecorder()
+	ctrl.handleCreateRoute(second, httptest.NewRequest(http.MethodPost, "/api/routes",
+		strings.NewReader(`{"name":"to-c","server_id":"`+c.ID+`","tool_names":["a.search"],"enabled":true}`)))
+	if second.Code != http.StatusBadRequest || envelopeCode(t, second) != "invalid_argument" {
+		t.Fatalf("重叠启用路由应拒绝，状态 %d / %s", second.Code, second.Body.String())
+	}
+}
+
+func TestToggleRoute_RejectsOverlappingEnabledTool(t *testing.T) {
+	store, ctrl, _ := rpFixture(t)
+	b := addRouteTarget(t, store, "B", "search")
+	c := addRouteTarget(t, store, "C", "search")
+	ctx := context.Background()
+	active := &model.Route{Name: "to-b", ServerID: b.ID, ToolNames: []string{"a.search"}, Enabled: true}
+	if err := store.CreateRoute(ctx, active); err != nil {
+		t.Fatal(err)
+	}
+	disabled := &model.Route{Name: "to-c", ServerID: c.ID, ToolNames: []string{"a.search"}, Enabled: false}
+	if err := store.CreateRoute(ctx, disabled); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/api/routes/"+disabled.ID+"/toggle", strings.NewReader(`{"enabled":true}`))
+	req.SetPathValue("id", disabled.ID)
+	ctrl.handleToggleRoute(rec, req)
+	if rec.Code != http.StatusBadRequest || envelopeCode(t, rec) != "invalid_argument" {
+		t.Fatalf("启用重叠路由应拒绝，状态 %d / %s", rec.Code, rec.Body.String())
+	}
+	updated, _ := store.GetRoute(ctx, disabled.ID)
+	if updated.Enabled {
+		t.Fatal("校验失败后路由不得被启用")
+	}
+}
+
+func TestUpdateRoute_RejectsOverlappingEnabledTool(t *testing.T) {
+	store, ctrl, _ := rpFixture(t)
+	b := addRouteTarget(t, store, "B", "search")
+	c := addRouteTarget(t, store, "C", "search")
+	ctx := context.Background()
+	if err := store.CreateRoute(ctx, &model.Route{Name: "to-b", ServerID: b.ID, ToolNames: []string{"a.search"}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	draft := &model.Route{Name: "to-c", ServerID: c.ID, ToolNames: []string{"a.search"}, Enabled: false}
+	if err := store.CreateRoute(ctx, draft); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/api/routes/"+draft.ID, strings.NewReader(`{"enabled":true}`))
+	req.SetPathValue("id", draft.ID)
+	ctrl.handleUpdateRoute(rec, req)
+	if rec.Code != http.StatusBadRequest || envelopeCode(t, rec) != "invalid_argument" {
+		t.Fatalf("更新为重叠启用路由应拒绝，状态 %d / %s", rec.Code, rec.Body.String())
+	}
+	updated, _ := store.GetRoute(ctx, draft.ID)
+	if updated.Enabled {
+		t.Fatal("更新校验失败后路由不得被启用")
+	}
+}
+
 func TestRouteCRUDLifecycle(t *testing.T) {
 	_, ctrl, srv := rpFixture(t)
 

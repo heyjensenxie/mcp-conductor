@@ -388,6 +388,12 @@ func (c *Control) handleToggleRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	route.Enabled = *body.Enabled
 	route.UpdatedAt = time.Now().UTC()
+	if route.Enabled {
+		if err := c.validateRoute(r.Context(), route); err != nil {
+			writeGatewayError(w, r, statusForError(err), err)
+			return
+		}
+	}
 	if err := c.store.UpdateRoute(r.Context(), route); err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
@@ -419,7 +425,9 @@ func (c *Control) handleListRoutes(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, RequestIDFrom(r.Context()), pageData[model.Route]{Items: routes, Total: total, Page: q.Page, PageSize: q.PageSize})
 }
 
-// validateRoute 校验路由引用完整性：name 非空、目标 Server 存在、tool_names 逐项已注册。
+// validateRoute 校验路由引用完整性。启用的覆盖路由还必须确保目标 Server 已发现
+// 同名上游工具，且不与另一条启用覆盖路由争抢同一 gateway 工具，避免请求期才
+// 暴露配置错误或依赖隐式创建时间决定优先级。
 func (c *Control) validateRoute(ctx context.Context, route *model.Route) error {
 	if strings.TrimSpace(route.Name) == "" {
 		return errs.New(errs.CodeInvalidArgument, "route.name 不能为空")
@@ -427,12 +435,49 @@ func (c *Control) validateRoute(ctx context.Context, route *model.Route) error {
 	if strings.TrimSpace(route.ServerID) == "" {
 		return errs.New(errs.CodeInvalidArgument, "route.server_id 不能为空")
 	}
-	if _, err := c.store.GetServer(ctx, route.ServerID); err != nil {
+	targetServer, err := c.store.GetServer(ctx, route.ServerID)
+	if err != nil {
 		return errs.Wrap(errs.CodeNotFound, err, "server %q 不存在", route.ServerID)
 	}
+	tools := make(map[string]*model.Tool, len(route.ToolNames))
 	for _, name := range route.ToolNames {
-		if _, err := c.store.GetToolByGatewayName(ctx, name); err != nil {
+		tool, err := c.store.GetToolByGatewayName(ctx, name)
+		if err != nil {
 			return errs.Wrap(errs.CodeNotFound, err, "工具 %q 未注册", name)
+		}
+		tools[name] = tool
+		// 禁用规则可作为尚未就绪的草稿保存；重新启用时才要求目标已发现
+		// 同名工具，避免把控制台配置错误延迟为上游 tools/call 失败。
+		if route.Enabled {
+			if _, err := c.store.GetToolBySource(ctx, route.ServerID, tool.OriginalName); err != nil {
+				return errs.New(errs.CodeInvalidArgument,
+					"路由目标 Server %q 未发现工具 %q", targetServer.Name, tool.OriginalName)
+			}
+		}
+	}
+	if !route.Enabled {
+		return nil
+	}
+	routes, err := c.store.ListRoutes(ctx)
+	if err != nil {
+		return errs.Wrap(errs.CodeInternal, err, "读取路由列表失败")
+	}
+	for _, existing := range routes {
+		if existing.ID == route.ID || !existing.Enabled {
+			continue
+		}
+		for _, name := range existing.ToolNames {
+			tool, overlaps := tools[name]
+			if !overlaps {
+				continue
+			}
+			// 指向工具原属 Server 的 Route 是恒等规则，Resolver 不会把它作为
+			// 覆盖目标，因此不产生真实的竞争。
+			if existing.ServerID == tool.ServerID {
+				continue
+			}
+			return errs.New(errs.CodeInvalidArgument,
+				"工具 %q 已被启用路由 %q 覆盖，请先禁用或修改该路由", name, existing.Name)
 		}
 	}
 	return nil
