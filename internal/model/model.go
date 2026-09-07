@@ -56,16 +56,21 @@ type Server struct {
 	UpdatedAt time.Time  `json:"updated_at"`
 }
 
-// Instance 代表一个逻辑 Server 下的具体上游实例（endpoint + transport 的承载单位）。
+// Instance 代表一个逻辑 Server 下的具体上游实例（endpoint+transport 的承载单位）。
 //
-// Enabled=false 表示实例被摘除/停用（不进探测、不进负载均衡），与 Server 级
-// Enabled 相互独立。HealthStatus 取值 unknown/healthy/unhealthy；disabled 只
-// 出现在 Server 聚合层（见 AggregateServerHealth）。
+// Endpoint 语义随传输而异：https/sse 为上游端点 URL，stdio 为可执行命令
+// （stdlib 子进程由 MCP 规范 stdio 传输定义，见 Args）。Enabled=false 表示
+// 实例被摘除/停用（不进探测、不进负载均衡），与 Server 级 Enabled 相互独立。
+// HealthStatus 取值 unknown/healthy/unhealthy；disabled 只出现在 Server 聚合层
+// （见 AggregateServerHealth）。
 type Instance struct {
-	ID           string       `json:"id"`
-	ServerID     string       `json:"server_id"`
-	Endpoint     string       `json:"endpoint"`
-	Transport    Transport    `json:"transport"`
+	ID        string    `json:"id"`
+	ServerID  string    `json:"server_id"`
+	Endpoint  string    `json:"endpoint"`
+	Transport Transport `json:"transport"`
+	// Args 是 stdio 传输的启动参数（提交给命令的可执行参数，不经过 shell）；
+	// 仅 transport=stdio 时使用，其余传输应保持为空。
+	Args         []string     `json:"args,omitempty"`
 	Enabled      bool         `json:"enabled"`
 	HealthStatus ServerStatus `json:"health_status"`
 	CreatedAt    time.Time    `json:"created_at"`

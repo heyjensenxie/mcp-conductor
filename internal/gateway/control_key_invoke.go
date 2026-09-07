@@ -81,6 +81,7 @@ func (g *MCPGateway) CallAsKey(ctx context.Context, key *model.AccessKey, name s
 		ServerID:  target.ServerID,
 		Endpoint:  target.Endpoint,
 		Transport: target.Transport,
+		Args:      target.Args,
 	}
 
 	// 4. 并发上限（与 CallTool 一致，诊断也受网关整体并发约束）。

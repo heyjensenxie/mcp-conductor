@@ -32,14 +32,15 @@ func (c *Control) handleListInstances(w http.ResponseWriter, r *http.Request) {
 // handleCreateInstance 为 Server 新增实例（启用的首个之外的候选端点）并触发即时探活。
 func (c *Control) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Endpoint  string `json:"endpoint"`
-		Transport string `json:"transport"`
+		Endpoint  string   `json:"endpoint"`
+		Transport string   `json:"transport"`
+		Args      []string `json:"args"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
 		return
 	}
-	instance, err := c.registry.AddInstance(r.Context(), r.PathValue("id"), body.Endpoint, model.Transport(body.Transport))
+	instance, err := c.registry.AddInstance(r.Context(), r.PathValue("id"), body.Endpoint, model.Transport(body.Transport), body.Args)
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return

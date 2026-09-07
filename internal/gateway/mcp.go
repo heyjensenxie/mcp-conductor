@@ -166,6 +166,7 @@ func (g *MCPGateway) CallTool(ctx context.Context, name string, arguments map[st
 		ServerID:  target.ServerID,
 		Endpoint:  target.Endpoint,
 		Transport: target.Transport,
+		Args:      target.Args,
 	}
 
 	// 4. 并发上限（可选）

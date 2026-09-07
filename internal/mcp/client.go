@@ -12,6 +12,16 @@ import (
 	"time"
 )
 
+// Client 是上游 MCP Server 的最小客户端抽象：streamable HTTP 与 stdio 两种
+// 传输共享相同的方法面，由 mcpclient.Adapter 按实例传输类型选择实现。
+type Client interface {
+	Initialize(ctx context.Context) (*InitializeResult, error)
+	ListTools(ctx context.Context) ([]Tool, error)
+	CallTool(ctx context.Context, name string, arguments map[string]any) (*CallToolResult, error)
+	// Close 释放传输资源：HTTP 无状态实现为 no-op，stdio 实现终止子进程。
+	Close() error
+}
+
 // RPCErrorResponse 表示一次 JSON-RPC error 响应：上游可达且已应答，仅本次调用被
 // 拒绝（参数校验、业务错误等），区别于传输层/实例故障。上层据此不触发实例级
 // 负载均衡冷却。
@@ -84,6 +94,9 @@ func NewHTTPClient(endpoint string, opts ...Option) *HTTPClient {
 	}
 	return c
 }
+
+// Close 实现 Client 接口：HTTP 无状态客户端无需释放资源。
+func (c *HTTPClient) Close() error { return nil }
 
 // Initialize 执行 MCP 握手并返回服务器信息。
 func (c *HTTPClient) Initialize(ctx context.Context) (*InitializeResult, error) {

@@ -9,18 +9,27 @@ import (
 
 // ---- InstanceStore（MySQL 实现）----
 //
-// server_instances 是 Server 具体上游实例的载体（endpoint/transport/健康），
-// 通过 server_id 外键挂到 servers；Server 删除由 FK ON DELETE CASCADE 级联清理。
+// server_instances 是 Server 具体上游实例的载体（endpoint/transport/健康/stdio
+// 参数），通过 server_id 外键挂到 servers；Server 删除由 FK ON DELETE CASCADE
+// 级联清理。args 为 stdio 启动参数（JSON 数组 TEXT），https/sse 实例为空。
 
-// instanceColumns 与 scanInstance 对应的投影列（省略 NULL 化，字段均 NOT NULL）。
-const instanceColumns = `id, server_id, endpoint, transport, enabled, health_status, created_at, updated_at`
+// instanceColumns 与 scanInstance 对应的投影列。args 可空，SELECT 用 COALESCE
+// 归一为空串后由 scanInstance 反序列化。
+const instanceColumns = `id, server_id, endpoint, transport, COALESCE(args,''), enabled, health_status, created_at, updated_at`
 
-// scanInstance 由一行查询结果扫描实例。
+// scanInstance 由一行查询结果扫描实例；args 文本反序列化为参数字符串数组。
 func scanInstance(scan func(dest ...any) error) (model.Instance, error) {
 	var inst model.Instance
-	err := scan(&inst.ID, &inst.ServerID, &inst.Endpoint, &inst.Transport,
+	var argsJSON string
+	err := scan(&inst.ID, &inst.ServerID, &inst.Endpoint, &inst.Transport, &argsJSON,
 		&inst.Enabled, &inst.HealthStatus, &inst.CreatedAt, &inst.UpdatedAt)
-	return inst, err
+	if err != nil {
+		return inst, err
+	}
+	if err := unmarshalJSON(argsJSON, &inst.Args); err != nil {
+		return inst, fmt.Errorf("解析实例 args 失败: %w", err)
+	}
+	return inst, nil
 }
 
 // CreateInstance 新增实例；id 为空时自动生成。
@@ -31,10 +40,14 @@ func (s *Store) CreateInstance(ctx context.Context, instance *model.Instance) er
 	now := nowOr(instance.CreatedAt)
 	instance.CreatedAt = now
 	instance.UpdatedAt = nowOr(instance.UpdatedAt)
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO server_instances (id, server_id, endpoint, transport, enabled, health_status, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,?,?)`,
-		instance.ID, instance.ServerID, instance.Endpoint, instance.Transport,
+	argsJSON, err := marshalJSON(instance.Args)
+	if err != nil {
+		return fmt.Errorf("marshal instance args: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO server_instances (id, server_id, endpoint, transport, args, enabled, health_status, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		instance.ID, instance.ServerID, instance.Endpoint, instance.Transport, argsJSON,
 		instance.Enabled, instance.HealthStatus, fmtTimeUTC(instance.CreatedAt), fmtTimeUTC(instance.UpdatedAt),
 	)
 	if err != nil {
@@ -95,11 +108,15 @@ func collectInstances(rows interface {
 // UpdateInstance 覆盖更新实例（server_id 视为归属不变，不在本处迁移）。
 func (s *Store) UpdateInstance(ctx context.Context, instance *model.Instance) error {
 	instance.UpdatedAt = nowOr(instance.UpdatedAt)
+	argsJSON, err := marshalJSON(instance.Args)
+	if err != nil {
+		return fmt.Errorf("marshal instance args: %w", err)
+	}
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE server_instances
-		 SET endpoint=?, transport=?, enabled=?, health_status=?, updated_at=?
+		 SET endpoint=?, transport=?, args=?, enabled=?, health_status=?, updated_at=?
 		 WHERE id=?`,
-		instance.Endpoint, instance.Transport, instance.Enabled, instance.HealthStatus,
+		instance.Endpoint, instance.Transport, argsJSON, instance.Enabled, instance.HealthStatus,
 		fmtTimeUTC(instance.UpdatedAt), instance.ID,
 	)
 	if err != nil {

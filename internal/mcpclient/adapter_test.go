@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/errs"
+	"github.com/heyjensenxie/mcp-conductor/internal/mcp"
 	"github.com/heyjensenxie/mcp-conductor/internal/model"
 	"github.com/heyjensenxie/mcp-conductor/internal/registry"
 )
@@ -24,6 +26,94 @@ func instanceFor(endpoint string) model.Instance {
 		Enabled:      true,
 		HealthStatus: model.ServerStatusUnknown,
 	}
+}
+
+// stdioInstanceFor 构造一个挂在 "srv-1" 下的 stdio 实例（command 在测试里填充）。
+
+// TestAdapter_StdioDiscoverAndCheck 验证 stdio 实例经 Adapter 走子进程传输完成
+// 发现与健康探测（helper-process 模式，与 internal/mcp 测试共用 helper 测试名）。
+func TestAdapter_StdioDiscoverAndCheck(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	instance := model.Instance{
+		ServerID:     "srv-1",
+		Endpoint:     self,
+		Transport:    model.TransportStdio,
+		Args:         []string{"-test.run=TestStdioServerHelperProc"},
+		Enabled:      true,
+		HealthStatus: model.ServerStatusUnknown,
+	}
+	server := model.Server{ID: "srv-1", Name: "MockStdio"}
+	ctx := context.Background()
+
+	// 注入 helper 标记 env，使被 Spawn 的子进程进入 helper 分支而不是等待 stdin。
+	adapter := New().WithStdioEnv("MCP_HELPER_STDIO=1")
+
+	status, err := adapter.Check(ctx, server, instance)
+	if err != nil {
+		t.Fatalf("stdio Check 失败: %v", err)
+	}
+	if status != model.ServerStatusHealthy {
+		t.Fatalf("stdio 健康探测应返回 healthy，得到 %s", status)
+	}
+	tools, err := adapter.Discover(ctx, server, instance)
+	if err != nil {
+		t.Fatalf("stdio Discover 失败: %v", err)
+	}
+	if len(tools) != 2 || tools[0].Name != "search" {
+		t.Fatalf("stdio Discover 结果错误: %+v", tools)
+	}
+}
+
+// TestAdapter_StdioCall 验证 stdio 实例经 Adapter 完成工具调用。
+func TestAdapter_StdioCall(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	instance := model.Instance{
+		ServerID:     "srv-1",
+		Endpoint:     self,
+		Transport:    model.TransportStdio,
+		Args:         []string{"-test.run=TestStdioServerHelperProc"},
+		Enabled:      true,
+		HealthStatus: model.ServerStatusUnknown,
+	}
+	adapter := New().WithStdioEnv("MCP_HELPER_STDIO=1")
+	contents, err := adapter.Call(context.Background(), model.Server{ID: "srv-1"}, instance,
+		"search", map[string]any{"q": "hi"}, nil)
+	if err != nil {
+		t.Fatalf("stdio Call 失败: %v", err)
+	}
+	if len(contents) == 0 || contents[0].Text == "" {
+		t.Fatalf("stdio Call 内容为空: %+v", contents)
+	}
+}
+
+// TestStdioServerHelperProc 是同一测试二进制里被子进程运行的最小 stdio MCP Server，
+// 供 mcpclient 的 stdio 测试使用（父进程因未设 MCP_HELPER_STDIO 直接跳过）。
+func TestStdioServerHelperProc(t *testing.T) {
+	if os.Getenv("MCP_HELPER_STDIO") != "1" {
+		t.Skip("helper process: 仅当作为子进程运行时执行")
+	}
+	if err := mcp.ServeStdio(context.Background(), stdioHelperService{}, os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, "helper serve error:", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+// stdioHelperService 提供与演示上游一致的回显工具。
+type stdioHelperService struct{}
+
+func (stdioHelperService) ListTools(_ context.Context) ([]mcp.Tool, error) {
+	return []mcp.Tool{{Name: "search", Description: "查询"}, {Name: "detail", Description: "详情"}}, nil
+}
+
+func (stdioHelperService) CallTool(_ context.Context, name string, arguments map[string]any) (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{Content: []mcp.ContentBlock{{Type: "text", Text: "echo: " + name}}}, nil
 }
 
 // mockMCPServer 实现 initialize / tools/list / tools/call 的最小模拟上游，

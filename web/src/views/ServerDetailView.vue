@@ -235,8 +235,8 @@
       @ok="saveInstance"
     >
       <a-form :label-col="{ span: 6 }" :wrapper-col="{ span: 18 }">
-        <a-form-item :label="t('serverDetail.instanceEndpoint')" :required="true">
-          <a-input v-model:value="instForm.endpoint" :placeholder="t('servers.endpointPlaceholder')" />
+        <a-form-item :label="isInstStdio ? t('serverDetail.instanceCommand') : t('serverDetail.instanceEndpoint')" :required="true">
+          <a-input v-model:value="instForm.endpoint" :placeholder="isInstStdio ? t('servers.commandPlaceholder') : t('servers.endpointPlaceholder')" />
         </a-form-item>
         <a-form-item :label="t('serverDetail.instanceTransport')">
           <a-select v-model:value="instForm.transport">
@@ -244,6 +244,10 @@
             <a-select-option value="sse">{{ t('servers.transportSSE') }}</a-select-option>
             <a-select-option value="stdio">{{ t('servers.transportStdio') }}</a-select-option>
           </a-select>
+        </a-form-item>
+        <a-form-item v-if="isInstStdio" :label="t('servers.args')">
+          <a-input v-model:value="instForm.args" :placeholder="t('servers.argsPlaceholder')" />
+          <span class="inst-args-hint">{{ t('servers.stdioHint') }}</span>
         </a-form-item>
       </a-form>
     </a-modal>
@@ -367,7 +371,7 @@ const testingInst = ref('')
 // 实例维指标（键 = instance:<sid>:<iid> → 剥离前缀，按实例 id 取请求量/延迟）。
 const instanceMetrics = ref<Record<string, MetricSnapshot>>({})
 const instanceColumns = computed<any[]>(() => [
-  { title: t('serverDetail.endpoint'), key: 'endpoint', dataIndex: 'endpoint', ellipsis: true },
+  { title: t('serverDetail.endpoint'), key: 'endpoint', dataIndex: 'endpoint_display', ellipsis: true },
   { title: t('serverDetail.transport'), key: 'transport', dataIndex: 'transport', width: 100 },
   { title: t('servers.health'), key: 'health_status', dataIndex: 'health_status', width: 105 },
   { title: t('common.status'), key: 'enabled', dataIndex: 'enabled', width: 85 },
@@ -378,10 +382,13 @@ const instanceColumns = computed<any[]>(() => [
   { title: t('common.actions'), key: 'actions', width: 265 },
 ])
 // 实例行 + 该实例的实时指标（为空显示 '-'；bodyCell 里格式化）。
+// 端点展示：stdio 实例附启动参数（command arg1 arg2），便于辨识子进程配置。
 const instanceRowsWithMetrics = computed<any[]>(() =>
   instanceRows.value.map((r) => {
     const m = instanceMetrics.value[r.id]
-    return { ...r, m_requests: m?.totals ?? '-', m_p95: m?.p95 ?? '-', m_errors: m?.errors ?? '-' }
+    const endpoint =
+      r.transport === 'stdio' && r.args?.length ? `${r.endpoint} ${r.args.join(' ')}` : r.endpoint
+    return { ...r, endpoint_display: endpoint, m_requests: m?.totals ?? '-', m_p95: m?.p95 ?? '-', m_errors: m?.errors ?? '-' }
   }),
 )
 const instanceCount = computed(() => instanceRows.value.length)
@@ -389,7 +396,22 @@ const instanceCount = computed(() => instanceRows.value.length)
 const instVisible = ref(false)
 const instSaving = ref(false)
 const instEditId = ref('')
-const instForm = reactive<{ endpoint: string; transport: Transport }>({ endpoint: '', transport: 'https' })
+const instForm = reactive<{ endpoint: string; transport: Transport; args: string }>({ endpoint: '', transport: 'https', args: '' })
+// stdio 传输：endpoint 承载可执行命令并展示启动参数输入框。
+const isInstStdio = computed(() => instForm.transport === 'stdio')
+
+// 解析 stdio 启动参数（JSON 数组文本）；非法或非字符串数组时返回 null 供拦截。
+function parseStdioArgs(text: string): string[] | null {
+  const trimmed = text.trim()
+  if (!trimmed) return []
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (!Array.isArray(parsed) || parsed.some((a) => typeof a !== 'string')) return null
+    return parsed as string[]
+  } catch {
+    return null
+  }
+}
 
 async function loadInstances() {
   instancesLoading.value = true
@@ -422,10 +444,14 @@ async function loadInstanceMetrics() {
 function openInstance(record?: ServerInstance) {
   if (record) {
     instEditId.value = record.id
-    Object.assign(instForm, { endpoint: record.endpoint, transport: record.transport })
+    Object.assign(instForm, {
+      endpoint: record.endpoint,
+      transport: record.transport,
+      args: record.args?.length ? JSON.stringify(record.args) : '',
+    })
   } else {
     instEditId.value = ''
-    Object.assign(instForm, { endpoint: '', transport: 'https' })
+    Object.assign(instForm, { endpoint: '', transport: 'https', args: '' })
   }
   instVisible.value = true
 }
@@ -435,12 +461,18 @@ async function saveInstance() {
     message.warning(t('servers.fillRequired'))
     return
   }
+  const args = isInstStdio.value ? parseStdioArgs(instForm.args) : undefined
+  if (args === null) {
+    message.warning(t('servers.argsInvalid'))
+    return
+  }
   instSaving.value = true
   try {
+    const payload = { endpoint: instForm.endpoint, transport: instForm.transport, args }
     if (instEditId.value) {
-      await updateServerInstance(id.value, instEditId.value, { ...instForm })
+      await updateServerInstance(id.value, instEditId.value, payload)
     } else {
-      await createServerInstance(id.value, { ...instForm })
+      await createServerInstance(id.value, payload)
     }
     message.success(t('serverDetail.instanceSaved'))
     instVisible.value = false
@@ -837,6 +869,13 @@ const healthColor = (s?: string) => (s === 'healthy' ? 'green' : s === 'unhealth
   margin-left: 8px;
   color: #999;
   font-size: 12px;
+}
+.inst-args-hint {
+  display: block;
+  color: #999;
+  font-size: 12px;
+  line-height: 18px;
+  margin-top: 4px;
 }
 .muted {
   color: var(--mc-ink-3);

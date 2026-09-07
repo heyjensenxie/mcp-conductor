@@ -28,6 +28,7 @@ type Target struct {
 	ServerID  string
 	Endpoint  string
 	Transport model.Transport
+	Args      []string // stdio 传输下为启动参数
 	Weight    int
 	Healthy   bool
 }

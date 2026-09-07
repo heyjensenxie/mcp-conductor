@@ -48,10 +48,11 @@
 Server 多实例化后，具体上游端点与健康由 `server_instances` 承载；`servers` 表降级为逻辑实体：
 
 - `servers`：`id/name/description/enabled/health_status/created_at/updated_at`。`endpoint/transport/version` 列自 0008 起**应用不再读写**（0008 回填后留作安全降级与观测留档，单一事实源是 `server_instances`）。精度说明：`endpoint` 自 0008 起改可空；`transport` 仍为 `NOT NULL DEFAULT 'https'`；`version` 自 0001 起即可空。
-- `server_instances`：`id/server_id/endpoint/transport/enabled/health_status/created_at/updated_at`；`server_id` 外键 `ON DELETE CASCADE` 关联 `servers(id)`。字符串 id（新建用 `inst-` 前缀；0008 回填复用 server id），`enabled` 为实例级启停，`health_status ∈ {unknown,healthy,unhealthy}`。
+- `server_instances`：`id/server_id/endpoint/transport/args/enabled/health_status/created_at/updated_at`；`server_id` 外键 `ON DELETE CASCADE` 关联 `servers(id)`。字符串 id（新建用 `inst-` 前缀；0008 回填复用 server id），`enabled` 为实例级启停，`health_status ∈ {unknown,healthy,unhealthy}`。自 0018 起新增可空 `args TEXT`（stdio 启动参数，JSON 字符串数组，应用层解析；https/sse 实例为空）。
+- stdio 实例：`transport='stdio'` 时 `endpoint` 承载可执行命令，`args` 承载启动参数（不经过 shell）；无 HTTP 头部，Header 凭据注入不适用。
 - 实例列表稳定序：`ORDER BY created_at, id`（首条即"主实例"，用于列表展示与默认发现拨测）。
 - Server 删除级联删除实例（MySQL 外键）；`registry`/memory 侧显式 `DeleteInstancesByServer` 对齐。
-- MySQL 集成测试运行前需已应用 0001..0017（`make db-migrate`）。
+- MySQL 集成测试运行前需已应用 0001..0018（`make db-migrate`）。
 
 ## traffic_log.instance_id（0009 起）
 

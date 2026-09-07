@@ -50,6 +50,7 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | **长程分钟桶趋势（持久化）** | ✅ 已闭合分钟桶每 60s 幂等落库 `trend_minute`（0001..0010）：跨重启可回溯、`?minutes` 可到保留天数（默认 7 天，`trend_retention_days`），支持 `?scope=instance&server_id=` 与 `?dim_key=` 单维聚焦；Console 观测页可切 30m~7d 窗口与维度 |
 | Traffic 调用筛选 + Observability | ✅ 日志按 Server/实例/状态/关键词/时间分页筛选（page/page_size，上限 200）；指标按 Tool/Server/实例查看；趋势为真时序分钟桶（默认近 30 分钟折线，可拉长窗） |
 | **Traffic Replay（按捕获入参回放）** | ✅ `record_args=true` 时捕获 tools/call **入参**（响应永不落库）到调用日志；Traffic 行「回放」把该调用重发到其命中的上游实例复现（直连实例、诊断流量不写 metrics/调用日志） |
+| **stdio 上游接入（本地子进程）** | ✅ 实例 `transport=stdio` 以子进程方式接入本地 MCP Server：`endpoint`=可执行命令 + `args`=启动参数（JSON 数组，不经过 shell）；按官方 stdio 规范换行 JSON-RPC over stdin/stdout，初始化生命周期（initialize→initialized）完整；spawn-per-request 每次操作新建并回收进程；stdio 无 HTTP 头部，Header 凭据注入仅适用 https/sse |
 | Vue3 Console（Ant Design Vue + ECharts） | ✅ 构建后嵌入二进制 |
 | MCP Manual Test（Console 内联） | ✅ |
 | MCP 评测：Server 质量分（工具 Schema/描述/命名 + 协议 + 运行时指标）+ 回归用例集 | ✅ 无 LLM；即时计算不落库；现场拨测实例；quality/suite/meta 可 `?instance_id=` 定向某实例（缺省首个可拨测） |
@@ -119,11 +120,11 @@ Compose 只构建/运行应用本身，**不再启动 MySQL/Redis 容器**——
 
 ```bash
 CONDUCTOR_DB_PASSWORD=<你的本地 MySQL 密码> docker compose up --build
-# Console:  http://localhost:8080
-# MCP 端点: http://localhost:8080/mcp
+# Console:  http://localhost:18110
+# MCP 端点: http://localhost:18110/mcp
 ```
 
-- 数据库：默认 `mysql`，连宿主机 `host.docker.internal:3306` 的 `conductor` 库（库表需先执行 `migrations/0001..0017`，宿主机已有 MySQL 时用 `CONDUCTOR_DATABASE_DSN='root:***@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate`）。账号可用 `CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME` 覆盖；`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。
+- 数据库：默认 `mysql`，连宿主机 `host.docker.internal:3306` 的 `conductor` 库（库表需先执行 `migrations/0001..0018`，宿主机已有 MySQL 时用 `CONDUCTOR_DATABASE_DSN='root:***@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate`）。账号可用 `CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME` 覆盖；`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。
 - Redis：仅当同时开启 `CONDUCTOR_REDIS_ENABLED=true` 与 `CONDUCTOR_RATELIMIT_ENABLED=true` 时才用于分布式 per-key 限流，默认关闭（本机 Redis 若只监听 `127.0.0.1` 需放开监听才能被容器访问）。
 
 ### 方式二：一键构建（带真实 Console 的单二进制，推荐）
@@ -133,14 +134,14 @@ Console 前端是经 `go:embed` 在编译期打包进二进制的，**只改代�
 ```bash
 make web-install        # npm --prefix web install（首次）
 make build              # 构建前端并嵌入 → bin/mcp-conductor
-./bin/mcp-conductor     # 访问 :8080 即用真实 Console
+./bin/mcp-conductor     # 访问 :18110 即用真实 Console
 ```
 
 > **鉴权默认开启**：首次启动会在控制台打印一次「引导管理员账号」（用户名 + 密码），Console 用它登录；建议先固化：
 > `export CONDUCTOR_AUTH_ADMIN_USERNAME=admin CONDUCTOR_AUTH_ADMIN_PASSWORD=<你的密码> CONDUCTOR_AUTH_OPERATOR_TOKEN=<程序化管理令牌> CONDUCTOR_AUTH_TOKEN_SECRET=$(openssl rand -hex 32)` 后再启动。
 > 未固化时重启会重新生成并打印新密码（旧密码随即失效）。/mcp 数据面鉴权与登录分离，使用 API Key。
 
-> 仅调试后端、不需要 UI 时可 `make build-backend`（或 `go run ./cmd/conductor`）——此时 :8080 打开的是占位 Console（提示先构建前端），并非最新界面。
+> 仅调试后端、不需要 UI 时可 `make build-backend`（或 `go run ./cmd/conductor`）——此时 :18110 打开的是占位 Console（提示先构建前端），并非最新界面。
 
 开发期前端热更新：另开终端 `make web-dev`（`:5173`，已代理 `/api` 与 `/mcp` 到后端），浏览器访问 `http://localhost:5173` 看最新界面。
 
@@ -154,20 +155,34 @@ export OPERATOR=<程序化管理令牌 CONDUCTOR_AUTH_OPERATOR_TOKEN>
 go run ./examples/mock-mcp        # :9000/mcp
 
 # 2. 注册该 Server（名称决定对外命名空间）
-curl -s -X POST http://localhost:8080/api/servers \
+curl -s -X POST http://localhost:18110/api/servers \
   -H 'Content-Type: application/json' -H "X-Api-Key: $OPERATOR" \
   -d '{"name":"Mock","endpoint":"http://localhost:9000/mcp","transport":"https"}'
 
 # 3. 聚合后的工具（gateway_name = mock.search / mock.detail）
-curl -s http://localhost:8080/api/tools -H "X-Api-Key: $OPERATOR"
+curl -s http://localhost:18110/api/tools -H "X-Api-Key: $OPERATOR"
 
 # 4. 通过统一端点调用，自动路由回上游
-curl -s -X POST http://localhost:8080/mcp -H 'Content-Type: application/json' -H "X-Api-Key: $OPERATOR" \
+curl -s -X POST http://localhost:18110/mcp -H 'Content-Type: application/json' -H "X-Api-Key: $OPERATOR" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mock.search","arguments":{"q":"policy"}}}'
 # → {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"[search] 收到参数: map[q:policy]"}]}}
 ```
 
-浏览器访问 `http://localhost:8080` 会先进入 `/login`，用管理员账号（默认 `admin` + `admin_password`）登录（`POST /api/auth/login` 换会话）；也可在 Settings 录入程序化管理令牌。
+同样的上游也可以 **stdio（子进程）** 方式接入：
+
+```bash
+# 先把 mock 构建成可执行文件（或直接用 go run，但 -stdio 模式需独立命令）
+go build -o /tmp/mock-mcp ./examples/mock-mcp
+
+# 注册 stdio 实例：endpoint = 启动命令，args = 启动参数
+curl -s -X POST http://localhost:18110/api/servers \
+  -H 'Content-Type: application/json' -H "X-Api-Key: $OPERATOR" \
+  -d '{"name":"MockStdio","endpoint":"/tmp/mock-mcp","transport":"stdio","args":["-stdio"]}'
+# 查询工具目录、tools/call 的调用方式与 HTTP 一致（gateway_name = mockstdio.search / mockstdio.detail）。
+```
+stdio 上游同样自动发现 Tools、健康巡检（initialize 握手）与 `/mcp` 调用路由，无需额外配置。
+
+浏览器访问 `http://localhost:18110` 会先进入 `/login`，用管理员账号（默认 `admin` + `admin_password`）登录（`POST /api/auth/login` 换会话）；也可在 Settings 录入程序化管理令牌。
 
 ## API Reference
 
@@ -201,7 +216,7 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 | `DELETE /api/servers/{id}` | 删除（级联删实例/Tools/凭证） |
 | `POST /api/servers/{id}/test` | 测试连接（拨主实例）并重新发现 Tools |
 | `POST /api/servers/{id}/rediscover/plan` | 预演重新发现：只读比对并返回将新增/变更/删除的工具清单（不落库） |
-| `GET/POST /api/servers/{id}/instances` | 实例列表 / 新增实例（endpoint/transport） |
+| `GET/POST /api/servers/{id}/instances` | 实例列表 / 新增实例（endpoint/transport；stdio 加 `args` 启动参数） |
 | `PATCH .../instances/{iid}` · `.../toggle` · `.../test` · `DELETE .../instances/{iid}` | 实例编辑 · 启停 · 单实例测试 · 删除（Server 至少保留一个实例） |
 | `GET /api/servers/{id}/tools` | Server 下的工具目录 |
 | `POST /api/servers/{id}/credentials` · `GET .../credentials` · `PATCH .../credentials/{credId}` · `DELETE .../credentials/{credId}` | Gateway→上游凭据 CRUD（值加密落库、不下发） |
@@ -229,6 +244,13 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 > 数组（`instances[0]` 为主实例，用于列表展示与默认发现拨测）。注册入参仍为
 > `{name, description, endpoint, transport}`，其中 endpoint/transport 创建该
 > Server 的 seed 实例。
+>
+> **stdio 上游**：实例 `transport=stdio` 时以子进程方式接入本地 MCP Server——
+> `endpoint` 字段承载可执行命令、`args` 承载启动参数（字符串 JSON 数组，不经过
+> shell，例如 `{"transport":"stdio","endpoint":"./bin/mock-mcp","args":["-stdio"]}`）。
+> 采用 spawn-per-request：每次探测/发现/调用由网关新建并回收进程（有启动开销，
+> Node 类服务器 ~1-2s）。stdio 无 HTTP 头部，Gateway→上游 Header 凭据注入仅适用
+> https/sse；stdio 上游的身份凭据由进程自身环境自持。
 
 ### 错误码
 
@@ -249,7 +271,7 @@ go run ./cmd/conductor
 
 | 分组 | 关键项 | 环境变量示例 |
 | --- | --- | --- |
-| `server` | host / port | `CONDUCTOR_SERVER_PORT=8080` |
+| `server` | host / port | `CONDUCTOR_SERVER_PORT=18110` |
 | `database` | driver（memory/mysql）/ dsn | `CONDUCTOR_DATABASE_DSN=user:pwd@tcp(host:3306)/conductor?parseTime=true&charset=utf8mb4` |
 | `redis` | enabled / addr / password / db | `CONDUCTOR_REDIS_ENABLED=false` · `CONDUCTOR_REDIS_DB=0` |
 | `gateway` | upstream_timeout / max_concurrency | `CONDUCTOR_GATEWAY_UPSTREAM_TIMEOUT_MS=10000` |
@@ -279,7 +301,7 @@ CONDUCTOR_DATABASE_DSN='conductor:conductor@tcp(localhost:3306)/conductor?parseT
 ```bash
 make web-install   # 安装前端依赖
 make build         # 构建前端并产出带真实 Console 的单二进制（默认构建）
-make run           # 一键构建并运行（:8080，带真实 Console）
+make run           # 一键构建并运行（:18110，带真实 Console）
 make build-backend # 仅编译后端（用当前 internal/console/dist，调试后端用）
 make web-dev       # 前端热更新 :5173（代理 /api、/mcp）
 make test          # 后端单元测试
@@ -291,7 +313,7 @@ make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATA
 
 - **后端约定**：统一错误模型与结构化日志（不打印 Credential、Token 与完整敏感 MCP payload）；核心模块测试优先（Router / Balancer / Rate Limiter / Tool Namespace）。
 - **前端约定**：基础设施管理平台风格（现代、克制、高信息密度），Ant Design Vue + ECharts + Pinia，Payload 不可达时保持空态。
-- **测试**：`make check` 是提交前的本地质量门禁；真实 MySQL 5.7 集成测试需在应用 `0001..0017` 迁移后，显式设置 `MYSQL_TEST_DSN` 运行。启用 CGO 的环境可额外运行 `go test -race ./...`。
+- **测试**：`make check` 是提交前的本地质量门禁；真实 MySQL 5.7 集成测试需在应用 `0001..0018` 迁移后，显式设置 `MYSQL_TEST_DSN` 运行。启用 CGO 的环境可额外运行 `go test -race ./...`。
 
 ## Examples
 
@@ -300,7 +322,7 @@ make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATA
 ## Roadmap
 
 - **v0.1（当前）**：最小闭环 + 运维基础（Registry / 聚合 / 路由 / 治理 / 观测 / Console / Docker）。其中 **MySQL 5.7+ 持久化驱动已先行落地**（`internal/storage/mysql`，实测通过）。
-- **v0.2 候选**：SSE/stdio 上游接入、Route 管理页完善。注：Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）、Server 多实例 + 健康感知 Round-Robin、实例级流量归属、按实例定向评测、长程分钟桶趋势持久化与按入参回放均已随 v0.1 落地。
+- **v0.2 候选**：Route 管理页完善、stdio 长驻会话缓存（降低子进程启动开销）。注：stdio 上游接入、Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）、Server 多实例 + 健康感知 Round-Robin、实例级流量归属、按实例定向评测、长程分钟桶趋势持久化与按入参回放均已随 v0.1 落地。
 - **v0.3 候选**：Evaluation 深化（本阶段已落地 Server 质量分 + 回归用例的 MCP Score 雏形，见上表；后续 Dataset/TestCase 落库、对比与 LLM Judge 另行列版）、协议/Schema/性能测试。
 - **远期**：独立 Python Evaluation Worker、AI 优化建议、Route 灰度/分组转发。
 

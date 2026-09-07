@@ -184,6 +184,7 @@ func buildTargets(instances []model.Instance) []balancer.Target {
 			ServerID:  inst.ServerID,
 			Endpoint:  inst.Endpoint,
 			Transport: inst.Transport,
+			Args:      inst.Args,
 			Weight:    1,
 			Healthy:   inst.IsCallable(),
 		})

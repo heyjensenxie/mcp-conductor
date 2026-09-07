@@ -76,8 +76,8 @@
         <a-form-item :label="t('common.name')" :required="!editing">
           <a-input v-model:value="form.name" :disabled="editing" :placeholder="editing ? t('servers.nameReadonlyHint') : 'University MCP'" />
         </a-form-item>
-        <a-form-item v-if="!editing" :label="t('servers.endpoint')" :required="true">
-          <a-input v-model:value="form.endpoint" :placeholder="t('servers.endpointPlaceholder')" />
+        <a-form-item v-if="!editing" :label="isStdio ? t('servers.command') : t('servers.endpoint')" :required="true">
+          <a-input v-model:value="form.endpoint" :placeholder="isStdio ? t('servers.commandPlaceholder') : t('servers.endpointPlaceholder')" />
         </a-form-item>
         <a-form-item v-if="!editing" :label="t('servers.transport')">
           <a-select v-model:value="form.transport">
@@ -85,6 +85,10 @@
             <a-select-option value="sse">{{ t('servers.transportSSE') }}</a-select-option>
             <a-select-option value="stdio">{{ t('servers.transportStdio') }}</a-select-option>
           </a-select>
+        </a-form-item>
+        <a-form-item v-if="!editing && isStdio" :label="t('servers.args')">
+          <a-input v-model:value="form.args" :placeholder="t('servers.argsPlaceholder')" />
+          <span class="field-hint">{{ t('servers.stdioHint') }}</span>
         </a-form-item>
         <a-form-item v-if="editing" class="edit-hint">
           <span>{{ t('servers.endpointsInDetailHint') }}</span>
@@ -146,12 +150,15 @@ const filters = reactive<{ q: string; enabled?: string; health?: string }>({ q: 
 const healthOptions = ['unknown', 'healthy', 'unhealthy', 'disabled']
 const dialogVisible = ref(false)
 const submitting = ref(false)
-const form = reactive<{ name: string; endpoint: string; transport: Transport; description: string }>({
+const form = reactive<{ name: string; endpoint: string; transport: Transport; description: string; args: string }>({
   name: '',
   endpoint: '',
   transport: 'https',
   description: '',
+  args: '',
 })
+// stdio 传输：endpoint 承载可执行命令并展示启动参数输入框。
+const isStdio = computed(() => form.transport === 'stdio')
 // 注册时可配置任意多条"上游请求头"（可选）：每条 = 请求头名 + 值，
 // 勾选 Bearer 时该条固定注入 Authorization: Bearer <值>（走 static_token）。
 // 落库为 Credential，值 AES 加密；header 可留空代表无附加头。
@@ -250,6 +257,7 @@ function openCreate() {
   form.endpoint = ''
   form.transport = 'https'
   form.description = ''
+  form.args = ''
   reqHeaders.value = []
   dialogVisible.value = true
 }
@@ -262,6 +270,7 @@ function openEdit(row: MCPServer) {
   form.endpoint = ''
   form.transport = 'https'
   form.description = row.description ?? ''
+  form.args = ''
   reqHeaders.value = []
   dialogVisible.value = true
 }
@@ -284,6 +293,19 @@ function buildAuthCredentials() {
     })
   }
   return rows
+}
+
+// 解析 stdio 启动参数（JSON 数组文本）；非法或非字符串数组时返回 null 供拦截。
+function parseStdioArgs(text: string): string[] | null {
+  const trimmed = text.trim()
+  if (!trimmed) return []
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (!Array.isArray(parsed) || parsed.some((a) => typeof a !== 'string')) return null
+    return parsed as string[]
+  } catch {
+    return null
+  }
 }
 
 async function submit() {
@@ -311,9 +333,15 @@ async function submit() {
     message.warning(t('servers.authHeaderRequired'))
     return
   }
+  const args = isStdio.value ? parseStdioArgs(form.args) : undefined
+  if (args === null) {
+    submitting.value = false
+    message.warning(t('servers.argsInvalid'))
+    return
+  }
   submitting.value = true
   try {
-    const server = await createServer({ ...form })
+    const server = await createServer({ name: form.name, description: form.description, endpoint: form.endpoint, transport: form.transport, args })
     // 注册时若有请求头配置，随即逐条落 Credential（值加密存储）。
     const failures: string[] = []
     for (const [i, row] of authRows.entries()) {
@@ -411,6 +439,13 @@ const healthColor = (s: string) => (s === 'healthy' ? 'green' : s === 'unhealthy
   color: #999;
   font-size: 12px;
   padding: 2px 0 8px;
+}
+.field-hint {
+  display: block;
+  color: #999;
+  font-size: 12px;
+  line-height: 18px;
+  margin-top: 4px;
 }
 .edit-hint {
   color: #999;

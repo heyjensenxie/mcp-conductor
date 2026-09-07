@@ -16,7 +16,7 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Database.Driver != "memory" {
 		t.Fatalf("默认 driver 应为 memory，得到 %q", cfg.Database.Driver)
 	}
-	if cfg.Server.Port != 8080 || cfg.Redis.Enabled || cfg.RateLimit.Enabled {
+	if cfg.Server.Port != 18110 || cfg.Redis.Enabled || cfg.RateLimit.Enabled {
 		t.Fatalf("默认值异常: %+v", cfg)
 	}
 	if !cfg.Auth.Enabled {

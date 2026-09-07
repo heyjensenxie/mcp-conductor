@@ -68,6 +68,23 @@ func TestServerCRUD(t *testing.T) {
 		t.Fatalf("实例 endpoint/transport 回读不一致: %+v", insts[0])
 	}
 
+	// stdio 实例：endpoint 承载命令、args 落 TEXT(JSON) 列并回读。
+	stdioInst := &model.Instance{ServerID: srv.ID, Endpoint: "./bin/mock-mcp", Transport: model.TransportStdio, Args: []string{"-stdio", "--port", "9100"}, Enabled: true, HealthStatus: model.ServerStatusUnknown}
+	if err := store.CreateInstance(ctx, stdioInst); err != nil {
+		t.Fatalf("CreateInstance(stdio): %v", err)
+	}
+	rows, err := store.ListInstancesByServer(ctx, srv.ID)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("ListInstancesByServer 应含 2 条: %v / %d", err, len(rows))
+	}
+	for _, r := range rows {
+		if r.Transport == model.TransportStdio {
+			if len(r.Args) != 3 || r.Args[0] != "-stdio" || r.Args[1] != "--port" {
+				t.Fatalf("stdio 实例 args 回读不一致: %+v", r)
+			}
+		}
+	}
+
 	got.Enabled = true
 	if err := store.UpdateServer(ctx, got); err != nil {
 		t.Fatalf("UpdateServer: %v", err)

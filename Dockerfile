@@ -33,5 +33,5 @@ WORKDIR /app
 COPY --from=builder /out/mcp-conductor /app/mcp-conductor
 COPY config.example.yaml /app/config.example.yaml
 USER conductor
-EXPOSE 8080
+EXPOSE 18110
 ENTRYPOINT ["/app/mcp-conductor"]

@@ -39,7 +39,7 @@ fmt:
 web-install:
 	npm --prefix web install
 
-## 前端开发服务器（代理 /api 与 /mcp 到 :8080，热更新）
+## 前端开发服务器（代理 /api 与 /mcp 到 :18110，热更新）
 web-dev:
 	npm --prefix web run dev
 

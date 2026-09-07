@@ -123,3 +123,53 @@ func TestCredentialUpdateAndDelete(t *testing.T) {
 
 // storeCtx 返回无取消的测试上下文。
 func storeCtx() context.Context { return context.Background() }
+
+// TestCreateServerStdioWithArgs 验证经控制面注册 stdio Server 时，args 落到 seed
+// 实例并随响应返回；https 携带 args 被 CodeInvalidArgument 拒绝。
+func TestCreateServerStdioWithArgs(t *testing.T) {
+	ctrl, store := newInstancesControl(nil)
+
+	// 注册 stdio Server：endpoint=命令，args=启动参数。
+	rec := httptest.NewRecorder()
+	ctrl.handleCreateServer(rec, httptest.NewRequest(http.MethodPost, "/api/servers",
+		strings.NewReader(`{"name":"MockStdio","endpoint":"./bin/mock-mcp","transport":"stdio","args":["-stdio","--port","9100"]}`)))
+	e := decodeEnvelope(t, rec)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+		t.Fatalf("注册 stdio Server 失败: %d / %s", rec.Code, rec.Body.String())
+	}
+	var srv struct {
+		ID        string `json:"id"`
+		Instances []struct {
+			Endpoint  string   `json:"endpoint"`
+			Transport string   `json:"transport"`
+			Args      []string `json:"args"`
+		} `json:"instances"`
+	}
+	if err := json.Unmarshal(e.Data, &srv); err != nil || srv.ID == "" {
+		t.Fatalf("解析创建响应失败: %v / %s", err, e.Data)
+	}
+	if len(srv.Instances) != 1 || srv.Instances[0].Transport != "stdio" ||
+		srv.Instances[0].Endpoint != "./bin/mock-mcp" || len(srv.Instances[0].Args) != 3 || srv.Instances[0].Args[0] != "-stdio" {
+		t.Fatalf("seed 实例应含 stdio 命令与 args: %+v", srv.Instances)
+	}
+	// 存储侧也持久化 args。
+	insts, _ := store.ListInstancesByServer(context.Background(), srv.ID)
+	if len(insts) != 1 || len(insts[0].Args) != 3 || insts[0].Args[1] != "--port" {
+		t.Fatalf("seed 实例 args 未落库: %+v", insts)
+	}
+
+	// https 携带 args 应被拒绝（校验拦截配置错误）。
+	rec = httptest.NewRecorder()
+	ctrl.handleCreateServer(rec, httptest.NewRequest(http.MethodPost, "/api/servers",
+		strings.NewReader(`{"name":"Bad","endpoint":"http://x:9000/mcp","transport":"https","args":["-x"]}`)))
+	var rej struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &rej); err != nil {
+		t.Fatalf("解析拒绝信封失败: %v", err)
+	}
+	if rej.Code != "invalid_argument" {
+		t.Fatalf("https 带 args 应以 invalid_argument 拒绝，得到 %q / %s", rej.Code, rec.Body.String())
+	}
+}

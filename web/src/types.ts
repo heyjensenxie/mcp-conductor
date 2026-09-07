@@ -12,11 +12,14 @@ export type ServerStatus = 'unknown' | 'healthy' | 'unhealthy' | 'disabled'
 export type Transport = 'stdio' | 'https' | 'sse'
 
 // 逻辑 Server 下的具体上游实例（endpoint/transport/健康承载单位）。
+// endpoint 随 transport 而异：https/sse 为端点 URL，stdio 为可执行命令；
+// args 仅 stdio 使用（启动参数数组，不经过 shell）。
 export interface ServerInstance {
   id: string
   server_id: string
   endpoint: string
   transport: Transport
+  args?: string[]
   enabled: boolean
   health_status: Exclude<ServerStatus, 'disabled'>
   created_at: string

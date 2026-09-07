@@ -162,7 +162,7 @@ type ObservabilityConfig struct {
 // Default 返回适合本地开发的最小配置，保证无外部依赖也可启动。
 func Default() Config {
 	return Config{
-		Server: ServerConfig{Host: "0.0.0.0", Port: 8080},
+		Server: ServerConfig{Host: "0.0.0.0", Port: 18110},
 		Database: DatabaseConfig{
 			Driver: "memory", // 无 MySQL 时以内存存储启动（生产 MySQL 5.7+）
 			DSN:    "",

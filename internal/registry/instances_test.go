@@ -40,7 +40,7 @@ func TestAddInstanceAndListOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
-	second, err := svc.AddInstance(ctx, created.ID, "http://second:9000/mcp", model.TransportStreamableHTTP)
+	second, err := svc.AddInstance(ctx, created.ID, "http://second:9000/mcp", model.TransportStreamableHTTP, nil)
 	if err != nil {
 		t.Fatalf("AddInstance: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestToggleInstanceTogglesAndUpdatesAggregate(t *testing.T) {
 		t.Fatalf("CreateServer 后聚合应 healthy，得到 %s", got.HealthStatus)
 	}
 
-	second, err := svc.AddInstance(ctx, created.ID, "http://second:9000/mcp", model.TransportStreamableHTTP)
+	second, err := svc.AddInstance(ctx, created.ID, "http://second:9000/mcp", model.TransportStreamableHTTP, nil)
 	if err != nil {
 		t.Fatalf("AddInstance: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestDeleteInstanceLastInstanceGuard(t *testing.T) {
 	}
 
 	// 新增第二个实例后可删除其中一个。
-	if _, err := svc.AddInstance(ctx, created.ID, "http://second:9000/mcp", model.TransportStreamableHTTP); err != nil {
+	if _, err := svc.AddInstance(ctx, created.ID, "http://second:9000/mcp", model.TransportStreamableHTTP, nil); err != nil {
 		t.Fatalf("AddInstance: %v", err)
 	}
 	if err := svc.DeleteInstance(ctx, created.ID, seedID); err != nil {
@@ -178,7 +178,7 @@ func TestTestInstanceWithProber(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
-	second, err := svc.AddInstance(ctx, created.ID, "http://second:9000/mcp", model.TransportStreamableHTTP)
+	second, err := svc.AddInstance(ctx, created.ID, "http://second:9000/mcp", model.TransportStreamableHTTP, nil)
 	if err != nil {
 		t.Fatalf("AddInstance: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestDeleteServerRemovesInstances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
-	if _, err := svc.AddInstance(ctx, created.ID, "http://second:9000/mcp", model.TransportStreamableHTTP); err != nil {
+	if _, err := svc.AddInstance(ctx, created.ID, "http://second:9000/mcp", model.TransportStreamableHTTP, nil); err != nil {
 		t.Fatalf("AddInstance: %v", err)
 	}
 
@@ -258,3 +258,83 @@ func instancesByEndpoint(t *testing.T, store *memory.Store, serverID, endpoint s
 	t.Fatalf("Server %q 下未找到 endpoint %q 的实例: %+v", serverID, endpoint, insts)
 	return ""
 }
+
+// TestAddStdioInstanceWithArgs 验证 stdio 实例可携带启动参数（args）。
+func TestAddStdioInstanceWithArgs(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newInstanceTestService(nil)
+	created, err := svc.CreateServer(ctx, CreateServerInput{Name: "Mock", Endpoint: "http://seed:9000/mcp", Transport: model.TransportStreamableHTTP})
+	if err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+	inst, err := svc.AddInstance(ctx, created.ID, "./bin/mock-mcp", model.TransportStdio, []string{"-stdio", "--port", "9100"})
+	if err != nil {
+		t.Fatalf("AddInstance(stdio): %v", err)
+	}
+	if inst.Transport != model.TransportStdio || len(inst.Args) != 3 || inst.Args[0] != "-stdio" {
+		t.Fatalf("stdio 实例的 endpoint/args 应保留: %+v", inst)
+	}
+}
+
+// TestArgsRejectedForHTTPInstance 验证 https/sse 实例传入 args 被 CodeInvalidArgument 拒绝。
+func TestArgsRejectedForHTTPInstance(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newInstanceTestService(nil)
+	created, err := svc.CreateServer(ctx, CreateServerInput{Name: "Mock", Endpoint: "http://seed:9000/mcp", Transport: model.TransportStreamableHTTP})
+	if err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+	_, err = svc.AddInstance(ctx, created.ID, "http://second:9000/mcp", model.TransportStreamableHTTP, []string{"-x"})
+	if err == nil {
+		t.Fatal("https 实例带 args 应被拒绝")
+	}
+	if code := errs.CodeOf(err); code != errs.CodeInvalidArgument {
+		t.Fatalf("错误码应为 invalid_argument，得到 %s", code)
+	}
+}
+
+// TestCreateServerStdioCommandRequired 验证 stdio 注册必须提供启动命令（endpoint），
+// 空命令被拒绝。
+func TestCreateServerStdioCommandRequired(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newInstanceTestService(nil)
+	_, err := svc.CreateServer(ctx, CreateServerInput{Name: "Mock", Endpoint: "", Transport: model.TransportStdio})
+	if err == nil {
+		t.Fatal("空命令的 stdio 注册应被拒绝")
+	}
+	if code := errs.CodeOf(err); code != errs.CodeInvalidArgument {
+		t.Fatalf("错误码应为 invalid_argument，得到 %s", code)
+	}
+}
+
+// TestUpdateInstanceArgsCombination 验证实例更新时 args 与传输组合校验：
+// 切换到 stdio 须有命令；带 args 切到 https 被拒绝。
+func TestUpdateInstanceArgsCombination(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newInstanceTestService(nil)
+	created, err := svc.CreateServer(ctx, CreateServerInput{Name: "Mock", Endpoint: "http://seed:9000/mcp", Transport: model.TransportStreamableHTTP})
+	if err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+
+	// 1) https 实例 → 切 stdio：endpoint 已是非空命令，合法。
+	httpInstID := instancesByEndpoint(t, store, created.ID, "http://seed:9000/mcp")
+	upd, err := svc.UpdateInstance(ctx, created.ID, httpInstID, UpdateInstancePatch{
+		Transport: strPtr(string(model.TransportStdio)),
+		Args:      &[]string{"-stdio"},
+	})
+	if err != nil {
+		t.Fatalf("切 stdio 应成功: %v", err)
+	}
+	if upd.Transport != model.TransportStdio || len(upd.Args) != 1 {
+		t.Fatalf("更新后应保留 stdio+args: %+v", upd)
+	}
+
+	// 2) 再补一个带 args 的 https 实例 → 拒绝。
+	_, err = svc.AddInstance(ctx, created.ID, "http://second:9000/mcp", model.TransportStreamableHTTP, []string{"-x"})
+	if err == nil {
+		t.Fatal("https 带 args 应被拒绝")
+	}
+}
+
+func strPtr(s string) *string { return &s }

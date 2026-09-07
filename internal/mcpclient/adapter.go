@@ -25,6 +25,9 @@ type Adapter struct {
 	// headerFor 按逻辑 Server 返回调用上游时附加的 header（如注入 API Key / Token）。
 	// 同一逻辑 Server 的所有实例共享这套上游凭证。nil 表示不注入。
 	headerFor func(ctx context.Context, server model.Server) map[string]string
+	// stdioEnv 是启动 stdio 子进程时附加的环境变量（追加在当前进程环境之上）。
+	// stdio 上游身份凭据由进程自身环境自持，通常经此注入。
+	stdioEnv []string
 }
 
 // New 创建适配器（无凭据注入）。
@@ -35,6 +38,13 @@ func New() *Adapter {
 // WithHeaderFor 配置按逻辑 Server 组装额外 header 的回调（由应用层注入凭据）。
 func (a *Adapter) WithHeaderFor(fn func(ctx context.Context, server model.Server) map[string]string) *Adapter {
 	a.headerFor = fn
+	return a
+}
+
+// WithStdioEnv 配置启动 stdio 子进程时附加的环境变量（kv 形式，如 "TOKEN=x"）。
+// 供 stdio 上游的身份/配置注入；仅作用于 stdio 传输。
+func (a *Adapter) WithStdioEnv(kv ...string) *Adapter {
+	a.stdioEnv = append(a.stdioEnv, kv...)
 	return a
 }
 
@@ -53,6 +63,7 @@ func (a *Adapter) Discover(ctx context.Context, server model.Server, instance mo
 	if err != nil {
 		return nil, err
 	}
+	defer c.Close()
 	if _, err := c.Initialize(ctx); err != nil {
 		return nil, errs.Wrap(codeForError(err), err, "与 Server %q 实例 %q 握手失败", server.Name, instance.Endpoint)
 	}
@@ -87,6 +98,7 @@ func (a *Adapter) Probe(ctx context.Context, server model.Server, instance model
 	if err != nil {
 		return nil, err
 	}
+	defer c.Close()
 	init, err := c.Initialize(ctx)
 	if err != nil {
 		return nil, errs.Wrap(codeForError(err), err, "与 Server %q 实例 %q 握手失败", server.Name, instance.Endpoint)
@@ -111,6 +123,7 @@ func (a *Adapter) Call(ctx context.Context, server model.Server, instance model.
 	if err != nil {
 		return nil, err
 	}
+	defer c.Close()
 	result, err := c.CallTool(ctx, tool, arguments)
 	if err != nil {
 		var rpcErr *mcp.RPCErrorResponse
@@ -153,6 +166,7 @@ func (a *Adapter) Check(ctx context.Context, server model.Server, instance model
 	if err != nil {
 		return model.ServerStatusUnhealthy, err
 	}
+	defer c.Close()
 	if _, err := c.Initialize(ctx); err != nil {
 		return model.ServerStatusUnhealthy, err
 	}
@@ -161,12 +175,20 @@ func (a *Adapter) Check(ctx context.Context, server model.Server, instance model
 
 // dial 选择传输方式并为给定实例构建客户端；header 合并顺序为 Server 级凭据
 // 优先、extraHeaders（工具级）后置从而覆盖同名头。
-func (a *Adapter) dial(ctx context.Context, server model.Server, instance model.Instance, extraHeaders map[string]string) (*mcp.HTTPClient, error) {
+//
+// stdio 传输没有 HTTP 头部概念：上游进程由其自身环境自持凭据，采 用
+// spawn-per-dial（每次操作新建并回收子进程），因此 Header 凭据注入对 stdio
+// 不适用，仅在 HTTP 传输族上组装。
+func (a *Adapter) dial(ctx context.Context, server model.Server, instance model.Instance, extraHeaders map[string]string) (mcp.Client, error) {
 	switch instance.Transport {
 	case "", model.TransportStreamableHTTP, model.TransportSSE:
 		// 支持的 HTTP 传输族：纯 streamable HTTP + SSE 片段兼容解析。
 	case model.TransportStdio:
-		return nil, errs.New(errs.CodeInternal, "Transport %q 暂未接入（stdlib 子进程由后续版本提供）", instance.Transport)
+		client := mcp.NewStdioClient(instance.Endpoint, instance.Args)
+		if len(a.stdioEnv) > 0 {
+			client.WithStdioEnv(a.stdioEnv...)
+		}
+		return client, nil
 	default:
 		return nil, errs.New(errs.CodeInternal, "未知传输方式 %q", instance.Transport)
 	}

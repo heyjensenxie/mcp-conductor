@@ -265,3 +265,55 @@ func TestControlInstances_HealthStatusListFilterReflectsAggregate(t *testing.T) 
 		t.Fatalf("health_status=healthy 不应命中，得到 %d", len(list.Items))
 	}
 }
+
+// TestControlInstances_StdioArgsRoundTrip 验证控制面新增/更新 stdio 实例时 args
+// 经 JSON 往返并落库；更新时端点/传输/args 组合校验生效。
+func TestControlInstances_StdioArgsRoundTrip(t *testing.T) {
+	ctrl, store := newInstancesControl(nil)
+	id := seedControlServer(t, ctrl)
+
+	// 新增 stdio 实例（command + args）。
+	rec := httptest.NewRecorder()
+	createReq := httptest.NewRequest(http.MethodPost, "/api/servers/"+id+"/instances",
+		strings.NewReader(`{"endpoint":"./bin/mock-mcp","transport":"stdio","args":["-stdio","--port","9100"]}`))
+	createReq.SetPathValue("id", id)
+	ctrl.handleCreateInstance(rec, createReq)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("新增 stdio 实例应为 201，得到 %d / %s", rec.Code, rec.Body.String())
+	}
+	var inst struct {
+		ID   string   `json:"id"`
+		Args []string `json:"args"`
+	}
+	if err := json.Unmarshal(decodeEnvelope(t, rec).Data, &inst); err != nil || inst.ID == "" {
+		t.Fatalf("解析新增实例失败: %v / %s", err, rec.Body.String())
+	}
+	if len(inst.Args) != 3 || inst.Args[0] != "-stdio" {
+		t.Fatalf("新增实例应回显 args: %+v", inst)
+	}
+	insts, _ := store.ListInstancesByServer(context.Background(), id)
+	found := false
+	for _, s := range insts {
+		if s.ID == inst.ID && len(s.Args) == 3 && s.Args[1] == "--port" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("stdio 实例 args 未落库: %+v", insts)
+	}
+
+	// 更新该实例 args（清空）+ 切回 https（组合合法：空 args）。
+	rec = httptest.NewRecorder()
+	updReq := httptest.NewRequest(http.MethodPatch, "/api/servers/"+id+"/instances/"+inst.ID,
+		strings.NewReader(`{"transport":"https","args":[]}`))
+	updReq.SetPathValue("id", id)
+	updReq.SetPathValue("iid", inst.ID)
+	ctrl.handleUpdateInstance(rec, updReq)
+	e := decodeEnvelope(t, rec)
+	var updated struct {
+		Args []string `json:"args"`
+	}
+	if err := json.Unmarshal(e.Data, &updated); err != nil || len(updated.Args) != 0 {
+		t.Fatalf("清空 args 后应为空数组: %+v / %v", updated, err)
+	}
+}

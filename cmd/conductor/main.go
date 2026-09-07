@@ -1,7 +1,7 @@
 // command conductor 是 MCP Conductor 后端的统一入口。
 //
 // 单二进制承载 Gateway Runtime + Control Plane API + Registry，
-// 匹配 PRD「./mcp-conductor 后访问 :8080」的开发体验目标。
+// 匹配 PRD「./mcp-conductor 后访问 :18110」的开发体验目标。
 package main
 
 import (

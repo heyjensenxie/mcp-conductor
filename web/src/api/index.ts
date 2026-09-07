@@ -19,12 +19,13 @@ export interface ServerListParams extends ListParams {
   health_status?: ServerStatus
 }
 
-// 注册 Server 入参：endpoint/transport 是 seed（首个）实例字段。
+// 注册 Server 入参：endpoint/transport 是 seed（首个）实例字段；args 仅 stdio 使用。
 export interface CreateServerPayload {
   name: string
   description?: string
   endpoint: string
   transport?: Transport
+  args?: string[]
 }
 
 export interface ToolListParams extends ListParams {
@@ -109,13 +110,13 @@ export const primaryTransport = (s: MCPServer): string => s.instances?.[0]?.tran
 export const listServerInstances = (id: string) =>
   unwrap<ServerInstance[]>(http.get(`/servers/${id}/instances`))
 
-export const createServerInstance = (id: string, payload: { endpoint: string; transport?: Transport }) =>
+export const createServerInstance = (id: string, payload: { endpoint: string; transport?: Transport; args?: string[] }) =>
   unwrap<ServerInstance>(http.post(`/servers/${id}/instances`, payload))
 
 export const updateServerInstance = (
   id: string,
   iid: string,
-  payload: Partial<Pick<ServerInstance, 'endpoint' | 'transport'>>,
+  payload: Partial<Pick<ServerInstance, 'endpoint' | 'transport' | 'args'>>,
 ) => unwrap<ServerInstance>(http.patch(`/servers/${id}/instances/${iid}`, payload))
 
 export const toggleServerInstance = (id: string, iid: string, enabled: boolean) =>

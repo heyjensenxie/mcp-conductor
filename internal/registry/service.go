@@ -80,12 +80,15 @@ func (s *Service) WithProber(prober InstanceProber) *Service {
 	return s
 }
 
-// CreateServerInput 是新增 Server 的入参；Endpoint/Transport 属于首个（seed）实例。
+// CreateServerInput 是新增 Server 的入参；Endpoint/Transport/Args 属于首个
+// （seed）实例。Endpoint 语义随传输而异：https/sse 为端点 URL，stdio 为可执行
+// 命令；Args 仅 stdio 使用（启动参数，不经过 shell）。
 type CreateServerInput struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Endpoint    string          `json:"endpoint"`
 	Transport   model.Transport `json:"transport"`
+	Args        []string        `json:"args,omitempty"`
 }
 
 // CreateServer 新增逻辑 Server 及其 seed 实例，并立即触发工具发现。
@@ -102,6 +105,9 @@ func (s *Service) CreateServer(ctx context.Context, in CreateServerInput) (*mode
 	}
 	transport, err := normalizeTransport(in.Transport)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateArgsForTransport(transport, endpoint, in.Args); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
@@ -122,6 +128,7 @@ func (s *Service) CreateServer(ctx context.Context, in CreateServerInput) (*mode
 		ServerID:     server.ID,
 		Endpoint:     endpoint,
 		Transport:    transport,
+		Args:         in.Args,
 		Enabled:      true,
 		HealthStatus: model.ServerStatusUnknown,
 		CreatedAt:    now,
@@ -228,7 +235,7 @@ func (s *Service) UpdateServer(ctx context.Context, id string, patch UpdateServe
 }
 
 // AddInstance 为 Server 新增一个实例（启用、健康 unknown）并重算聚合。
-func (s *Service) AddInstance(ctx context.Context, serverID string, endpoint string, transport model.Transport) (*model.Instance, error) {
+func (s *Service) AddInstance(ctx context.Context, serverID string, endpoint string, transport model.Transport, args []string) (*model.Instance, error) {
 	server, err := s.stores.GetServer(ctx, serverID)
 	if err != nil {
 		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
@@ -241,11 +248,15 @@ func (s *Service) AddInstance(ctx context.Context, serverID string, endpoint str
 	if err != nil {
 		return nil, err
 	}
+	if err := validateArgsForTransport(transport, endpoint, args); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	instance := &model.Instance{
 		ServerID:     server.ID,
 		Endpoint:     endpoint,
 		Transport:    transport,
+		Args:         args,
 		Enabled:      true,
 		HealthStatus: model.ServerStatusUnknown,
 		CreatedAt:    now,
@@ -260,11 +271,12 @@ func (s *Service) AddInstance(ctx context.Context, serverID string, endpoint str
 	return instance, nil
 }
 
-// UpdateInstancePatch 是实例可编辑字段；Endpoint/Transport 变更会使该实例
+// UpdateInstancePatch 是实例可编辑字段；Endpoint/Transport/Args 变更会使该实例
 // 健康复位为 unknown 并交由巡检重新探活。
 type UpdateInstancePatch struct {
-	Endpoint  *string `json:"endpoint,omitempty"`
-	Transport *string `json:"transport,omitempty"`
+	Endpoint  *string   `json:"endpoint,omitempty"`
+	Transport *string   `json:"transport,omitempty"`
+	Args      *[]string `json:"args,omitempty"`
 }
 
 // UpdateInstance 更新实例可编辑字段并重算 Server 聚合。
@@ -292,8 +304,17 @@ func (s *Service) UpdateInstance(ctx context.Context, serverID, instanceID strin
 			instance.Transport, changed = transport, true
 		}
 	}
+	if patch.Args != nil {
+		// 参数非 nil 即视为提交（空数组 = 清空参数）；与端点/传输一起校验最终组合。
+		instance.Args = *patch.Args
+		changed = true
+	}
 	if !changed {
 		return instance, nil
+	}
+	// 组合校验（stdio 必须有命令、非 stdio 不允许参数）在落库前拦截非法配置。
+	if err := validateArgsForTransport(instance.Transport, instance.Endpoint, instance.Args); err != nil {
+		return nil, err
 	}
 	// 端点/传输变更后旧健康结论失效，复位待探。
 	instance.HealthStatus = model.ServerStatusUnknown
@@ -609,6 +630,21 @@ func normalizeTransport(t model.Transport) (model.Transport, error) {
 	default:
 		return t, errs.New(errs.CodeInvalidArgument, "transport 仅支持 https / sse / stdio")
 	}
+}
+
+// validateArgsForTransport 校验实例传输与 endpoint/args 的组合：stdio 的 endpoint
+// 承载可执行命令（必填）并可带 args；https/sse 不允许 args（拦截配置错误）。
+func validateArgsForTransport(transport model.Transport, endpoint string, args []string) error {
+	if transport == model.TransportStdio {
+		if strings.TrimSpace(endpoint) == "" {
+			return errs.New(errs.CodeInvalidArgument, "stdio 实例必须提供启动命令（endpoint 字段）")
+		}
+		return nil
+	}
+	if len(args) > 0 {
+		return errs.New(errs.CodeInvalidArgument, "args 仅 stdio 传输支持（https/sse 使用 endpoint URL）")
+	}
+	return nil
 }
 
 // getServerInstance 校验实例归属后返回实例副本。
