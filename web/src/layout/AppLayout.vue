@@ -4,7 +4,7 @@
     <a-layout-sider width="224" theme="dark" class="sider">
       <div class="brand">
         <img src="/logo.png" class="brand-logo" alt="MCP Conductor" />
-        <span class="brand-title mono">MCP Conductor</span>
+        <span class="brand-title mono">{{ store.instanceName }}</span>
       </div>
 
       <a-menu :selected-keys="selectedKeys" mode="inline" theme="dark" class="menu" @click="onMenuClick">
@@ -102,6 +102,8 @@ const store = useAppStore()
 const authRequired = ref(false)
 onMounted(async () => {
   authRequired.value = await ensureAuthRequired()
+  // 实例名持久化后刷新页面时同步标签标题。
+  document.title = store.instanceName
 })
 // 登录态标识：会话令牌显示 session，operator_token 直填显示 operator。
 const userTag = computed(() => (isSessionToken(store.token) ? 'session' : 'operator'))

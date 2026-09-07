@@ -4,7 +4,7 @@
       <main class="login-card">
         <div class="brand">
           <img src="/logo.png" alt="MCP Conductor" class="logo" />
-          <h1 class="brand-name">MCP Conductor</h1>
+          <h1 class="brand-name">{{ store.instanceName }}</h1>
           <p class="brand-sub">The control plane for your MCP ecosystem.</p>
         </div>
 
@@ -120,6 +120,8 @@ onMounted(async () => {
   store.clearToken()
   invalidateAuthState()
   authRequired.value = await ensureAuthRequired()
+  // 实例名持久化后同步标签标题。
+  document.title = store.instanceName
 })
 
 function onFieldInput(field: 'username' | 'password') {
