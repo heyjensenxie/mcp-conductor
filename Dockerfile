@@ -7,7 +7,8 @@
 FROM node:20-alpine AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json* ./
-RUN npm install
+# 使用锁文件进行干净、可复现的生产构建；依赖清单变化时立即失败。
+RUN npm ci
 COPY web/ .
 RUN npm run build
 
