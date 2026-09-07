@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -39,6 +40,7 @@ func (c *Control) handlePutRuntimeConfig(w http.ResponseWriter, r *http.Request)
 			errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
 		return
 	}
+	c.mergeObservability(r.Context(), &cfg)
 	if err := validateRuntimeConfig(&cfg); err != nil {
 		writeGatewayError(w, r, http.StatusBadRequest, err)
 		return
@@ -52,6 +54,29 @@ func (c *Control) handlePutRuntimeConfig(w http.ResponseWriter, r *http.Request)
 		c.runtimeCache.invalidate() // 下次 /mcp 请求即读取新配置
 	}
 	writeOK(w, RequestIDFrom(r.Context()), runtimeConfigView{Config: cfg, Persisted: true, RateLimitEnabled: c.rateLimitEnabled})
+}
+
+// mergeObservability 处理旧客户端不全量携带 observability 块的兼容：请求未显式给出
+// record_args 时，沿用当前有效值（已持久化存值 > config.yaml 种子），避免全量覆盖
+// PUT 把入参捕获静默关掉。新客户端显式携带时才覆盖。
+func (c *Control) mergeObservability(ctx context.Context, cfg *model.RuntimeConfig) {
+	if cfg.Observability != nil {
+		return
+	}
+	cur, exists, err := c.store.GetRuntimeConfig(ctx)
+	if err != nil {
+		// 读当前值失败（存值不可读）：回退默认关（隐私优先），Put 仍继续。
+		cfg.Observability = &model.RuntimeObservability{}
+		return
+	}
+	if !exists {
+		cur = c.runtimeFallbackConfig()
+	}
+	if cur != nil && cur.Observability != nil {
+		cfg.Observability = &model.RuntimeObservability{RecordArgs: cur.Observability.RecordArgs}
+		return
+	}
+	cfg.Observability = &model.RuntimeObservability{}
 }
 
 // runtimeFallbackConfig 返回无存值时应生效的种子（config.yaml）；守卫缓存未注入

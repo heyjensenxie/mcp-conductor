@@ -79,7 +79,8 @@ func (c *runtimeConfigCache) load(ctx context.Context) *runtimeSnapshot {
 	return &runtimeSnapshot{cfg: cloneRuntimeConfig(cfg), prefixes: trustedPrefixes(cfg.IPBlocklist), loadedAt: time.Now()}
 }
 
-// cloneRuntimeConfig 深拷贝运行期配置（blocklist/whitelist 切片隔离），避免调用方改动缓存内数据。
+// cloneRuntimeConfig 深拷贝运行期配置（blocklist/whitelist 切片与 Observability 指针隔离），
+// 避免调用方改动缓存内数据。
 func cloneRuntimeConfig(cfg *model.RuntimeConfig) *model.RuntimeConfig {
 	cp := *cfg
 	if cfg.IPBlocklist != nil {
@@ -87,6 +88,10 @@ func cloneRuntimeConfig(cfg *model.RuntimeConfig) *model.RuntimeConfig {
 	}
 	if cfg.IPWhitelist != nil {
 		cp.IPWhitelist = append([]string(nil), cfg.IPWhitelist...)
+	}
+	if cfg.Observability != nil {
+		ob := *cfg.Observability
+		cp.Observability = &ob
 	}
 	return &cp
 }
@@ -166,6 +171,9 @@ func fallbackRuntimeConfig(cfg config.Config) *model.RuntimeConfig {
 		},
 		IPBlocklist: cfg.Security.IPBlocklist,
 		IPWhitelist: cfg.Security.IPWhitelist,
+		Observability: &model.RuntimeObservability{
+			RecordArgs: cfg.Observability.RecordArgs,
+		},
 	}
 }
 
@@ -177,4 +185,14 @@ func runtimeRatePolicy(ctx context.Context, static rateLimitPolicy) rateLimitPol
 		return buildRateLimitPolicy(rl.QPS, rl.IPQPS, rl.GlobalQPS, rl.WindowSeconds)
 	}
 	return static
+}
+
+// runtimeRecordArgs 返回本次请求是否应捕获入参：ctx 运行期配置（/mcp 守卫已解析）
+// 携带 observability 块则用其 record_args，否则回退静态种子（config.yaml / 守卫缺失
+// 路径）。与 runtimeRatePolicy 同构，是 record() 落库前入参捕获的唯一决策点。
+func runtimeRecordArgs(ctx context.Context, seed bool) bool {
+	if rc := RuntimeConfigFrom(ctx); rc != nil && rc.Observability != nil {
+		return rc.Observability.RecordArgs
+	}
+	return seed
 }

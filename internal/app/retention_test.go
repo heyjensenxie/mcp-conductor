@@ -50,6 +50,7 @@ func (*stubTrafficStore) RecentTraffic(context.Context, int) ([]model.TrafficSam
 func (*stubTrafficStore) RecentTrafficByServer(context.Context, string, int) ([]model.TrafficSample, error) {
 	return nil, nil
 }
+func (*stubTrafficStore) PurgeTrafficArgs(context.Context) (int64, error) { return 0, nil }
 
 var _ storage.TrafficStore = (*stubTrafficStore)(nil)
 

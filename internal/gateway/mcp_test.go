@@ -78,7 +78,7 @@ func seedGatewayFull(t *testing.T, caller registry.ToolCaller, opts ...Option) (
 	g := NewMCPGateway(
 		store, resolver, balancer.NewRoundRobin(),
 		caller, authz, metrics,
-		observability.NewRecorder(store, false, 1.0),
+		observability.NewRecorder(store, 1.0),
 		opts...,
 	)
 	return g, store, metrics
@@ -277,6 +277,45 @@ func TestCallTool_success_recordsOnce(t *testing.T) {
 	}
 	if logs[0].InstanceID != "inst-1" {
 		t.Fatalf("调用日志应记录命中实例，得到 %q", logs[0].InstanceID)
+	}
+}
+
+// TestCallTool_recordArgsGating 验证调用日志入参是否捕获由运行期有效配置决定：
+// ctx（/mcp 守卫解析）携带 observability.record_args 时以其为准，未携带时回退
+// 静态种子（WithRecordArgsSeed）。这是 record() 落库前的唯一捕获决策点。
+func TestCallTool_recordArgsGating(t *testing.T) {
+	on, off := true, false
+	cases := []struct {
+		name       string
+		seed       bool
+		capture    *bool // nil=ctx 不带运行期配置（回退种子）
+		expectArgs bool
+	}{
+		{name: "runtime_on_captures", seed: false, capture: &on, expectArgs: true},
+		{name: "runtime_off_drops", seed: true, capture: &off, expectArgs: false},
+		{name: "no_runtime_seed_on", seed: true, capture: nil, expectArgs: true},
+		{name: "no_runtime_seed_off", seed: false, capture: nil, expectArgs: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g, store, _ := seedGatewayFull(t, nil, WithRecordArgsSeed(tc.seed))
+			ctx := WithIdentity(context.Background(), &auth.Identity{Subject: "anon", Operator: true})
+			if tc.capture != nil {
+				ctx = WithRuntimeConfig(ctx, &model.RuntimeConfig{
+					Observability: &model.RuntimeObservability{RecordArgs: *tc.capture},
+				})
+			}
+			if _, err := g.CallTool(ctx, "mock.search", map[string]any{"q": "hello"}); err != nil {
+				t.Fatalf("CallTool: %v", err)
+			}
+			logs, err := store.RecentTraffic(ctx, 10)
+			if err != nil || len(logs) != 1 {
+				t.Fatalf("应写入 1 条调用日志: len=%d err=%v", len(logs), err)
+			}
+			if got := logs[0].HasArgs; got != tc.expectArgs {
+				t.Fatalf("HasArgs=%v, 期望 %v（捕获决策未按预期生效）", got, tc.expectArgs)
+			}
+		})
 	}
 }
 

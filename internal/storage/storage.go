@@ -97,6 +97,9 @@ type TrafficStore interface {
 	// 最多删除 limit 行（供 app 分块限制单条 DELETE 的锁范围，MySQL 5.7 单表 DELETE
 	// 支持 LIMIT），返回实际删除行数；limit<=0 删除全部匹配。
 	DeleteTrafficBefore(ctx context.Context, before time.Time, limit int64) (int64, error)
+	// PurgeTrafficArgs 清空全部已捕获入参（隐私收尾：关闭入参捕获后清历史 request_args）。
+	// 仅置入参为空，行与元数据保留；返回被清掉入参的行数。
+	PurgeTrafficArgs(ctx context.Context) (int64, error)
 }
 
 // ---- 管理面列表查询（分页 + 关键词/字段筛选）----

@@ -69,12 +69,14 @@ func NewServer(cfg config.Config, deps Deps) *http.Server {
 	// 内嵌前端 SPA：未匹配 /api 与 /mcp 的路径由 Console 兜底。
 	mux.Handle("/", spaHandler())
 
-	// 中间件链：数据面 /mcp 先经运行期守卫（封禁 + 注入生效配置），认证后再限流。
+	// 中间件链：数据面 /mcp 先经运行期守卫（封禁 + 注入生效配置），认证失败计入
+	// 自动封禁违规（刷无效凭据达阈值即拉黑 IP），认证成功后再限流。
 	handler := chain(mux,
 		captureClientIPMiddleware(cfg.Server.TrustedProxies),
 		requestIDMiddleware,
 		loggingMiddleware,
 		runtimeGuardMiddleware(runtimeCache, autoBan),
+		authFailGuardMiddleware(autoBan),
 		authMiddleware(deps.Auth),
 		rateLimitMiddleware(deps.RateLimiter, newRateLimitPolicy(cfg.RateLimit), autoBan),
 	)
@@ -146,6 +148,7 @@ func registerControlRoutes(mux *http.ServeMux, deps Deps, runtimeCache *runtimeC
 	mux.HandleFunc("GET /api/logs", control.handleLogs)
 	mux.HandleFunc("GET /api/logs/{id}", control.handleGetLogDetail)
 	mux.HandleFunc("POST /api/logs/{id}/replay", control.handleReplayLog)
+	mux.HandleFunc("POST /api/logs/purge-args", control.handlePurgeTrafficArgs)
 
 	mux.HandleFunc("GET /api/runtime-config", control.handleGetRuntimeConfig)
 	mux.HandleFunc("PUT /api/runtime-config", control.handlePutRuntimeConfig)

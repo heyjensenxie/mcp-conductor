@@ -32,6 +32,43 @@
       </div>
     </a-card>
 
+    <!-- 观测与回放（运行期动态配置：入参捕获开关 + 一键清除已捕获入参） -->
+    <a-card class="settings-card" :bordered="true">
+      <template #title>
+        <span class="card-title">{{ t('settings.observabilityTitle') }}</span>
+        <span class="card-desc">{{ t('settings.observabilityDesc') }}</span>
+      </template>
+
+      <a-alert
+        v-if="obs.persisted"
+        type="info"
+        show-icon
+        class="obs-alert"
+        :message="t('settings.sourceRuntime')"
+      />
+      <a-alert v-else type="warning" show-icon class="obs-alert" :message="t('settings.sourceStatic')" />
+
+      <div class="form-grid">
+        <div class="form-row">
+          <span class="row-label">{{ t('settings.captureArgs') }}</span>
+          <div class="row-control obs-control">
+            <a-switch v-model:checked="obs.recordArgs" :loading="obs.loading" />
+            <span class="obs-state">{{ obs.recordArgs ? t('settings.captureOn') : t('settings.captureOff') }}</span>
+          </div>
+        </div>
+        <p class="row-hint">{{ t('settings.captureArgsDesc') }}</p>
+      </div>
+
+      <div class="card-footer obs-footer">
+        <a-button danger :disabled="obs.purging" @click="purgeVisible = true">
+          {{ t('settings.purgeArgs') }}
+        </a-button>
+        <a-button type="primary" :loading="obs.saving" @click="saveObservability">
+          {{ t('settings.saveChanges') }}
+        </a-button>
+      </div>
+    </a-card>
+
     <!-- 程序化访问 -->
     <a-card class="settings-card" :bordered="true">
       <template #title>
@@ -131,6 +168,19 @@
       <p class="confirm-desc danger">{{ t('settings.revokeDesc') }}</p>
     </a-modal>
 
+    <!-- 清除已捕获入参：二次确认（不可恢复） -->
+    <a-modal
+      v-model:open="purgeVisible"
+      :title="t('settings.purgeTitle')"
+      :ok-text="t('settings.purgeOk')"
+      :ok-button-props="{ danger: true }"
+      :cancel-text="t('common.cancel')"
+      :confirm-loading="obs.purging"
+      @ok="doPurgeArgs"
+    >
+      <p class="confirm-desc danger">{{ t('settings.purgeDesc') }}</p>
+    </a-modal>
+
     <!-- 新建 / 重新生成后：一次性展示完整凭证 -->
     <a-modal v-model:open="secretVisible" :title="t('settings.automationToken')" width="520px" :footer="null">
       <a-alert type="warning" show-icon class="secret-alert" :message="t('settings.secretOnce')" />
@@ -155,6 +205,8 @@ import { useI18n } from 'vue-i18n'
 import { currentLocale, setLocale, type AppLocale } from '@/i18n'
 import { parseBackendTime } from '@/utils/time'
 import { DEFAULT_INSTANCE_NAME, useAppStore } from '@/stores/app'
+import { getRuntimeConfig, putRuntimeConfig, purgeTrafficArgs } from '@/api'
+import type { RuntimeConfig } from '@/types'
 
 const { t } = useI18n()
 const store = useAppStore()
@@ -185,6 +237,73 @@ function saveBasic() {
   setLocale(basic.language as AppLocale)
   Object.assign(saved, basic)
   message.success(t('settings.savedOk'))
+}
+
+/* ================= 观测与回放（运行期动态配置：入参捕获开关 + 一键清除） =================
+   与防护页（SecurityView）共用 GET/PUT /api/runtime-config。PUT 为**全量快照覆盖**，
+   保存须带回当前 ratelimit/auto_ban/黑白名单 + 本次 record_args，避免误清其它运行期设置。 */
+
+const obs = reactive({
+  recordArgs: false, // 入参捕获开关（运行期可后台切换，无需重启）
+  persisted: false, // 是否已有后台保存值（false=当前为 config.yaml 种子）
+  loading: false,
+  saving: false,
+  purging: false,
+})
+const purgeVisible = ref(false)
+// 最近一次 GET 到的生效运行期配置；保存时作为其余字段的基线全量回传。
+let runtimeSnapshot: RuntimeConfig | null = null
+
+async function loadObservability() {
+  obs.loading = true
+  try {
+    const res = await getRuntimeConfig()
+    runtimeSnapshot = res.config
+    obs.recordArgs = res.config.observability?.record_args ?? false
+    obs.persisted = res.persisted
+  } catch (e) {
+    runtimeSnapshot = null
+    message.error(String(e))
+  } finally {
+    obs.loading = false
+  }
+}
+
+async function saveObservability() {
+  if (!runtimeSnapshot) {
+    message.warning(t('settings.observabilityLoadFirst'))
+    return
+  }
+  obs.saving = true
+  try {
+    await putRuntimeConfig({
+      ratelimit: runtimeSnapshot.ratelimit,
+      auto_ban: runtimeSnapshot.auto_ban,
+      ip_blocklist: runtimeSnapshot.ip_blocklist ?? [],
+      ip_whitelist: runtimeSnapshot.ip_whitelist ?? [],
+      observability: { record_args: obs.recordArgs },
+    })
+    runtimeSnapshot = { ...runtimeSnapshot, observability: { record_args: obs.recordArgs } }
+    obs.persisted = true
+    message.success(t('settings.savedOk'))
+  } catch (e) {
+    message.error(String(e))
+  } finally {
+    obs.saving = false
+  }
+}
+
+async function doPurgeArgs() {
+  purgeVisible.value = false
+  obs.purging = true
+  try {
+    const res = await purgeTrafficArgs()
+    message.success(t('settings.purgeDone', { n: res.purged }))
+  } catch (e) {
+    message.error(String(e))
+  } finally {
+    obs.purging = false
+  }
 }
 
 /* ================= 程序化访问（Automation Token） =================
@@ -307,6 +426,7 @@ function formatDateTime(iso: string): string {
 
 onMounted(async () => {
   loadToken()
+  void loadObservability() // 运行期动态配置（入参捕获开关）；独立失败不影响其余设置卡加载
   // 运行状态：命中免鉴权的 /healthz 存活探针，返回 data.status === 'ok'。
   try {
     const res = await fetch('/healthz')
@@ -399,6 +519,29 @@ onMounted(async () => {
   justify-content: flex-end;
   padding: 16px 0 6px;
   border-top: 1px solid var(--mc-line-soft);
+}
+
+/* 观测与回放 */
+.obs-alert {
+  margin: 12px 0 6px;
+}
+.obs-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.obs-state {
+  font-size: 12.5px;
+  color: var(--mc-ink-2);
+}
+.row-hint {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--mc-ink-3);
+}
+.obs-footer {
+  gap: 8px;
 }
 
 /* 程序化访问 */

@@ -728,6 +728,21 @@ func (s *Store) DeleteTrafficBefore(_ context.Context, before time.Time, limit i
 	return deleted, nil
 }
 
+// PurgeTrafficArgs 清空全部已捕获入参（Traffic 回放的隐私收尾：关闭捕获后清历史）。
+// 仅置 request_args 为 nil，行本身与元数据保留，返回被清掉入参的行数。
+func (s *Store) PurgeTrafficArgs(_ context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var purged int64
+	for i := range s.traffic {
+		if s.traffic[i].RequestArgs != nil {
+			s.traffic[i].RequestArgs = nil
+			purged++
+		}
+	}
+	return purged, nil
+}
+
 // ---- TrendStore ----
 
 // UpsertTrendBuckets 幂等写入已闭合分钟桶（同键覆盖，重复 flush 无害）。
@@ -793,6 +808,10 @@ func (s *Store) GetRuntimeConfig(_ context.Context) (*model.RuntimeConfig, bool,
 	if s.runtime.IPWhitelist != nil {
 		cp.IPWhitelist = append([]string(nil), s.runtime.IPWhitelist...)
 	}
+	if s.runtime.Observability != nil {
+		ob := *s.runtime.Observability
+		cp.Observability = &ob
+	}
 	return &cp, true, nil
 }
 
@@ -804,6 +823,10 @@ func (s *Store) PutRuntimeConfig(_ context.Context, cfg *model.RuntimeConfig) er
 	cp := *cfg
 	cp.IPBlocklist = append([]string(nil), cfg.IPBlocklist...)
 	cp.IPWhitelist = append([]string(nil), cfg.IPWhitelist...)
+	if cfg.Observability != nil {
+		ob := *cfg.Observability
+		cp.Observability = &ob
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runtime = &cp

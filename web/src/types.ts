@@ -339,12 +339,18 @@ export interface RuntimeAutoBan {
   ban_seconds: number
 }
 
+// 运行期观测设置（随 RuntimeConfig 单行持久化；observability 缺省=沿用当前有效值）。
+export interface RuntimeObservability {
+  record_args: boolean
+}
+
 // 生效的运行期配置（后台保存值优先，否则为 config.yaml 种子）。
 export interface RuntimeConfig {
   ratelimit: RuntimeRateLimit
   auto_ban: RuntimeAutoBan
   ip_blocklist: string[]
   ip_whitelist: string[]
+  observability?: RuntimeObservability
   updated_at?: string
 }
 

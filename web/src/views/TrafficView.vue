@@ -27,7 +27,14 @@
           <a-select-option value="success">{{ t('traffic.statusSuccess') }}</a-select-option>
           <a-select-option v-for="code in statusOptions" :key="code" :value="code">{{ code }}</a-select-option>
         </a-select>
-        <a-range-picker v-model:value="dateRange" show-time class="range" @change="onRangeChange" />
+        <a-range-picker
+          v-model:value="dateRange"
+          show-time
+          class="range"
+          :format="t('filter.rangeFormat')"
+          :placeholder="[t('filter.rangeStart'), t('filter.rangeEnd')]"
+          @change="onRangeChange"
+        />
       </a-space>
     </div>
 

@@ -257,6 +257,54 @@ func secondsDuration(n int) time.Duration {
 	return time.Duration(n) * time.Second
 }
 
+// authFailGuardMiddleware 观察 /mcp 认证失败并按运行期 auto_ban 配置计来源 IP 违规：
+// 刷无效凭据不再绕过防护链——窗口内失败达阈值即临时封禁该 IP（封禁期由运行期守卫
+// 对 /mcp 统一 403）。与 loginGuardMiddleware（Console 登录防爆破）同构，但复用数据面
+// autoBanManager 与运行期 auto_ban 阈值（同一计数器，429 违规共用）。仅统计 401
+// （认证失败），500 等非认证错误不误计；非 /mcp 路径透传；ab 为 nil 时不启用。
+func authFailGuardMiddleware(ab ...*autoBanManager) Middleware {
+	ban := autoBanOf(ab)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if ban == nil || !strings.HasPrefix(r.URL.Path, mcpPath) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			rec := &statusRecorder{ResponseWriter: w}
+			next.ServeHTTP(rec, r)
+			if rec.status != http.StatusUnauthorized {
+				return
+			}
+			recordAuthFailureViolation(r.Context(), ban, r)
+		})
+	}
+}
+
+// recordAuthFailureViolation 认证失败时计一次来源 IP 的自动封禁违规（白名单豁免）。
+// 只走 IP 维度：失败时无身份可归属（operator 不可能认证失败）。阈值/窗口/时长取
+// 运行期 auto_ban；白名单来源可信豁免（与 recordAutoBan 的 429 违规一致）。达阈值
+// 即临时封禁，等待期由运行期守卫统一 403。
+func recordAuthFailureViolation(ctx context.Context, ban *autoBanManager, r *http.Request) {
+	rc := RuntimeConfigFrom(ctx)
+	if rc == nil || !rc.AutoBan.Enabled {
+		return
+	}
+	ab := rc.AutoBan
+	if max := ab.MaxViolations; max <= 0 {
+		return
+	}
+	ip := requestClientIP(r)
+	if ip == "" || ipInEntries(ip, rc.IPWhitelist) {
+		return
+	}
+	if ban.recordIPViolation(ip, secondsDuration(ab.WindowSeconds), ab.MaxViolations) {
+		ban.banIP(ip, secondsDuration(ab.BanSeconds))
+		slog.Warn("MCP 认证失败达阈值，临时封禁来源 IP",
+			"ip", ip, "max_violations", ab.MaxViolations,
+			"ban_seconds", int(secondsDuration(ab.BanSeconds)/time.Second))
+	}
+}
+
 // allowMcpTiers 依次裁定 /mcp 的全局、IP、key 三级；每级仅在有效 QPS>0 时消耗配额。
 func allowMcpTiers(ctx context.Context, limiter ratelimit.Limiter, p rateLimitPolicy, r *http.Request) bool {
 	// 1. 全局总闸：整网关 /mcp 聚合配额。

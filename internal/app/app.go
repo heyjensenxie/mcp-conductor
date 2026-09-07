@@ -63,7 +63,7 @@ func Run(ctx context.Context) error {
 	resolver := router.NewResolver(store, store).WithRoutes(store).WithInstances(store)
 	authorizer := access.NewAuthorizer()
 	metrics := observability.NewMetrics()
-	recorder := observability.NewRecorder(store, cfg.Observability.RecordArgs, cfg.Observability.SampleRate)
+	recorder := observability.NewRecorder(store, cfg.Observability.SampleRate)
 
 	// MCP 评测：现场拨测（复用带凭据注入的 adapter）+ 进程内运行时指标。
 	evalSvc := eval.NewService(store, adapter, adapter, func(serverID string) (eval.RuntimeStats, bool) {
@@ -97,6 +97,9 @@ func Run(ctx context.Context) error {
 		gateway.WithUpstreamTimeout(cfg.Gateway.UpstreamTimeout),
 		gateway.WithMaxConcurrency(cfg.Gateway.MaxConcurrency),
 		gateway.WithInstanceProbe(monitor.TriggerCheck),
+		// 入参捕获静态种子：数据面实际是否捕获由运行期配置（/mcp 守卫解析进 ctx）
+		// 决定，未携带时回退到 config.yaml 的 record_args。
+		gateway.WithRecordArgsSeed(cfg.Observability.RecordArgs),
 	)
 
 	authSvc, err := auth.NewService(cfg.Auth, store)

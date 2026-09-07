@@ -103,6 +103,8 @@ observability:
   # 捕获 tools/call 入参到调用日志（默认关，入参可能含隐私）。开启后 Traffic 行可
   # 「回放」——把捕获调用重发到其命中实例；响应**永不**落库。受 sample_rate 影响：
   # 被采样丢弃的行连同入参一并丢弃，无法回放。
+  # 运行期可在后台动态切换（Console「设置 → 观测与回放」/ PUT /api/runtime-config），
+  # 无需重启；本值仅作为无后台存值时的种子。
   record_args: false
   sample_rate: 1.0           # 0-1 调用日志采样率
   # 分钟桶趋势（trend_minute）保留天数（1..365）：已闭合分钟每 60s 幂等落库，

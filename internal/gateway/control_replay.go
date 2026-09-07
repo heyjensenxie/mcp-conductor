@@ -77,6 +77,23 @@ func (c *Control) handleReplayLog(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, RequestIDFrom(r.Context()), res)
 }
 
+// purgeArgsView 是清除入参的结果：purged 为被清除入参的调用日志行数。
+type purgeArgsView struct {
+	Purged int64 `json:"purged"`
+}
+
+// handlePurgeTrafficArgs 清空全部已捕获入参（隐私收尾：关闭入参捕获后清历史）。
+// 幂等可重复：无入参的行本来为 NULL，重复清除返回 0。仅置 request_args 为空，
+// 行本身与元数据保留（指标/趋势不受影响）。
+func (c *Control) handlePurgeTrafficArgs(w http.ResponseWriter, r *http.Request) {
+	n, err := c.store.PurgeTrafficArgs(r.Context())
+	if err != nil {
+		writeGatewayError(w, r, statusForError(err), err)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), purgeArgsView{Purged: n})
+}
+
 // parseTrafficID 解析路径中的数字流水主键，失败时写 400 并返回 false。
 func parseTrafficID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)

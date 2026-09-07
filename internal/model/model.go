@@ -340,6 +340,14 @@ type RuntimeAutoBan struct {
 	BanSeconds    int  `json:"ban_seconds"`
 }
 
+// RuntimeObservability 是运行期观测设置（单行持久化随 RuntimeConfig 保存）。
+// 指针语义：nil 表示调用方未携带该块（旧客户端），控制面沿用当前有效值，避免误改。
+type RuntimeObservability struct {
+	// RecordArgs 为 true 时在 /mcp tools/call 调用日志捕获入参（Traffic 回放用；
+	// 响应永不落库）。运行期可后台切换，无需重启；config.yaml 仅作无存值种子。
+	RecordArgs bool `json:"record_args"`
+}
+
 // RuntimeConfig 是网关运行期治理配置的完整快照（单行持久化，Console 维护）：
 // 后台首次保存后即权威，静态 config.yaml 仅作为无存值时的种子。
 type RuntimeConfig struct {
@@ -348,6 +356,7 @@ type RuntimeConfig struct {
 	// IPBlocklist 来源 IP/CIDR 封禁名单（仅 /mcp 生效）。
 	IPBlocklist []string `json:"ip_blocklist"`
 	// IPWhitelist 可信豁免名单：命中来源不受 IP 黑名单 / 自动封禁(IP) / 单 IP 级限流影响。
-	IPWhitelist []string  `json:"ip_whitelist"`
-	UpdatedAt   Time `json:"updated_at,omitempty"`
+	IPWhitelist   []string              `json:"ip_whitelist"`
+	Observability *RuntimeObservability `json:"observability,omitempty"`
+	UpdatedAt     Time                  `json:"updated_at,omitempty"`
 }

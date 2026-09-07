@@ -773,3 +773,18 @@ func (s *Store) DeleteTrafficBefore(ctx context.Context, before time.Time, limit
 	}
 	return n, nil
 }
+
+// PurgeTrafficArgs 清空全部已捕获入参（Traffic 回放的隐私收尾：关闭捕获后清历史）。
+// 仅置 request_args 为 NULL，行本身与元数据保留；返回被清掉入参的行数。
+func (s *Store) PurgeTrafficArgs(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE traffic_log SET request_args = NULL WHERE request_args IS NOT NULL`)
+	if err != nil {
+		return 0, fmt.Errorf("purge traffic_log request_args: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("purge traffic_log rows affected: %w", err)
+	}
+	return n, nil
+}

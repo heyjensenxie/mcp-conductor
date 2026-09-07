@@ -54,6 +54,9 @@ type MCPGateway struct {
 	// instanceProbe 在实例调用失败时触发对所属 Server 的快速健康探活
 	// （由 app 注入 Monitor.TriggerCheck；nil 表示不触发，等周期巡检兜底）。
 	instanceProbe func(serverID string)
+	// recordArgsSeed 是入参捕获的静态种子（config.yaml observability.record_args）：
+	// ctx 运行期配置未携带 observability 块时回退到此值（见 runtimeRecordArgs）。
+	recordArgsSeed bool
 }
 
 // Option 是 MCPGateway 构造选项。
@@ -81,6 +84,13 @@ func WithInstanceProbe(fn func(serverID string)) Option {
 			g.instanceProbe = fn
 		}
 	}
+}
+
+// WithRecordArgsSeed 配置入参捕获的静态种子（config.yaml observability.record_args）。
+// 数据面实际是否捕获由 ctx 运行期配置决定（/mcp 守卫解析），仅在其未携带
+// observability 块时回退到本种子。
+func WithRecordArgsSeed(seed bool) Option {
+	return func(g *MCPGateway) { g.recordArgsSeed = seed }
 }
 
 // NewMCPGateway 创建统一端点后端。
@@ -252,8 +262,10 @@ func (g *MCPGateway) record(ctx context.Context, resolved *router.Resolved, name
 	if !ok {
 		sample.Error = errs.SafeMessage(callErr)
 	}
-	// 只捕获非空入参（record_args 开启时 Recorder 才保留；空参无可回放）。
-	if len(reqArgs) > 0 {
+	// 只捕获非空入参；是否捕获由运行期有效配置（observability.record_args，/mcp 守卫
+	// 已解析进 ctx）决定，未携带时回退静态种子。这是入参落库的唯一决策点——宕制品
+	// 需在此经 runtimeRecordArgs 收敛，勿在 Recorder 侧另起落库点绕过捕获闸门。
+	if len(reqArgs) > 0 && runtimeRecordArgs(ctx, g.recordArgsSeed) {
 		sample.RequestArgs = reqArgs
 	}
 	g.recorder.Record(ctx, sample)

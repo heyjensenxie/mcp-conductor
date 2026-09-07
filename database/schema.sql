@@ -191,9 +191,9 @@ CREATE TABLE IF NOT EXISTS trend_minute (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='已闭合分钟桶趋势（幂等 upsert，按保留天数清理）';
 
 -- -----------------------------------------------------------------------------
--- 运行期治理配置（0013）：IP 黑名单 + 三级限流阈值的单行快照（id 恒为 1）。
--- 后台（/api/runtime-config + Console 防护页）保存后即权威；无保存值时网关回退
--- config.yaml 种子（ratelimit.* 与 security.ip_blocklist）。
+-- 运行期治理配置（0013）：IP 黑名单 + 三级限流阈值 + 观测开关的单行快照（id 恒为 1）。
+-- 后台（/api/runtime-config + Console）保存后即权威；无保存值时网关回退
+-- config.yaml 种子（ratelimit.*、security.ip_blocklist 与 observability.record_args）。
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS runtime_config (
   id             TINYINT UNSIGNED NOT NULL COMMENT '固定主键（恒为 1，单行快照）',
@@ -210,6 +210,7 @@ CREATE TABLE IF NOT EXISTS runtime_config (
   auto_ban_ban_seconds INT NOT NULL DEFAULT 300 COMMENT '临时封禁时长(秒, TTL 自动解封)',
   ip_blocklist   TEXT    NULL    COMMENT '来源 IP/CIDR 封禁名单 JSON（仅 /mcp）',
   ip_whitelist   TEXT    NULL    COMMENT '可信 IP/CIDR 白名单 JSON（豁免黑名单/自动封禁/IP级限流，0017）',
+  record_args    TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'tools/call 入参捕获开关（0=关，默认；供 Traffic 回放，0019）',
   updated_at     DATETIME(3) NOT NULL COMMENT '最近保存时间（UTC）',
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='运行期治理配置（IP 黑名单 + 滑动窗口三级限流，Console 维护）';

@@ -240,6 +240,11 @@ export const getTrafficLog = (id: number) => unwrap<TrafficDetail>(http.get(`/lo
 export const replayTraffic = (id: number, payload?: { timeout_ms?: number }) =>
   unwrap<TrafficReplayResult>(http.post(`/logs/${id}/replay`, payload))
 
+// purgeTrafficArgs 清空全部已捕获入参（关闭入参捕获后的隐私收尾；仅置 request_args 为空，
+// 行与元数据保留）。返回被清掉入参的行数。
+export const purgeTrafficArgs = () =>
+  unwrap<{ purged: number }>(http.post('/logs/purge-args'))
+
 // ---- MCP Evaluation（评测）----
 
 // instanceId 可选：定向某实例评测（缺省为空=首个可拨测实例）。
