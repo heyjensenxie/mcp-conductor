@@ -116,18 +116,20 @@ examples/mock-mcp   # 演示用最小 MCP Server
 - Go ≥ 1.25（后端）、Node ≥ 20（前端构建）、Docker（可选，用于 Compose）。
 - 国内拉取 Go 依赖若直连 `proxy.golang.org` 不通，先设置镜像：`go env -w GOPROXY=https://goproxy.cn,direct`。
 
-### 方式一：Docker（仅应用容器，数据库/Redis 用宿主机实例）
+### 方式一：Docker Compose（一键启动应用 + MySQL + Redis）
 
-Compose 只构建/运行应用本身，**不再启动 MySQL/Redis 容器**——数据库与 Redis 默认连宿主机（容器内经 `host.docker.internal` 访问）。
+Compose 默认构建并启动应用、MySQL 5.7 与 Redis；数据库 Schema 会在**首次创建 MySQL 数据卷**时自动初始化。MySQL 和 Redis 不映射宿主机端口，只能由 Compose 内的应用访问；数据分别保存在命名卷 `mysql_data` 与 `redis_data`。
 
 ```bash
-CONDUCTOR_DB_PASSWORD=<你的本地 MySQL 密码> docker compose up --build
+cp .env.example .env          # 首次部署：替换其中的本地默认密码和生产密钥
+docker compose up -d --build
 # Console:  http://localhost:18110
 # MCP 端点: http://localhost:18110/mcp
 ```
 
-- 数据库：默认 `mysql`，连宿主机 `host.docker.internal:3306` 的 `conductor` 库（空库先执行 `database/schema.sql`，宿主机已有 MySQL 时用 `CONDUCTOR_DATABASE_DSN='root:***@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate`）。账号可用 `CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME` 覆盖；`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。
-- Redis：仅当同时开启 `CONDUCTOR_REDIS_ENABLED=true` 与 `CONDUCTOR_RATELIMIT_ENABLED=true` 时才用于分布式 per-key 限流，默认关闭（本机 Redis 若只监听 `127.0.0.1` 需放开监听才能被容器访问）。
+- 本地默认值使用项目名派生的强密码，仅适合封闭的 Compose 网络。公开部署前，必须在未跟踪的 `.env` 中替换 `MYSQL_PASSWORD`、`MYSQL_ROOT_PASSWORD`、`CONDUCTOR_REDIS_PASSWORD`、管理员密码、管理令牌、会话密钥与凭证加密密钥；不要提交 `.env`。
+- 如需接入外部 MySQL，设置完整的 `CONDUCTOR_DATABASE_DSN`；外部 Redis 则覆盖 `CONDUCTOR_REDIS_ADDR / PASSWORD`。`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。注意：`MYSQL_USER` 是 Compose 初始化的普通账号，不能设为 `root`。外部空 MySQL 可用 `CONDUCTOR_DATABASE_DSN='user:password@tcp(host:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate` 初始化。
+- 清空本机所有 Compose 数据并重新初始化：`docker compose down -v`（会删除数据库和 Redis 数据）。
 
 ### 方式二：一键构建（带真实 Console 的单二进制，推荐）
 
@@ -309,8 +311,8 @@ make web-dev       # 前端热更新 :5173（代理 /api、/mcp）
 make test          # 后端单元测试
 make vet           # go vet 静态检查
 make check         # 本地质量门禁：vet + test + 前端构建/类型检查
-make docker-up     # Compose 仅启动应用（数据库/Redis 用宿主机实例）
-make db-migrate    # 应用 database/schema.sql（需先设置 CONDUCTOR_DATABASE_DSN）
+make docker-up     # 一键启动应用、MySQL 5.7、Redis（首次自动初始化 Schema）
+make db-migrate    # 初始化外部 MySQL（需先设置 CONDUCTOR_DATABASE_DSN）
 ```
 
 - **后端约定**：统一错误模型与结构化日志（不打印 Credential、Token 与完整敏感 MCP payload）；核心模块测试优先（Router / Balancer / Rate Limiter / Tool Namespace）。

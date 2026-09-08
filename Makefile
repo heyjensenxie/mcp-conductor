@@ -53,14 +53,14 @@ build-console: build
 ## 本地一键启动（等同 run）
 dev: run
 
-## 数据库/队列基础设施已由 docker compose up 提供
+## 一键启动应用、MySQL 5.7 与 Redis；首次 MySQL 初始化自动执行 database/schema.sql
 docker-up:
 	docker compose up -d --build
 
 docker-down:
 	docker compose down
 
-## 把 database/schema.sql 应用到空 MySQL 库（连宿主机实例，见 docker-compose）
+## 把 database/schema.sql 应用到外部空 MySQL 库（Compose 内置 MySQL 会自动初始化）
 ## 需先提供 DSN：CONDUCTOR_DATABASE_DSN='user:pass@tcp(host:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate
 db-migrate:
 	@test -n "$(CONDUCTOR_DATABASE_DSN)" || (echo "请先设置 CONDUCTOR_DATABASE_DSN（连宿主机 MySQL 的 DSN）后重试"; exit 1)

@@ -1,19 +1,45 @@
-# MCP Conductor 容器化运行（仅应用本身，不含基础设施）。
+# MCP Conductor 一键本地部署：应用 + MySQL 5.7 + Redis。
 #
-# 不再随编排启动 MySQL / Redis 容器：数据库与 Redis 使用宿主机已有实例。
-# 容器内访问宿主机服务需用 host.docker.internal（Docker 20.10+；extra_hosts
-# 提供 host-gateway 解析，Linux/WSL2/Desktop 均可用）。
-#
-# 连宿主机 MySQL / Redis 的账号密码不要写死在 yml，用环境变量覆盖：
-#   CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME
-#   CONDUCTOR_REDIS_HOST / CONDUCTOR_REDIS_PORT / CONDUCTOR_REDIS_PASSWORD
-# 本机常见账号（示例，非默认密码）：
-#   CONDUCTOR_DB_PASSWORD=<your-local-mysql-password> docker compose up -d --build
-#
-# 提示：Redis 仅当同时开启限流（CONDUCTOR_RATELIMIT_ENABLED=true）时才会连接
-# 用于分布式 per-key 限流；本机 Redis 若只监听 127.0.0.1，需改为监听所有网卡
-# 才能被容器访问。
+# `docker compose up -d --build` 会创建仅 Compose 内网可见的 MySQL、Redis 和
+# 持久卷。复制 .env.example 为未跟踪的 .env 后，可在首次启动前替换本地默认密码。
+# 生产部署必须设置强密码、认证密钥和 credentials 加密密钥；不要发布 .env 文件。
 services:
+  mysql:
+    image: mysql:5.7
+    environment:
+      # MYSQL_USER 必须是普通账号；不能使用 root（MySQL 官方镜像会拒绝启动）。
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-mcp_conductor}
+      MYSQL_USER: ${MYSQL_USER:-mcp_conductor}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-McpConductor#MySQL57!2026}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-McpConductor#RootMySQL57!2026}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${CONDUCTOR_REDIS_PASSWORD:-McpConductor#Redis7!2026}
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${CONDUCTOR_REDIS_PASSWORD:-McpConductor#Redis7!2026}"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   conductor:
     build:
       context: .
@@ -26,14 +52,13 @@ services:
     environment:
       # 容器内监听端口（与应用 config 的 server.port 对齐，默认 18110）。
       CONDUCTOR_SERVER_PORT: ${CONDUCTOR_SERVER_PORT:-18110}
-      # 存储：默认连宿主机 MySQL；置 memory 可脱离数据库运行。
+      # 默认连接同一 Compose 网络中的服务；外部 MySQL 请直接覆盖完整 DSN。
       CONDUCTOR_DATABASE_DRIVER: ${CONDUCTOR_DATABASE_DRIVER:-mysql}
-      CONDUCTOR_DATABASE_DSN: "${CONDUCTOR_DB_USER:-root}:${CONDUCTOR_DB_PASSWORD:-}@tcp(${CONDUCTOR_DB_HOST:-host.docker.internal}:${CONDUCTOR_DB_PORT:-3306})/${CONDUCTOR_DB_NAME:-conductor}?parseTime=true&loc=UTC&charset=utf8mb4"
-      # Redis：仅当 RATELIMIT_ENABLED=true 时才被连接用于分布式限流（默认关）。
-      CONDUCTOR_REDIS_ENABLED: ${CONDUCTOR_REDIS_ENABLED:-false}
-      CONDUCTOR_REDIS_ADDR: "${CONDUCTOR_REDIS_HOST:-host.docker.internal}:${CONDUCTOR_REDIS_PORT:-6379}"
-      CONDUCTOR_REDIS_PASSWORD: ${CONDUCTOR_REDIS_PASSWORD:-}
-      CONDUCTOR_RATELIMIT_ENABLED: ${CONDUCTOR_RATELIMIT_ENABLED:-false}
+      CONDUCTOR_DATABASE_DSN: "${CONDUCTOR_DATABASE_DSN:-mcp_conductor:McpConductor#MySQL57!2026@tcp(mysql:3306)/mcp_conductor?parseTime=true&loc=UTC&charset=utf8mb4}"
+      CONDUCTOR_REDIS_ENABLED: ${CONDUCTOR_REDIS_ENABLED:-true}
+      CONDUCTOR_REDIS_ADDR: ${CONDUCTOR_REDIS_ADDR:-redis:6379}
+      CONDUCTOR_REDIS_PASSWORD: ${CONDUCTOR_REDIS_PASSWORD:-McpConductor#Redis7!2026}
+      CONDUCTOR_RATELIMIT_ENABLED: ${CONDUCTOR_RATELIMIT_ENABLED:-true}
       CONDUCTOR_RATELIMIT_QPS: ${CONDUCTOR_RATELIMIT_QPS:-100}
       CONDUCTOR_AUTH_ENABLED: ${CONDUCTOR_AUTH_ENABLED:-true}
       CONDUCTOR_AUTH_OPERATOR_TOKEN: ${CONDUCTOR_AUTH_OPERATOR_TOKEN:-}
@@ -43,6 +68,13 @@ services:
       CONDUCTOR_AUTH_API_KEYS: ${CONDUCTOR_AUTH_API_KEYS:-}
       CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY: ${CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY:-}
       CONDUCTOR_LOGGING_LEVEL: ${CONDUCTOR_LOGGING_LEVEL:-info}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  mysql_data:
+  redis_data:

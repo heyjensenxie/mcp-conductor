@@ -100,20 +100,24 @@ export CONDUCTOR_AUTH_TOKEN_SECRET="$(openssl rand -hex 32)"
 
 The `/mcp` data plane uses access keys created in the console or seeded through `CONDUCTOR_AUTH_API_KEYS`. Control-plane credentials and data-plane access keys are separate.
 
-### Docker
+### Docker Compose
 
-The Compose file runs the application only. By default, it connects to an existing MySQL instance on the host through `host.docker.internal`; Redis remains disabled unless both Redis and rate limiting are enabled.
+Compose builds and starts the application, MySQL 5.7, and Redis. The schema is initialized automatically when the MySQL volume is first created. MySQL and Redis remain internal to the Compose network; their data is retained in the `mysql_data` and `redis_data` named volumes.
 
 ```bash
-CONDUCTOR_DB_PASSWORD='<mysql-password>' docker compose up --build
+cp .env.example .env  # first deployment: replace local default passwords and production secrets
+docker compose up -d --build
 ```
 
-Use `CONDUCTOR_DATABASE_DRIVER=memory` to run without MySQL. For MySQL, create the database and apply `database/schema.sql` first:
+- The project-name-derived defaults are for a private local Compose network only. Before exposing a deployment, replace `MYSQL_PASSWORD`, `MYSQL_ROOT_PASSWORD`, `CONDUCTOR_REDIS_PASSWORD`, the administrator password, operator token, session secret, and credential encryption key in the untracked `.env` file. Never commit `.env`.
+- Set a complete `CONDUCTOR_DATABASE_DSN` for external MySQL, or override `CONDUCTOR_REDIS_ADDR` / `PASSWORD` for external Redis. `MYSQL_USER` initializes a regular Compose database user and must not be `root`. Set `CONDUCTOR_DATABASE_DRIVER=memory` to run without MySQL. For an external MySQL database, initialize the schema with:
 
 ```bash
 export CONDUCTOR_DATABASE_DSN='user:password@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4'
 make db-migrate
 ```
+
+Reset all local Compose data with `docker compose down -v`; this deletes the MySQL and Redis volumes.
 
 ### Five-minute gateway example
 
