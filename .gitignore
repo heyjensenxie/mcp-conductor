@@ -14,7 +14,7 @@ web/dist/
 bin/
 coverage.out
 
-# 本地运行时配置（含可能写密钥；模板 .env.example / config.example.yaml 已提交）
+# 本地运行时配置（可能写密钥，不跟踪；模板 config.example.yaml 已提交）
 .env
 config.yaml
 web/components.d.ts

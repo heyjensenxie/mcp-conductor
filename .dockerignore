@@ -2,6 +2,7 @@
 .git
 .local
 .env
+config.yaml
 bin
 node_modules
 **/node_modules

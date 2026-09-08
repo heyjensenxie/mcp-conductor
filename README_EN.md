@@ -102,15 +102,15 @@ The `/mcp` data plane uses access keys created in the console or seeded through 
 
 ### Docker Compose
 
-Compose builds and starts the application, MySQL 5.7, and Redis. The schema is initialized automatically when the MySQL volume is first created. MySQL and Redis remain internal to the Compose network; their data is retained in the `mysql_data` and `redis_data` named volumes.
+Compose builds and starts the application, MySQL 5.7, and Redis. The schema is initialized automatically when the MySQL volume is first created. MySQL and Redis remain internal to the Compose network; their data is retained in the `mysql_data` and `redis_data` named volumes. The application reads the same project-root `config.yaml` you use for local `go run` — Compose mounts it into the container, so you maintain a single configuration file.
 
 ```bash
-cp .env.example .env  # first deployment: replace local default passwords and production secrets
+cp config.example.yaml config.yaml   # first time: copy the template and edit it (secrets included)
 docker compose up -d --build
 ```
 
-- The project-name-derived defaults are for a private local Compose network only. Before exposing a deployment, replace `MYSQL_PASSWORD`, `MYSQL_ROOT_PASSWORD`, `CONDUCTOR_REDIS_PASSWORD`, the administrator password, operator token, session secret, and credential encryption key in the untracked `.env` file. Never commit `.env`.
-- Set a complete `CONDUCTOR_DATABASE_DSN` for external MySQL, or override `CONDUCTOR_REDIS_ADDR` / `PASSWORD` for external Redis. `MYSQL_USER` initializes a regular Compose database user and must not be `root`. Set `CONDUCTOR_DATABASE_DRIVER=memory` to run without MySQL. For an external MySQL database, initialize the schema with:
+- The default credentials are project-name-derived strong passwords, safe only inside a private Compose network; `config.yaml` is untracked — never commit it. To use the Compose-managed MySQL/Redis, point the `database.dsn` / `redis` blocks in `config.yaml` at `mysql:3306` / `redis:6379`, with passwords matching the `MYSQL_*` / `CONDUCTOR_REDIS_PASSWORD` defaults in `docker-compose.yml` (see the commented blocks in `config.example.yaml`). Configure the admin password, operator token, session secret, and credential-encryption key in `config.yaml`; for one-off overrides use `export CONDUCTOR_*=xxx docker compose up` — do not reintroduce a `.env` file.
+- Use an external MySQL/Redis by editing the `database.dsn` / `redis` blocks in `config.yaml`; `database.driver: memory` runs without a database. `MYSQL_USER` initializes a regular Compose database user and must not be `root`. To initialize an external empty MySQL database, run:
 
 ```bash
 export CONDUCTOR_DATABASE_DSN='user:password@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4'
@@ -170,7 +170,7 @@ Control-plane responses use the envelope `{ "code", "message", "request_id", "da
 
 ## Configuration
 
-Configuration is loaded from `config.yaml`; `CONDUCTOR_*` environment variables take precedence. Start from [config.example.yaml](config.example.yaml) or [.env.example](.env.example).
+Configuration is loaded from a single file, `config.yaml`, with `CONDUCTOR_*` environment variables taking precedence. Start from [config.example.yaml](config.example.yaml). Docker Compose reads the same project-root `config.yaml` (see the Compose section above), so you only maintain one configuration file.
 
 | Group | Purpose |
 | --- | --- |

@@ -1,10 +1,11 @@
-# MCP Conductor 配置示例。
-# 复制为 config.yaml（或通过 CONDUCTOR_CONFIG 指定路径）后按需修改；
-# 环境变量 CONDUCTOR_* 优先级更高。
+# MCP Conductor 配置唯一来源（模板）。本地直接运行与 docker compose 都读这份文件：
+# 本地 `go run` 在当前目录找 config.yaml；docker compose 把项目根 config.yaml 挂载进
+# 容器并设 CONDUCTOR_CONFIG=/app/config.yaml。复制为 config.yaml 后按需修改，密钥只放
+# 在未跟踪的 config.yaml 中，不要提交；环境变量 CONDUCTOR_<GROUP>_<FIELD> 优先级更高。
 
 server:
   host: 0.0.0.0
-  port: 18110
+  port: 18110 # Compose 容器内监听该端口，宿主机默认映射同号 18110；改这里需同步 docker-compose.yml
   # 客户端 IP 解析：网关处于反向代理/网关之后时，列出可信代理（IP 或 CIDR），
   # 请求来自这些地址时才信任 X-Forwarded-For / X-Real-IP；留空（默认）只认直连地址。
   # trusted_proxies:
@@ -12,11 +13,17 @@ server:
   #   - 127.0.0.1
 
 # driver 支持 memory（默认，无 MySQL 也可运行）| mysql（生产 MySQL 5.7+；DSN 需含 parseTime=true&loc=UTC&charset=utf8mb4）
+# Compose 一键内置 MySQL 时改为 mysql 并指向 compose 内网的服务（密码需与
+# docker-compose.yml 的 MYSQL_* 默认一致，改任一处要同步）：
+#   driver: mysql
+#   dsn: "mcp_conductor:McpConductor#MySQL57!2026@tcp(mysql:3306)/mcp_conductor?parseTime=true&loc=UTC&charset=utf8mb4"
 database:
   driver: memory
   dsn: ""
 
 redis:
+  # Compose 一键内置 Redis 时开启并指向 compose 内网（密码需与 docker-compose.yml
+  # 的 CONDUCTOR_REDIS_PASSWORD 默认一致）；本地直连宿主机 Redis 则用 localhost:6379。
   enabled: false
   addr: localhost:6379
   password: ""

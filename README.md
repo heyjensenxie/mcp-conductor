@@ -118,17 +118,17 @@ examples/mock-mcp   # 演示用最小 MCP Server
 
 ### 方式一：Docker Compose（一键启动应用 + MySQL + Redis）
 
-Compose 默认构建并启动应用、MySQL 5.7 与 Redis；数据库 Schema 会在**首次创建 MySQL 数据卷**时自动初始化。MySQL 和 Redis 不映射宿主机端口，只能由 Compose 内的应用访问；数据分别保存在命名卷 `mysql_data` 与 `redis_data`。
+Compose 默认构建并启动应用、MySQL 5.7 与 Redis；数据库 Schema 会在**首次创建 MySQL 数据卷**时自动初始化。MySQL 和 Redis 不映射宿主机端口，只能由 Compose 内的应用访问；数据分别保存在命名卷 `mysql_data` 与 `redis_data`。应用配置唯一来源是项目根 `config.yaml`（与本地 `go run` 同一份），Compose 会把它挂载进容器。
 
 ```bash
-cp .env.example .env          # 首次部署：替换其中的本地默认密码和生产密钥
+cp config.example.yaml config.yaml   # 首次：复制配置模板并按需编辑（含密钥）
 docker compose up -d --build
 # Console:  http://localhost:18110
 # MCP 端点: http://localhost:18110/mcp
 ```
 
-- 本地默认值使用项目名派生的强密码，仅适合封闭的 Compose 网络。公开部署前，必须在未跟踪的 `.env` 中替换 `MYSQL_PASSWORD`、`MYSQL_ROOT_PASSWORD`、`CONDUCTOR_REDIS_PASSWORD`、管理员密码、管理令牌、会话密钥与凭证加密密钥；不要提交 `.env`。
-- 如需接入外部 MySQL，设置完整的 `CONDUCTOR_DATABASE_DSN`；外部 Redis 则覆盖 `CONDUCTOR_REDIS_ADDR / PASSWORD`。`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。注意：`MYSQL_USER` 是 Compose 初始化的普通账号，不能设为 `root`。外部空 MySQL 可用 `CONDUCTOR_DATABASE_DSN='user:password@tcp(host:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate` 初始化。
+- 默认凭据为项目名派生的强密码，仅适合封闭的 Compose 网络；`config.yaml` 未跟踪、不应提交。使用 Compose 内置 MySQL/Redis 时，把 `config.yaml` 的 `database.dsn` / `redis` 指向 `mysql:3306` / `redis:6379`，密码与 `docker-compose.yml` 中 `MYSQL_*`、`CONDUCTOR_REDIS_PASSWORD` 默认一致（见 config.example.yaml 对应注释）。管理员密码、管理令牌、会话密钥与凭证加密密钥都写在 `config.yaml`；生产如需一次性覆盖，用 `export CONDUCTOR_*=xxx docker compose up`，不要引入 `.env`。
+- 如需外部 MySQL/Redis，直接改 `config.yaml` 的 `database.dsn` 与 `redis` 区块；`database.driver: memory` 可脱离数据库运行。注意：`MYSQL_USER` 是 Compose 初始化的普通账号，不能设为 `root`。外部空 MySQL 可用 `CONDUCTOR_DATABASE_DSN='user:password@tcp(host:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate` 初始化。
 - 清空本机所有 Compose 数据并重新初始化：`docker compose down -v`（会删除数据库和 Redis 数据）。
 
 ### 方式二：一键构建（带真实 Console 的单二进制，推荐）
@@ -287,7 +287,7 @@ go run ./cmd/conductor
 | `logging` | level / format | `CONDUCTOR_LOGGING_LEVEL=info` |
 | `observability` | record_args（捕获入参供回放，默认关）/ sample_rate / trend_retention_days（默认 7）/ traffic_retention_days（默认 90，0=关闭清理） | `CONDUCTOR_OBSERVABILITY_RECORD_ARGS=false` · `CONDUCTOR_OBSERVABILITY_SAMPLE_RATE=1.0` · `CONDUCTOR_OBSERVABILITY_TREND_RETENTION_DAYS=7` · `CONDUCTOR_OBSERVABILITY_TRAFFIC_RETENTION_DAYS=90` |
 
-完整说明见 [config.example.yaml](config.example.yaml) 与 [.env.example](.env.example)。
+完整说明见 [config.example.yaml](config.example.yaml)。docker compose 部署读取同一份项目根 `config.yaml`（见「方式一」），因此只需维护这一个配置文件。
 
 ### 数据库兼容目标：MySQL 5.7+
 
