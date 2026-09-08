@@ -8,7 +8,7 @@
 #   CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME
 #   CONDUCTOR_REDIS_HOST / CONDUCTOR_REDIS_PORT / CONDUCTOR_REDIS_PASSWORD
 # 本机常见账号（示例，非默认密码）：
-#   CONDUCTOR_DB_PASSWORD=123456 docker compose up -d --build
+#   CONDUCTOR_DB_PASSWORD=<your-local-mysql-password> docker compose up -d --build
 #
 # 提示：Redis 仅当同时开启限流（CONDUCTOR_RATELIMIT_ENABLED=true）时才会连接
 # 用于分布式 per-key 限流；本机 Redis 若只监听 127.0.0.1，需改为监听所有网卡
