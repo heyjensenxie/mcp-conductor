@@ -1,18 +1,18 @@
 -- =============================================================================
--- MCP Conductor 数据库全量建表语句（最终形态 = migrations/0001..0011 合并结果）
+-- MCP Conductor 数据库初始发布 Schema（空库唯一初始化来源）
 -- =============================================================================
 -- 用途：
 --   1) 结构参考：一眼看全各表/字段含义（字段与表均带 COMMENT）；
---   2) 全新数据库初始化：在空库直接执行即可得到与「migrations 全量跑完」一致的表。
+--   2) 全新数据库初始化：在空库直接执行即可得到当前完整表结构。
 --
 -- 维护约定：
---   - 本文件为只读结构快照，**不是**增量迁移的替代。schema 变更一律先落
---     migrations/ 下的版本化迁移，再同步更新本文件，保证两者一致。
+--   - 首个已发布版本后的 schema 变更先新增 migrations/ 下的增量迁移，
+--     再同步更新本文件，保证两者一致。
 --   - 兼容契约（详见 docs/architecture/database.md）：目标 MySQL 5.7+，
 --     引擎 InnoDB / utf8mb4_unicode_ci；时间 DATETIME(3) 存 UTC（应用层换时区）；
 --     布尔 TINYINT(1)；JSON/列表存 TEXT（应用层解析）；禁止 CTE / Window
 --     Function / Function Index / CHECK 兜底 / MySQL 8 JSON 函数与索引。
---   - 已有库禁止直接执行本文件做“升级”，请按序执行 migrations/。
+--   - 本文件仅用于空库初始化；已有发布环境升级时，请按序执行后续 migrations/。
 -- =============================================================================
 
 SET NAMES utf8mb4;
@@ -24,8 +24,8 @@ SET NAMES utf8mb4;
 CREATE TABLE IF NOT EXISTS servers (
   id            VARCHAR(64)   NOT NULL COMMENT '对外稳定 id（与内存实现一致，前缀 srv-）',
   name          VARCHAR(128)  NOT NULL COMMENT '逻辑 Server 名称（唯一业务标识，不可改）',
-  description   TEXT          NULL    COMMENT 'Server 描述（0006 起 TEXT，容纳超长说明）',
-  endpoint      VARCHAR(2048) NULL    COMMENT '遗留列：端点已下沉 server_instances（自 0008 起应用不再读写，仅留档）',
+  description   TEXT          NULL    COMMENT 'Server 描述（容纳超长说明）',
+  endpoint      VARCHAR(2048) NULL    COMMENT '遗留列：端点已下沉 server_instances（应用不再读写，仅留档）',
   transport     VARCHAR(16)   NOT NULL DEFAULT 'https' COMMENT '遗留列：传输类型 https|sse|stdio，单一事实源在 server_instances',
   version       VARCHAR(64)   NULL    COMMENT '上游协议/实现版本（观测留档）',
   enabled       TINYINT(1)    NOT NULL DEFAULT 1 COMMENT '逻辑 Server 启停',
@@ -37,13 +37,14 @@ CREATE TABLE IF NOT EXISTS servers (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='逻辑 MCP Server（多实例端点见 server_instances）';
 
 -- -----------------------------------------------------------------------------
--- 逻辑 Server 下的具体上游实例（0008 起承载 endpoint/transport/健康/启停）
+-- 逻辑 Server 下的具体上游实例（承载 endpoint/transport/健康/启停）
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS server_instances (
   id            VARCHAR(64)   NOT NULL COMMENT '对外稳定 id（新建用 inst- 前缀）',
   server_id     VARCHAR(64)   NOT NULL COMMENT '所属逻辑 Server',
   endpoint      VARCHAR(2048) NOT NULL COMMENT '上游端点 URL',
   transport     VARCHAR(16)   NOT NULL DEFAULT 'https' COMMENT 'https | sse | stdio',
+  args          TEXT          NULL    COMMENT 'stdio 启动参数（JSON 数组；https/sse 为空）',
   enabled       TINYINT(1)    NOT NULL DEFAULT 1 COMMENT '实例级启停（摘除/排空）',
   health_status VARCHAR(16)   NOT NULL DEFAULT 'unknown' COMMENT 'unknown | healthy | unhealthy',
   created_at    DATETIME(3)   NOT NULL COMMENT '创建时间（UTC）',
@@ -54,14 +55,14 @@ CREATE TABLE IF NOT EXISTS server_instances (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='逻辑 Server 的上游实例（列表稳定序 ORDER BY created_at, id，首条为主实例）';
 
 -- -----------------------------------------------------------------------------
--- 聚合后的 Tool 注册表；gateway_name 为对外命名空间名，唯一。
+-- 聚合后的 Tool 注册表；gateway_name 为上游原始对外名，唯一。
 -- source_* 记录最近一次上游发现值，*_overridden 决定重新发现时是否保留平台覆盖。
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tools (
   id                    VARCHAR(64)   NOT NULL COMMENT '对外稳定 id（前缀 tool-）',
   server_id             VARCHAR(64)   NOT NULL COMMENT '所属 Server',
   original_name         VARCHAR(128)  NOT NULL COMMENT '上游原始工具名',
-  gateway_name          VARCHAR(255)  NOT NULL COMMENT '对外门面名 server_namespace.original_name，全局唯一',
+  gateway_name          VARCHAR(255)  NOT NULL COMMENT '对外门面名（默认等于 original_name），全局唯一',
   description           TEXT          NULL    COMMENT '对外描述（可被门面覆盖）',
   input_schema          TEXT          NULL    COMMENT '入参 JSON Schema 文本，应用层解析（可被门面覆盖）',
   source_description    TEXT          NULL    COMMENT '最近一次上游发现的原生描述（覆盖时保留作对比）',
@@ -116,8 +117,8 @@ CREATE TABLE IF NOT EXISTS credentials (
 
 -- -----------------------------------------------------------------------------
 -- 调用日志（高增长流水，自增主键；默认只留观测元数据）。
--- 管理面按 id 倒序取最近分页；0007 起为 server 等值 + 倒序翻页建了窄复合索引；
--- 0009 记录命中实例 instance_id；0011 起可选捕获 tools/call 入参（request_args，
+-- 管理面按 id 倒序取最近分页，并为 server 等值 + 倒序翻页建立窄复合索引；
+-- 记录命中实例 instance_id；可选捕获 tools/call 入参（request_args，
 -- 默认不存：observability.record_args 开启才写，且响应永不落库）。
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS traffic_log (
@@ -139,7 +140,7 @@ CREATE TABLE IF NOT EXISTS traffic_log (
   KEY idx_traffic_tool (tool),
   KEY idx_traffic_server_id_id (server_id, id),
   KEY idx_traffic_server_instance_id (server_id, instance_id, id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='调用流水日志（默认只存观测元数据；0011 起可 opt-in 捕获入参供回放）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='调用流水日志（默认只存观测元数据；可 opt-in 捕获入参供回放）';
 
 -- -----------------------------------------------------------------------------
 -- API Key 访问控制：key 是认证/授权/限流主体（subject 唯一），密钥只存哈希。
@@ -152,7 +153,7 @@ CREATE TABLE IF NOT EXISTS access_keys (
   key_hash   VARCHAR(64)  NOT NULL COMMENT 'HMAC-SHA256(token_secret, key) hex，明文仅创建时返回一次',
   qps        INT          NOT NULL DEFAULT 0 COMMENT '每 key 限流 QPS，0 表示沿用安全防护维度默认；>0 专属覆盖',
   burst      INT          NOT NULL DEFAULT 0 COMMENT '已废弃（不再参与判定，保留兼容）',
-  window_seconds INT      NOT NULL DEFAULT 0 COMMENT '该 key 专属滑动窗口(秒)，0=跟随安全防护全局窗口（0016）',
+  window_seconds INT      NOT NULL DEFAULT 0 COMMENT '该 key 专属滑动窗口(秒)，0=跟随安全防护全局窗口',
   created_at DATETIME(3)  NOT NULL COMMENT '创建时间（UTC）',
   updated_at DATETIME(3)  NOT NULL COMMENT '更新时间（UTC）',
   PRIMARY KEY (id),
@@ -166,7 +167,7 @@ CREATE TABLE IF NOT EXISTS access_keys (
 CREATE TABLE IF NOT EXISTS access_key_grants (
   id           VARCHAR(64)  NOT NULL COMMENT '对外稳定 id（前缀 grant-）',
   key_id       VARCHAR(64)  NOT NULL COMMENT '所属 API Key',
-  gateway_name VARCHAR(255) NOT NULL COMMENT '被授权工具对外名 server.tool，支持 * 与 server.* 通配',
+  gateway_name VARCHAR(255) NOT NULL COMMENT '被授权工具对外名，支持精确匹配、* 与前缀通配',
   headers      TEXT         NULL    COMMENT '调用该工具时附加的请求头 JSON 文本',
   default_args TEXT         NULL    COMMENT '调用时注入的固定参数 JSON 文本',
   PRIMARY KEY (id),
@@ -175,7 +176,7 @@ CREATE TABLE IF NOT EXISTS access_key_grants (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='API Key 工具白名单与调用配置';
 
 -- -----------------------------------------------------------------------------
--- 已闭合分钟桶趋势（0010）。metrics 每 60s 把进程内“已闭合分钟”幂等 upsert 到此，
+-- 已闭合分钟桶趋势。metrics 每 60s 把进程内“已闭合分钟”幂等 upsert 到此，
 -- 读侧作为长程权威源（当前 open 分钟由进程内热桶补）。scope=server/instance 时
 -- server_id 冗余所属 Server 便于过滤；tool 维为空串。保留天数见 trend_retention_days。
 -- -----------------------------------------------------------------------------
@@ -191,7 +192,7 @@ CREATE TABLE IF NOT EXISTS trend_minute (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='已闭合分钟桶趋势（幂等 upsert，按保留天数清理）';
 
 -- -----------------------------------------------------------------------------
--- 运行期治理配置（0013）：IP 黑名单 + 三级限流阈值 + 观测开关的单行快照（id 恒为 1）。
+-- 运行期治理配置：IP 黑名单 + 三级限流阈值 + 观测开关的单行快照（id 恒为 1）。
 -- 后台（/api/runtime-config + Console）保存后即权威；无保存值时网关回退
 -- config.yaml 种子（ratelimit.*、security.ip_blocklist 与 observability.record_args）。
 -- -----------------------------------------------------------------------------
@@ -209,8 +210,8 @@ CREATE TABLE IF NOT EXISTS runtime_config (
   auto_ban_max_violations INT NOT NULL DEFAULT 5 COMMENT '窗口内触发次数阈值',
   auto_ban_ban_seconds INT NOT NULL DEFAULT 300 COMMENT '临时封禁时长(秒, TTL 自动解封)',
   ip_blocklist   TEXT    NULL    COMMENT '来源 IP/CIDR 封禁名单 JSON（仅 /mcp）',
-  ip_whitelist   TEXT    NULL    COMMENT '可信 IP/CIDR 白名单 JSON（豁免黑名单/自动封禁/IP级限流，0017）',
-  record_args    TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'tools/call 入参捕获开关（0=关，默认；供 Traffic 回放，0019）',
+  ip_whitelist   TEXT    NULL    COMMENT '可信 IP/CIDR 白名单 JSON（豁免黑名单/自动封禁/IP级限流）',
+  record_args    TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'tools/call 入参捕获开关（0=关，默认；供 Traffic 回放）',
   updated_at     DATETIME(3) NOT NULL COMMENT '最近保存时间（UTC）',
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='运行期治理配置（IP 黑名单 + 滑动窗口三级限流，Console 维护）';

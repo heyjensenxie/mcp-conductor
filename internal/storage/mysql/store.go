@@ -138,7 +138,7 @@ func notExistError(err error, kind, id string) error {
 //
 // Server 只持久化逻辑字段（name/description/enabled/聚合 health_status）；
 // Endpoint/Transport 由 server_instances 表承载（见 instances.go）。servers 表
-// 遗留的 endpoint/transport/version 列已改可空且不再读写（0008 起）。
+// 遗留的 endpoint/transport/version 列已改可空且不再读写。
 
 // CreateServer 新增 Server；id 为空时自动生成。
 func (s *Store) CreateServer(ctx context.Context, server *model.Server) error {

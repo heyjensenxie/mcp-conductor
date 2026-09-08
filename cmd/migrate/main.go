@@ -1,8 +1,8 @@
-// 命令 migrate 按文件名顺序执行 migrations/*.sql，用于把开发/测试库表
+// 命令 migrate 执行初始发布的 database/schema.sql，用于把开发/测试库表
 // 结构应用到指定 MySQL（替代已随 Compose 移除的容器内 mysql 客户端）。
 //
-// 迁移文件约定为可重复执行的 DDL（0001/0003 用 IF NOT EXISTS、0002 用
-// information_schema 守卫），因此执行器不做版本记录表，重复执行安全。
+// Schema 使用可重复执行的 DDL（IF NOT EXISTS），因此执行器不做版本记录表，
+// 重复执行安全。首个已发布版本后的 Schema 变更应另行引入版本化迁移。
 //
 // 用法：
 //
@@ -18,8 +18,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -27,7 +25,7 @@ import (
 
 func main() {
 	dsn := flag.String("dsn", os.Getenv("CONDUCTOR_DATABASE_DSN"), "MySQL DSN（默认取环境变量 CONDUCTOR_DATABASE_DSN）")
-	dir := flag.String("dir", "migrations", "迁移 SQL 文件目录")
+	schema := flag.String("schema", "database/schema.sql", "初始化 Schema SQL 文件")
 	flag.Parse()
 
 	if strings.TrimSpace(*dsn) == "" {
@@ -45,26 +43,15 @@ func main() {
 		log.Fatalf("连接 MySQL 失败: %v", err)
 	}
 
-	files, err := filepath.Glob(filepath.Join(*dir, "*.sql"))
+	content, err := os.ReadFile(*schema)
 	if err != nil {
-		log.Fatalf("扫描迁移目录失败: %v", err)
+		log.Fatalf("读取 Schema 文件 %s 失败: %v", *schema, err)
 	}
-	sort.Strings(files)
-	if len(files) == 0 {
-		log.Fatalf("目录 %q 中没有 .sql 迁移文件", *dir)
+	if _, err := db.ExecContext(ctx, string(content)); err != nil {
+		log.Fatalf("应用 Schema 文件 %s 失败: %v", *schema, err)
 	}
-
-	for _, f := range files {
-		content, err := os.ReadFile(f)
-		if err != nil {
-			log.Fatalf("读取 %s 失败: %v", f, err)
-		}
-		if _, err := db.ExecContext(ctx, string(content)); err != nil {
-			log.Fatalf("应用 %s 失败: %v", filepath.Base(f), err)
-		}
-		fmt.Printf("applied %s\n", filepath.Base(f))
-	}
-	fmt.Println("迁移完成：全部迁移文件已按序执行")
+	fmt.Printf("applied %s\n", *schema)
+	fmt.Println("初始化完成：Schema 已应用")
 }
 
 // ensureMultiStatements 在 DSN 上补充 multiStatements=true，使单个迁移文件

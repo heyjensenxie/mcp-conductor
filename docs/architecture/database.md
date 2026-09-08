@@ -32,8 +32,7 @@
 
 ## 目录
 
-- 迁移文件：`migrations/`（`.sql`，5.7 可执行，按文件名序应用）
-- 全量结构快照：`database/schema.sql`（= migrations/0001..0017 合并的最终建表，表与字段均带注释，供结构参考与全新库初始化）。**Schema 变更先落 `migrations/` 增量迁移，再同步该快照，两者必须一致；已有库升级禁止直接执行快照。**
+- 初始发布 Schema：`database/schema.sql`（MySQL 5.7 可执行，表与字段均带注释，供结构参考与空库初始化）。首个已发布版本后的 Schema 变更再新增 `migrations/` 增量迁移，并同步更新该快照。
 - MySQL 驱动：`internal/storage/mysql`（已实现，满足 `storage.Store`；DSN 须含 `parseTime=true&loc=UTC&charset=utf8mb4`）
 - 集成测试：`MYSQL_TEST_DSN='...' go test ./internal/storage/mysql/ -v`（未设 DSN 自动跳过；须在真实 MySQL 5.7 上执行迁移后运行）
 - 应用迁移（开发环境，连宿主机 MySQL）：迁移文件为可重复执行的 DDL（幂等），执行器不做版本记录表：
@@ -41,25 +40,25 @@
   CONDUCTOR_DATABASE_DSN='user:pass@tcp(host:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' \
     go run ./cmd/migrate     # 等价 make db-migrate
   ```
-  `cmd/migrate` 按文件名序执行 `migrations/*.sql` 并自动补 `multiStatements=true`。
+  `cmd/migrate` 执行 `database/schema.sql` 并自动补 `multiStatements=true`。
 
-## server_instances（0008 起）
+## server_instances
 
 Server 多实例化后，具体上游端点与健康由 `server_instances` 承载；`servers` 表降级为逻辑实体：
 
-- `servers`：`id/name/description/enabled/health_status/created_at/updated_at`。`endpoint/transport/version` 列自 0008 起**应用不再读写**（0008 回填后留作安全降级与观测留档，单一事实源是 `server_instances`）。精度说明：`endpoint` 自 0008 起改可空；`transport` 仍为 `NOT NULL DEFAULT 'https'`；`version` 自 0001 起即可空。
-- `server_instances`：`id/server_id/endpoint/transport/args/enabled/health_status/created_at/updated_at`；`server_id` 外键 `ON DELETE CASCADE` 关联 `servers(id)`。字符串 id（新建用 `inst-` 前缀；0008 回填复用 server id），`enabled` 为实例级启停，`health_status ∈ {unknown,healthy,unhealthy}`。自 0018 起新增可空 `args TEXT`（stdio 启动参数，JSON 字符串数组，应用层解析；https/sse 实例为空）。
+- `servers`：`id/name/description/enabled/health_status/created_at/updated_at`。`endpoint/transport/version` 为遗留列，应用不再读写，单一事实源是 `server_instances`；其中 `endpoint` 可空，`transport` 为 `NOT NULL DEFAULT 'https'`，`version` 可空。
+- `server_instances`：`id/server_id/endpoint/transport/args/enabled/health_status/created_at/updated_at`；`server_id` 外键 `ON DELETE CASCADE` 关联 `servers(id)`。字符串 id 新建用 `inst-` 前缀，`enabled` 为实例级启停，`health_status ∈ {unknown,healthy,unhealthy}`；`args TEXT` 存 stdio 启动参数 JSON 数组（https/sse 为空）。
 - stdio 实例：`transport='stdio'` 时 `endpoint` 承载可执行命令，`args` 承载启动参数（不经过 shell）；无 HTTP 头部，Header 凭据注入不适用。
 - 实例列表稳定序：`ORDER BY created_at, id`（首条即"主实例"，用于列表展示与默认发现拨测）。
 - Server 删除级联删除实例（MySQL 外键）；`registry`/memory 侧显式 `DeleteInstancesByServer` 对齐。
-- MySQL 集成测试运行前需已应用 0001..0018（`make db-migrate`）。
+- MySQL 集成测试运行前需已应用 `database/schema.sql`（`make db-migrate`）。
 
-## traffic_log.instance_id（0009 起）
+## traffic_log.instance_id
 
 Server 多实例后，调用观测从 Server 粒度下沉到实例粒度：`traffic_log` 在 `server_id`
 后新增 `instance_id VARCHAR(64) NULL`，记录该次调用实际命中的上游实例（路由阶段
 失败/单实例未落实例归属时为空）。配套复合索引 `idx_traffic_server_instance_id
-(server_id, instance_id, id)`（0007 的 `(server_id, id)` 仍保留，服务纯 Server 级
+(server_id, instance_id, id)`；`(server_id, id)` 仍保留，服务纯 Server 级
 过滤）。应用写入见 `internal/gateway/mcp.go`（metrics 另按 `instance:<sid>:<iid>`
 维度记录，供 `/api/metrics?scope=instance` 展示，纯进程内不落库）。
 
@@ -68,7 +67,7 @@ Server 多实例后，调用观测从 Server 粒度下沉到实例粒度：`traf
 > 单批 `LIMIT 5000`、单轮上限 20 万行，后续轮次继续收敛）；已有 `idx_traffic_ts` 支撑该
 > 删除扫描。管理面列表只读最近分页（`page_size` 上限 200）以限制扫描。
 
-## trend_minute 分钟桶趋势（0010 起）
+## trend_minute 分钟桶趋势
 
 指标聚合器的“已闭合分钟桶”（进程内 `minute < now`）每 60s 由 app（`runTrendPersist`）
 幂等 upsert 到 `trend_minute`，PK `(scope, dim_key, minute)` 防重、重复 flush 无害。
@@ -78,7 +77,7 @@ Server 多实例后，调用观测从 Server 粒度下沉到实例粒度：`traf
 （`server_id=''`）；server→server id；instance→instance id（`server_id` 记所属 Server，
 供 `?scope=instance&server_id=` 过滤）。本表无外键，不随 Server 删除级联清理。
 
-## traffic_log.request_args（0011 起，Traffic Replay 前提）
+## traffic_log.request_args（Traffic Replay 前提）
 
 `traffic_log` 追加可空 `request_args MEDIUMTEXT`：`observability.record_args=true`
 （默认关，入参可能含隐私）时记录本次实际发出的 tools/call 入参 JSON；**响应永不落库**
@@ -86,17 +85,17 @@ Server 多实例后，调用观测从 Server 粒度下沉到实例粒度：`traf
 详情与 `POST /api/logs/{id}/replay` 读取；列表以 `request_args IS NOT NULL` 派生
 `has_args` 供前端启用「回放」。受 `sample_rate` 影响：被采样丢弃的行连同入参丢弃、不可回放。
 
-## traffic_log.client_ip（0012 起，调用观测来源 IP）
+## traffic_log.client_ip（调用观测来源 IP）
 
 `traffic_log` 追加可空 `client_ip VARCHAR(64)`：最外层中间件按可信代理规则解析的调用方
 来源 IP（`server.trusted_proxies`；未配置只认直连 `RemoteAddr`，防伪造），随行写入并
 随列表/详情带出，供审计与按来源定位。为空表示未解析到（旧行/直连未配置）。
 
-## runtime_config 运行期治理配置（0013 起，Console/API 动态维护）
+## runtime_config 运行期治理配置（Console/API 动态维护）
 
 单行快照表（PK `id` 恒为 1，无自增），保存数据面运行期治理配置：三级限流滑动窗口
 （`qps/burst/window_seconds/ip_qps/ip_burst/global_qps/global_burst`；任意 N 秒窗口内
-≤ 该级 QPS×N，0014 起支持 window_seconds；0015 起支持自动封禁参数 auto_ban_*；0017 起支持 ip_whitelist 可信豁免）与来源 IP/CIDR 封禁名单（`ip_blocklist`
+≤ 该级 QPS×N，支持 window_seconds、自动封禁参数 auto_ban_* 与 ip_whitelist 可信豁免）与来源 IP/CIDR 封禁名单（`ip_blocklist`
 JSON 文本，仅 /mcp 生效）。由 `/api/runtime-config`（Operator 门禁）整份覆盖写
 （`INSERT ... ON DUPLICATE KEY UPDATE`）；无保存值时网关回退 `config.yaml` 种子
 （`ratelimit.*` 与 `security.ip_blocklist`）。memory 模式仅进程内承载，重启回退种子。

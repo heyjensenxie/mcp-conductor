@@ -178,12 +178,21 @@ export interface RediscoverChange {
   name_protected: boolean
 }
 
+// 重新发现预演中因其他 Server 已占用对外名而跳过的工具。
+export interface RediscoverConflict {
+  gateway_name: string
+  owner_server_id: string
+  owner_server_name: string
+}
+
 // 重新发现预演结果：relative 当前登记的工具变更（POST .../rediscover/plan 返回）。
 export interface RediscoverPlan {
   server_id: string
   added: number
   updated: number
+  conflict_count: number
   changes: RediscoverChange[]
+  conflicts: RediscoverConflict[]
 }
 
 // 管理登录会话（POST /api/auth/login 响应，明文 token 仅下发一次）。

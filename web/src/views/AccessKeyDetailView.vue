@@ -451,7 +451,7 @@ let baseline = ''
 // ---- 派生数据 ----
 const enabledTools = computed(() => tools.value.filter((tool) => tool.enabled))
 
-// toolGranted 判断工具是否落在该 key 的白名单（支持精确、server.* 前缀通配与 *）。
+// toolGranted 判断工具是否落在该 key 的白名单（支持精确、前缀通配与 *）。
 function toolGranted(name: string): boolean {
   return grants.value.some((g) => {
     const p = g.gw
@@ -535,7 +535,7 @@ function rowHot(row: ServerRow) {
 
 function tagLabel(kind: GrantKind) {
   if (kind === 'global') return 'GLOBAL RULE'
-  if (kind === 'pattern') return 'SERVER RULE'
+  if (kind === 'pattern') return 'WILDCARD RULE'
   return 'TOOL'
 }
 

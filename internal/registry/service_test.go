@@ -9,66 +9,82 @@ import (
 	"github.com/heyjensenxie/mcp-conductor/internal/storage/memory"
 )
 
-// fakeDiscoverer 返回固定的工具定义，用于验证发现与命名空间逻辑。
+// fakeDiscoverer 返回固定的工具定义，用于验证发现与工具命名逻辑。
 type fakeDiscoverer struct {
-	tools []DiscoveredTool
-	err   error
+	tools    []DiscoveredTool
+	byServer map[string][]DiscoveredTool
+	err      error
 }
 
-func (f *fakeDiscoverer) Discover(_ context.Context, _ model.Server, _ model.Instance) ([]DiscoveredTool, error) {
+func (f *fakeDiscoverer) Discover(_ context.Context, server model.Server, _ model.Instance) ([]DiscoveredTool, error) {
+	if f.byServer != nil {
+		return f.byServer[server.Name], f.err
+	}
 	return f.tools, f.err
 }
 
-func TestNamespaceFor(t *testing.T) {
-	cases := map[string]string{
-		"University MCP": "university_mcp",
-		"Course":         "course",
-		"knowledge":      "knowledge",
-		"":               "server",
-		"知识服务":           "server", // 非字母数字回退，防命名冲突
-	}
-	for in, want := range cases {
-		if got := namespaceFor(in); got != want {
-			t.Errorf("namespaceFor(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-// TestToolNameCollisionNamespaced 验证两个 Server 暴露同名工具时，
-// 聚合后的 GatewayName 不发生冲突（PRD 核心关注点）。
-func TestToolNameCollisionNamespaced(t *testing.T) {
+// TestToolNameCollisionIsPreviewedAndSkipped 验证多个 Server 使用同一上游工具名时，
+// 先发现的工具保留裸 GatewayName；冲突会在预演中报告，并且真实同步仅跳过冲突项。
+func TestToolNameCollisionIsPreviewedAndSkipped(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
-	svc := NewService(store, &fakeDiscoverer{
-		tools: []DiscoveredTool{{Name: "search", Description: "查询"}, {Name: "detail", Description: "详情"}},
-	})
+	discoverer := &fakeDiscoverer{}
+	discoverer.byServer = map[string][]DiscoveredTool{
+		"University": {{Name: "search", Description: "查询"}, {Name: "detail", Description: "详情"}},
+		"Course":     {{Name: "search", Description: "课程查询"}, {Name: "query", Description: "课程列表"}},
+	}
+	svc := NewService(store, discoverer)
 
-	if _, err := svc.CreateServer(ctx, CreateServerInput{Name: "University", Endpoint: "http://a:9000", Transport: model.TransportStreamableHTTP}); err != nil {
+	university, err := svc.CreateServer(ctx, CreateServerInput{Name: "University", Endpoint: "http://a:9000", Transport: model.TransportStreamableHTTP})
+	if err != nil {
 		t.Fatalf("创建 University 失败: %v", err)
 	}
-	if _, err := svc.CreateServer(ctx, CreateServerInput{Name: "Course", Endpoint: "http://b:9000", Transport: model.TransportStreamableHTTP}); err != nil {
+	if len(waitTools(t, svc, 2)) != 2 {
+		t.Fatal("University 初始发现应登记 2 个工具")
+	}
+	course, err := svc.CreateServer(ctx, CreateServerInput{Name: "Course", Endpoint: "http://b:9000", Transport: model.TransportStreamableHTTP})
+	if err != nil {
 		t.Fatalf("创建 Course 失败: %v", err)
 	}
 
-	tools, err := svc.ListTools(ctx)
-	if err != nil {
-		t.Fatalf("ListTools 失败: %v", err)
-	}
-	if len(tools) != 4 {
-		t.Fatalf("应聚合 4 个工具（2 Server × 2 工具），得到 %d", len(tools))
+	tools := waitTools(t, svc, 3)
+	if len(tools) != 3 {
+		t.Fatalf("应登记 3 个非冲突工具，得到 %d", len(tools))
 	}
 
-	names := make(map[string]string) // gatewayName -> serverID
+	names := make(map[string]string)
 	for _, tool := range tools {
-		if prev, ok := names[tool.GatewayName]; ok {
-			t.Fatalf("GatewayName 冲突 %q（Server %s 与 %s）", tool.GatewayName, prev, tool.ServerID)
-		}
 		names[tool.GatewayName] = tool.ServerID
 	}
-	for _, want := range []string{"university.search", "university.detail", "course.search", "course.detail"} {
+	for _, want := range []string{"search", "detail", "query"} {
 		if _, ok := names[want]; !ok {
 			t.Errorf("缺少聚合工具 %q，实际 %v", want, names)
 		}
+	}
+	if names["search"] != university.ID {
+		t.Fatalf("search 应由先发现的 University 保留，得到 Server %q", names["search"])
+	}
+
+	plan, err := svc.PlanRediscover(ctx, course.ID)
+	if err != nil {
+		t.Fatalf("PlanRediscover: %v", err)
+	}
+	if plan.ConflictCount != 1 || len(plan.Conflicts) != 1 {
+		t.Fatalf("预演应报告 1 个冲突，得到 count=%d conflicts=%+v", plan.ConflictCount, plan.Conflicts)
+	}
+	conflict := plan.Conflicts[0]
+	if conflict.GatewayName != "search" || conflict.OwnerServerID != university.ID || conflict.OwnerServerName != "University" {
+		t.Fatalf("冲突归属不正确: %+v", conflict)
+	}
+	if plan.Added != 0 || plan.Updated != 0 {
+		t.Fatalf("冲突工具不应计入新增或更新，得到 added=%d updated=%d", plan.Added, plan.Updated)
+	}
+
+	if err := svc.Rediscover(ctx, course.ID); err == nil {
+		t.Fatal("真实同步遇到冲突应返回提示错误")
+	}
+	if tools = waitTools(t, svc, 3); findTool(tools, "query") == nil {
+		t.Fatal("真实同步即使遇到冲突也应保留非冲突工具")
 	}
 }
 
@@ -151,7 +167,7 @@ func TestToggleToolAndRediscoverPreservesDisabled(t *testing.T) {
 		t.Fatalf("应发现 2 个工具，得到 %d", len(tools))
 	}
 
-	search := findTool(tools, "mock.search")
+	search := findTool(tools, "search")
 	if _, err := svc.ToggleTool(ctx, search.ID, false); err != nil {
 		t.Fatalf("ToggleTool(禁用): %v", err)
 	}
@@ -161,7 +177,7 @@ func TestToggleToolAndRediscoverPreservesDisabled(t *testing.T) {
 		t.Fatalf("Rediscover: %v", err)
 	}
 	tools, _ = svc.ListTools(ctx)
-	if got := findTool(tools, "mock.search"); got.Enabled {
+	if got := findTool(tools, "search"); got.Enabled {
 		t.Fatal("Rediscover 后手工禁用的工具应保持禁用")
 	}
 }
@@ -180,7 +196,7 @@ func TestUpdateToolMetadataSurvivesRediscovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
-	tool := findTool(waitTools(t, svc, 1), "mock.search")
+	tool := findTool(waitTools(t, svc, 1), "search")
 	name, description := "catalog.find", "面向 Agent 的商品检索"
 	schema := map[string]any{"type": "object", "properties": map[string]any{"keyword": map[string]any{"type": "string", "description": "检索词"}}}
 	updated, err := svc.UpdateTool(ctx, tool.ID, UpdateToolPatch{GatewayName: &name, Description: &description, InputSchema: &schema})
@@ -216,12 +232,12 @@ func TestRenameToolUpdatesExactReferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
-	tool := findTool(waitTools(t, svc, 1), "mock.search")
-	key := &model.AccessKey{Name: "client", Subject: "client", Enabled: true, KeyHash: "hash", Grants: []model.ToolGrant{{GatewayName: "mock.search"}, {GatewayName: "mock.*"}}}
+	tool := findTool(waitTools(t, svc, 1), "search")
+	key := &model.AccessKey{Name: "client", Subject: "client", Enabled: true, KeyHash: "hash", Grants: []model.ToolGrant{{GatewayName: "search"}, {GatewayName: "legacy.*"}}}
 	if err := store.CreateAccessKey(ctx, key); err != nil {
 		t.Fatalf("CreateAccessKey: %v", err)
 	}
-	route := &model.Route{Name: "route", ServerID: server.ID, ToolNames: []string{"mock.search"}, Enabled: true}
+	route := &model.Route{Name: "route", ServerID: server.ID, ToolNames: []string{"search"}, Enabled: true}
 	if err := store.CreateRoute(ctx, route); err != nil {
 		t.Fatalf("CreateRoute: %v", err)
 	}
@@ -231,7 +247,7 @@ func TestRenameToolUpdatesExactReferences(t *testing.T) {
 		t.Fatalf("UpdateTool: %v", err)
 	}
 	gotKey, _ := store.GetAccessKey(ctx, key.ID)
-	if gotKey.Grants[0].GatewayName != newName || gotKey.Grants[1].GatewayName != "mock.*" {
+	if gotKey.Grants[0].GatewayName != newName || gotKey.Grants[1].GatewayName != "legacy.*" {
 		t.Fatalf("grant references not migrated correctly: %+v", gotKey.Grants)
 	}
 	gotRoutes, _ := store.ListRoutes(ctx)
@@ -295,7 +311,7 @@ func TestPlanRediscoverReportAndApply(t *testing.T) {
 	}
 
 	// 运维覆盖 search 的描述；上游随后：search 描述/schema 变化 + 新增 detail。
-	search := findTool(waitTools(t, svc, 1), "plan.search")
+	search := findTool(waitTools(t, svc, 1), "search")
 	custom := "custom facade"
 	if _, err := svc.UpdateTool(ctx, search.ID, UpdateToolPatch{Description: &custom}); err != nil {
 		t.Fatalf("UpdateTool(覆盖描述): %v", err)
@@ -333,7 +349,7 @@ func TestPlanRediscoverReportAndApply(t *testing.T) {
 
 	// 预演只读：detail 未落库，search 描述仍是覆盖值。
 	tools := waitTools(t, svc, 1)
-	if findTool(tools, "plan.detail") != nil {
+	if findTool(tools, "detail") != nil {
 		t.Fatal("预演不应落库上游新增工具")
 	}
 
@@ -345,14 +361,14 @@ func TestPlanRediscoverReportAndApply(t *testing.T) {
 	if len(tools) != 2 {
 		t.Fatalf("应用后应有 2 个工具，得到 %d", len(tools))
 	}
-	got := findTool(tools, "plan.search")
+	got := findTool(tools, "search")
 	if got.Description != custom || !got.DescriptionOverridden {
 		t.Errorf("覆盖的描述在 Rediscover 后应保留，得到 %q / overridden=%v", got.Description, got.DescriptionOverridden)
 	}
 	if got.SourceDescription != "v2" {
 		t.Errorf("源描述应刷新为上游 v2，得到 %q", got.SourceDescription)
 	}
-	if findTool(tools, "plan.detail") == nil {
+	if findTool(tools, "detail") == nil {
 		t.Fatal("确认后 detail 工具应落库")
 	}
 }

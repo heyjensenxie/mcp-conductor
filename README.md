@@ -10,25 +10,27 @@ _Route. Govern. Observe. Evaluate. Improve._
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-MVP%20v0.1-yellow)](#roadmap)
+[![Release](https://img.shields.io/badge/Release-v1.0.0-blue)](CHANGELOG.md)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 </div>
 
+<p align="center"><strong>简体中文</strong> | <a href="README_EN.md">English</a></p>
+
 MCP gateway and control plane for **aggregation, routing, governance, observability, testing, evaluation, and optimization** of MCP servers. MCP Conductor is **not just another MCP proxy** — its long-term value is **Runtime Governance + MCP Quality Engineering**: governing MCP traffic on one side and MCP quality on the other, across the whole MCP lifecycle (`Develop → Register → Test → Evaluate → Deploy → Observe → Optimize → Re-evaluate`).
 
-> **当前阶段：v0.1.0 (MVP)** — 一个 Go 二进制承载 Gateway + Control Plane，先跑通「注册 Server → 自动发现 Tools → 统一端点聚合 → 按命名空间路由调用 → 记录观测」的最小闭环。
+> **当前版本：v1.0.0** — 一个 Go 二进制承载 Gateway + Control Plane，已经跑通「注册 Server → 自动发现 Tools → 统一端点聚合 → 按命名空间路由调用 → 治理与观测」的完整基础闭环。
 
 ---
 
 ## Overview
 
-- **Aggregation** — 一个统一 MCP Endpoint（`/mcp`）聚合多个上游 MCP Server；自动发现 Tools，并以 **Server 命名空间**（如 `university.search_policy`）从根上解决 Tool Name Collision。
+- **Aggregation** — 一个统一 MCP Endpoint（`/mcp`）聚合多个上游 MCP Server；自动发现 Tools，并直接暴露上游原始工具名（如 `github.create_issue`）。跨 Server 重名会在预演中提示，实际同步跳过冲突项。
 - **Gateway** — 协议校验 → 认证 → 授权 → 限流 → 路由 → 负载均衡 → 上游调用 → 观测的中间件管线，每个阶段职责单一。
 - **Governance** — 领域模型优先：Server / Tool / Route / AccessKey / Credential / Traffic，配以 Control Plane API（`/api/*`）。
 - **Observability** — 每次 `tools/call` 记录 `request_id / trace_id / server / tool / status / latency / timestamp`，按采样率落库并输出结构化日志；默认不记录敏感参数/返回值。
 
-## Features (v0.1)
+## Features (v1.0)
 
 | 能力 | 状态 |
 | --- | --- |
@@ -43,11 +45,11 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | Tool/Route 管理闭环 + Route 覆盖转发 | ✅ Tool 启停；Route 编辑·启停·删除；启用 Route 命中 `tool_names` 时把该工具调用目标 Server 覆盖为 route 指向的 Server（恒等即原样；目标须已发现同名上游工具；同一工具仅允许一条启用覆盖规则） |
 | 鉴权（默认开启） | ✅ Console 用管理员账号（`admin`/`admin_password`）登录换会话；/api 接受会话或 `operator_token`；/mcp 数据面用 API Key（HMAC 哈希落库、按 key×工具白名单），与登录分离 |
 | Gateway→上游 Credential 管理（API Key / Static Token） | ✅ 值 AES-256-GCM 加密落库；经 `json:"-"` 不下发 API、不入日志；按 Server 注入上游请求头 |
-| 按 Key×Tool 白名单授权（跨 Server 聚合） | ✅ 每个 key 只可见/可调被授权工具（支持 `server.*`/`*` 通配）；每工具可配调用参数与请求头 |
+| 按 Key×Tool 白名单授权（跨 Server 聚合） | ✅ 每个 key 只可见/可调被授权工具（支持精确工具名或 `*` 全量通配）；每工具可配调用参数与请求头 |
 | Memory/Redis N 秒滑动窗口限流，支持按 Key 独立配额 | ✅ 默认关闭 |
 | Request Logging + 基础 Metrics（P50/P95/P99） | ✅ 应用层聚合；`?scope=server` 按 Server 聚合 |
 | **实例级流量归属（多实例观测下沉）** | ✅ 每次调用把 `instance_id` 落调用日志（traffic_log，可按 `server_id+instance_id` 筛选）并按实例记内存指标（`?scope=instance&server_id=`）；Server 详情「实例」表直接展示每个实例的 Requests / P95 / Errors |
-| **长程分钟桶趋势（持久化）** | ✅ 已闭合分钟桶每 60s 幂等落库 `trend_minute`（0001..0010）：跨重启可回溯、`?minutes` 可到保留天数（默认 7 天，`trend_retention_days`），支持 `?scope=instance&server_id=` 与 `?dim_key=` 单维聚焦；Console 观测页可切 30m~7d 窗口与维度 |
+| **长程分钟桶趋势（持久化）** | ✅ 已闭合分钟桶每 60s 幂等落库 `trend_minute`：跨重启可回溯、`?minutes` 可到保留天数（默认 7 天，`trend_retention_days`），支持 `?scope=instance&server_id=` 与 `?dim_key=` 单维聚焦；Console 观测页可切 30m~7d 窗口与维度 |
 | Traffic 调用筛选 + Observability | ✅ 日志按 Server/实例/状态/关键词/时间分页筛选（page/page_size，上限 200）；指标按 Tool/Server/实例查看；趋势为真时序分钟桶（默认近 30 分钟折线，可拉长窗）。调用日志**保留清理**：默认保留最近 90 天（`observability.traffic_retention_days`，0 关闭），app 每小时分块删除超过保留期的日志，遏制流水无限膨胀 |
 | **Traffic Replay（按捕获入参回放）** | ✅ `record_args=true` 时捕获 tools/call **入参**（响应永不落库）到调用日志；Traffic 行「回放」把该调用重发到其命中的上游实例复现（直连实例、诊断流量不写 metrics/调用日志） |
 | **stdio 上游接入（本地子进程）** | ✅ 实例 `transport=stdio` 以子进程方式接入本地 MCP Server：`endpoint`=可执行命令 + `args`=启动参数（JSON 数组，不经过 shell）；按官方 stdio 规范换行 JSON-RPC over stdin/stdout，初始化生命周期（initialize→initialized）完整；spawn-per-request 每次操作新建并回收进程；stdio 无 HTTP 头部，Header 凭据注入仅适用 https/sse |
@@ -59,7 +61,7 @@ MCP gateway and control plane for **aggregation, routing, governance, observabil
 | 工具详情页编辑 + 恢复源定义 | ✅ `/tools/:id` 支持改名/描述/入参 Schema 编辑，逐字段「恢复上游定义」 |
 | Docker / Docker Compose / Makefile | ✅ |
 
-**明确不属于 v0.1**：LLM Judge、Python Evaluation Worker、AI Optimization、复杂 ABAC、Kafka、ClickHouse、Kubernetes Operator、Service Mesh、微服务拆分。
+**明确不属于 v1.0**：LLM Judge、Python Evaluation Worker、AI Optimization、复杂 ABAC、Kafka、ClickHouse、Kubernetes Operator、Service Mesh、微服务拆分。
 
 ## Architecture
 
@@ -101,7 +103,7 @@ internal/
   console           # go:embed 前端 dist
   gateway           # HTTP 组装 / 中间件 / 统一 MCP 端点 / 控制面
 web/                # Vue3 + TS + Vite + Pinia + Ant Design Vue + ECharts
-migrations/         # MySQL 5.7 兼容 DDL
+database/schema.sql # MySQL 5.7 兼容的空库初始化 DDL
 examples/mock-mcp   # 演示用最小 MCP Server
 ```
 
@@ -124,7 +126,7 @@ CONDUCTOR_DB_PASSWORD=<你的本地 MySQL 密码> docker compose up --build
 # MCP 端点: http://localhost:18110/mcp
 ```
 
-- 数据库：默认 `mysql`，连宿主机 `host.docker.internal:3306` 的 `conductor` 库（库表需先执行 `migrations/0001..0018`，宿主机已有 MySQL 时用 `CONDUCTOR_DATABASE_DSN='root:***@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate`）。账号可用 `CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME` 覆盖；`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。
+- 数据库：默认 `mysql`，连宿主机 `host.docker.internal:3306` 的 `conductor` 库（空库先执行 `database/schema.sql`，宿主机已有 MySQL 时用 `CONDUCTOR_DATABASE_DSN='root:***@tcp(localhost:3306)/conductor?parseTime=true&loc=UTC&charset=utf8mb4' make db-migrate`）。账号可用 `CONDUCTOR_DB_USER / CONDUCTOR_DB_PASSWORD / CONDUCTOR_DB_HOST / CONDUCTOR_DB_PORT / CONDUCTOR_DB_NAME` 覆盖；`CONDUCTOR_DATABASE_DRIVER=memory` 可脱离数据库运行。
 - Redis：仅当同时开启 `CONDUCTOR_REDIS_ENABLED=true` 与 `CONDUCTOR_RATELIMIT_ENABLED=true` 时才用于分布式 per-key 限流，默认关闭（本机 Redis 若只监听 `127.0.0.1` 需放开监听才能被容器访问）。
 
 ### 方式二：一键构建（带真实 Console 的单二进制，推荐）
@@ -159,12 +161,12 @@ curl -s -X POST http://localhost:18110/api/servers \
   -H 'Content-Type: application/json' -H "X-Api-Key: $OPERATOR" \
   -d '{"name":"Mock","endpoint":"http://localhost:9000/mcp","transport":"https"}'
 
-# 3. 聚合后的工具（gateway_name = mock.search / mock.detail）
+# 3. 聚合后的工具（gateway_name = search / detail）
 curl -s http://localhost:18110/api/tools -H "X-Api-Key: $OPERATOR"
 
 # 4. 通过统一端点调用，自动路由回上游
 curl -s -X POST http://localhost:18110/mcp -H 'Content-Type: application/json' -H "X-Api-Key: $OPERATOR" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mock.search","arguments":{"q":"policy"}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"q":"policy"}}}'
 # → {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"[search] 收到参数: map[q:policy]"}]}}
 ```
 
@@ -193,7 +195,7 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 | 方法 | 说明 |
 | --- | --- |
 | `initialize` | MCP 握手（默认协商 `2025-11-24`） |
-| `tools/list` | 返回全部 Server 聚合后的 Tool 列表（namespaced） |
+| `tools/list` | 返回全部 Server 聚合后的 Tool 列表（保留上游原始工具名） |
 | `tools/call` | 按 `gateway_name` 调用，自动授权 → 路由 → 均衡 → 转发上游 |
 
 鉴权默认开启，会话/凭据载体为 `Authorization: Bearer <token>` 或 `X-Api-Key: <token>`：
@@ -287,7 +289,7 @@ go run ./cmd/conductor
 
 ### 数据库兼容目标：MySQL 5.7+
 
-生产环境为 **MySQL 5.7**，因此迁移 / DDL / SQL 必须 5.7 可运行；**禁止 MySQL 8.0 专属特性**（Window Functions、CTE、Function Index、CHECK 兜底、MySQL 8 JSON 函数/索引等），需要时走 MySQL 5.7 兼容或应用层方案。详见 [docs/architecture/database.md](docs/architecture/database.md)。`migrations/0001_init_schema.sql` 与 `internal/storage/mysql` 驱动已在真实 MySQL 5.7 上实测（含重启持久化）。
+生产环境为 **MySQL 5.7**，因此 DDL / SQL 必须 5.7 可运行；**禁止 MySQL 8.0 专属特性**（Window Functions、CTE、Function Index、CHECK 兜底、MySQL 8 JSON 函数/索引等），需要时走 MySQL 5.7 兼容或应用层方案。详见 [docs/architecture/database.md](docs/architecture/database.md)。`database/schema.sql` 与 `internal/storage/mysql` 驱动已在真实 MySQL 5.7 上实测（含重启持久化）。
 
 ```bash
 # 用 MySQL 驱动启动（先确保数据库建好并应用迁移）
@@ -308,12 +310,12 @@ make test          # 后端单元测试
 make vet           # go vet 静态检查
 make check         # 本地质量门禁：vet + test + 前端构建/类型检查
 make docker-up     # Compose 仅启动应用（数据库/Redis 用宿主机实例）
-make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATABASE_DSN）
+make db-migrate    # 应用 database/schema.sql（需先设置 CONDUCTOR_DATABASE_DSN）
 ```
 
 - **后端约定**：统一错误模型与结构化日志（不打印 Credential、Token 与完整敏感 MCP payload）；核心模块测试优先（Router / Balancer / Rate Limiter / Tool Namespace）。
 - **前端约定**：基础设施管理平台风格（现代、克制、高信息密度），Ant Design Vue + ECharts + Pinia，Payload 不可达时保持空态。
-- **测试**：`make check` 是提交前的本地质量门禁；真实 MySQL 5.7 集成测试需在应用 `0001..0018` 迁移后，显式设置 `MYSQL_TEST_DSN` 运行。启用 CGO 的环境可额外运行 `go test -race ./...`。
+- **测试**：`make check` 是提交前的本地质量门禁；真实 MySQL 5.7 集成测试需先应用 `database/schema.sql`，再显式设置 `MYSQL_TEST_DSN` 运行。启用 CGO 的环境可额外运行 `go test -race ./...`。
 
 ## Examples
 
@@ -321,9 +323,9 @@ make db-migrate    # 按序应用 migrations/*.sql（需先设置 CONDUCTOR_DATA
 
 ## Roadmap
 
-- **v0.1（当前）**：最小闭环 + 运维基础（Registry / 聚合 / 路由 / 治理 / 观测 / Console / Docker）。其中 **MySQL 5.7+ 持久化驱动已先行落地**（`internal/storage/mysql`，实测通过）。
-- **v0.2 候选**：Route 管理页完善、stdio 长驻会话缓存（降低子进程启动开销）。注：stdio 上游接入、Credential 落库与上游凭据注入、迁移工具（`cmd/migrate`）、Server 多实例 + 健康感知 Round-Robin、实例级流量归属、按实例定向评测、长程分钟桶趋势持久化与按入参回放、调用日志保留清理（`traffic_retention_days`）均已随 v0.1 落地。
-- **v0.3 候选**：Evaluation 深化（本阶段已落地 Server 质量分 + 回归用例的 MCP Score 雏形，见上表；后续 Dataset/TestCase 落库、对比与 LLM Judge 另行列版）、协议/Schema/性能测试。
+- **v1.0（当前）**：首个公开稳定版本，包含 Registry、聚合、路由、运行时治理、可观测性、基础评测、Console、MySQL 5.7+ 持久化和 Docker 交付。
+- **v1.1 候选**：Route 管理体验完善、stdio 长驻会话缓存（降低子进程启动开销）、发布自动化与更多部署示例。
+- **后续版本**：Evaluation 深化（Dataset/TestCase 落库、对比与 LLM Judge）、协议兼容性、Schema 与性能测试。
 - **远期**：独立 Python Evaluation Worker、AI 优化建议、Route 灰度/分组转发。
 
 ## Contributing

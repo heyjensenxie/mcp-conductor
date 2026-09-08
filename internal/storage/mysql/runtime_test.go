@@ -9,7 +9,7 @@ import (
 )
 
 // TestRuntimeConfigCRUD 验证 runtime_config 单行 upsert/get 往返（需 MYSQL_TEST_DSN
-// 且已应用 0013 迁移）。blocklist 经 JSON 文本往返保持顺序。
+// 且已应用 database/schema.sql）。blocklist 经 JSON 文本往返保持顺序。
 func TestRuntimeConfigCRUD(t *testing.T) {
 	store := openTest(t)
 	ctx := context.Background()

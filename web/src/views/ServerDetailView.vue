@@ -97,9 +97,7 @@
                 <a-button size="small" :danger="record.enabled" @click="toggleInstance(record)">
                   {{ record.enabled ? t('servers.disable') : t('servers.enable') }}
                 </a-button>
-                <a-popconfirm :title="t('serverDetail.deleteInstanceConfirm')" @confirm="removeInstance(record)">
-                  <a-button size="small" danger>{{ t('common.delete') }}</a-button>
-                </a-popconfirm>
+                <a-button size="small" danger @click="requestDeleteInstance(record)">{{ t('common.delete') }}</a-button>
               </a-space>
             </template>
           </template>
@@ -192,9 +190,7 @@
                   <template v-else-if="column.key === 'actions'">
                     <a-space :size="4">
                       <a-button size="small" @click="openCredential(record)">{{ t('common.edit') }}</a-button>
-                      <a-popconfirm :title="t('serverDetail.confirmDeleteCred')" @confirm="removeCredential(record)">
-                        <a-button size="small" danger>{{ t('common.delete') }}</a-button>
-                      </a-popconfirm>
+                      <a-button size="small" danger @click="requestDeleteCredential(record)">{{ t('common.delete') }}</a-button>
                     </a-space>
                   </template>
                 </template>
@@ -258,10 +254,26 @@
       :width="760"
       :ok-text="t('serverDetail.rediscoverApply')"
       :cancel-text="t('common.cancel')"
-      :ok-button-props="{ disabled: !(plan?.changes?.length ?? 0) }"
+      :ok-button-props="{ disabled: !((plan?.changes?.length ?? 0) || (plan?.conflicts?.length ?? 0)) }"
       :confirm-loading="applying"
       @ok="applyRediscover"
     >
+      <a-alert
+        v-if="plan && (plan.conflicts?.length ?? 0) > 0"
+        type="error"
+        show-icon
+        class="mb"
+        :message="t('serverDetail.rediscoverConflictTitle')"
+      >
+        <template #description>
+          <div>{{ t('serverDetail.rediscoverConflictHint') }}</div>
+          <ul class="plan-conflicts">
+            <li v-for="conflict in plan.conflicts" :key="conflict.gateway_name">
+              {{ t('serverDetail.rediscoverConflictItem', { tool: conflict.gateway_name, server: conflict.owner_server_name }) }}
+            </li>
+          </ul>
+        </template>
+      </a-alert>
       <a-alert
         v-if="plan && !(plan.changes?.length ?? 0)"
         type="info"
@@ -269,7 +281,7 @@
         class="mb"
         :message="t('serverDetail.rediscoverNoChange')"
       />
-      <template v-else-if="plan && (plan.changes?.length ?? 0) > 0">
+      <template v-if="plan && (plan.changes?.length ?? 0) > 0">
         <div class="plan-summary">
           <a-tag color="green">{{ t('serverDetail.rediscoverAdd') }} {{ plan.added }}</a-tag>
           <a-tag color="orange">{{ t('serverDetail.rediscoverUpdate') }} {{ plan.updated }}</a-tag>
@@ -300,6 +312,26 @@
         <div class="plan-hint muted">{{ t('serverDetail.rediscoverConfirmHint') }}</div>
       </template>
     </a-modal>
+    <DeleteConfirmModal
+      v-model:open="deleteInstanceVisible"
+      :title="t('serverDetail.deleteInstanceTitle')"
+      :description="t('serverDetail.deleteInstanceWarning')"
+      :target="deleteInstanceTarget?.endpoint"
+      :confirm-text="t('common.delete')"
+      :cancel-text="t('common.cancel')"
+      :loading="deletingInstance"
+      @confirm="confirmDeleteInstance"
+    />
+    <DeleteConfirmModal
+      v-model:open="deleteCredentialVisible"
+      :title="t('serverDetail.deleteCredentialTitle')"
+      :description="t('serverDetail.deleteCredentialWarning')"
+      :target="deleteCredentialTarget?.name"
+      :confirm-text="t('common.delete')"
+      :cancel-text="t('common.cancel')"
+      :loading="deletingCredential"
+      @confirm="confirmDeleteCredential"
+    />
   </a-spin>
 </template>
 
@@ -331,6 +363,7 @@ import {
   updateServer,
   updateServerInstance,
 } from '@/api'
+import DeleteConfirmModal from '@/components/DeleteConfirmModal.vue'
 import type { Credential, MCPServer, MetricSnapshot, RediscoverChange, RediscoverPlan, ServerInstance, Tool, TrafficSample, Transport } from '@/types'
 
 const { t } = useI18n()
@@ -395,6 +428,9 @@ const instanceCount = computed(() => instanceRows.value.length)
 
 const instVisible = ref(false)
 const instSaving = ref(false)
+const deleteInstanceVisible = ref(false)
+const deleteInstanceTarget = ref<ServerInstance | null>(null)
+const deletingInstance = ref(false)
 const instEditId = ref('')
 const instForm = reactive<{ endpoint: string; transport: Transport; args: string }>({ endpoint: '', transport: 'https', args: '' })
 // stdio 传输：endpoint 承载可执行命令并展示启动参数输入框。
@@ -506,13 +542,25 @@ async function testInstance(record: ServerInstance) {
   }
 }
 
-async function removeInstance(record: ServerInstance) {
+function requestDeleteInstance(record: ServerInstance) {
+  deleteInstanceTarget.value = record
+  deleteInstanceVisible.value = true
+}
+
+async function confirmDeleteInstance() {
+  const record = deleteInstanceTarget.value
+  if (!record) return
+  deletingInstance.value = true
   try {
     await deleteServerInstance(id.value, record.id)
     message.success(t('serverDetail.instanceDeleted'))
+    deleteInstanceVisible.value = false
+    deleteInstanceTarget.value = null
     await loadInstances()
   } catch (e) {
     message.error(String(e))
+  } finally {
+    deletingInstance.value = false
   }
 }
 
@@ -792,6 +840,9 @@ async function saveServerEdit() {
 // ---- Credential 表单（创建/编辑共用；编辑时空 value 表示不改值）----
 const credVisible = ref(false)
 const credSaving = ref(false)
+const deleteCredentialVisible = ref(false)
+const deleteCredentialTarget = ref<Credential | null>(null)
+const deletingCredential = ref(false)
 const credEditId = ref('')
 const credForm = reactive<{ name: string; kind: 'api_key' | 'static_token'; header: string; value: string }>({
   name: '',
@@ -839,13 +890,25 @@ async function saveCredential() {
   }
 }
 
-async function removeCredential(record: Credential) {
+function requestDeleteCredential(record: Credential) {
+  deleteCredentialTarget.value = record
+  deleteCredentialVisible.value = true
+}
+
+async function confirmDeleteCredential() {
+  const record = deleteCredentialTarget.value
+  if (!record) return
+  deletingCredential.value = true
   try {
     await deleteCredential(id.value, record.id)
     message.success(t('serverDetail.credentialDeleted'))
+    deleteCredentialVisible.value = false
+    deleteCredentialTarget.value = null
     await loadCredentialsPage()
   } catch (e) {
     message.error(String(e))
+  } finally {
+    deletingCredential.value = false
   }
 }
 
@@ -882,6 +945,10 @@ const healthColor = (s?: string) => (s === 'healthy' ? 'green' : s === 'unhealth
 }
 .plan-summary {
   margin-bottom: 12px;
+}
+.plan-conflicts {
+  margin: 8px 0 0;
+  padding-left: 18px;
 }
 .plan-gw {
   font-size: 12px;

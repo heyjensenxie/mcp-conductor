@@ -12,7 +12,7 @@ import (
 // ---- TrendStore ----
 //
 // trend_minute 存“已闭合分钟桶”：进程内指标聚合器每 60s 把闭合分钟幂等 upsert
-// 到此（PK (scope,dim_key,minute) 防重），读侧作为长程权威源。表结构见迁移 0010。
+// 到此（PK (scope,dim_key,minute) 防重），读侧作为长程权威源。表结构见 database/schema.sql。
 
 // UpsertTrendBuckets 幂等写入已闭合分钟桶（同键存在则覆盖计数，重复 flush 无害）。
 func (s *Store) UpsertTrendBuckets(ctx context.Context, buckets []model.TrendMinute) error {

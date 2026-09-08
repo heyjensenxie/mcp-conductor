@@ -11,7 +11,7 @@ import (
 	"github.com/heyjensenxie/mcp-conductor/internal/storage/query"
 )
 
-// 集成测试（需 MYSQL_TEST_DSN 且已应用 0010/0011 迁移）：
+// 集成测试（需 MYSQL_TEST_DSN 且已应用 database/schema.sql）：
 //   - traffic 入参捕获往返：列表 has_args 为真且不泄入参；GetTraffic 按 id 带出入参；
 //   - trend 分钟桶幂等 upsert / 窗口读取 / 保留清理。
 

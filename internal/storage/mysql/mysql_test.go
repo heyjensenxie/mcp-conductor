@@ -485,7 +485,7 @@ func TestTrafficAppendRecent(t *testing.T) {
 	}
 }
 
-// 需要迁移 0003_add_access_keys.sql 已执行。
+// 需要 database/schema.sql 已执行。
 func TestAccessKeyCRUD(t *testing.T) {
 	store := openTest(t)
 	ctx := context.Background()

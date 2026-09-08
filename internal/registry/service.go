@@ -1,7 +1,7 @@
 // Package registry 提供 MCP Server 管理、实例管理、Tool 自动发现与 Tool Registry 服务。
 //
-// 面向客户的 Tool 名采用 Server 命名空间（如 university.search_policy），
-// 解决多 Server 聚合后的 Tool Name Collision，并维护 对外名 → (Server, 原名) 映射。
+// 面向客户的 Tool 名直接采用上游原名（如 github.create_issue），并维护
+// 对外名 → (Server, 原名) 映射。跨 Server 重名会在发现时跳过并提示人工改名。
 //
 // 模型：Server 是逻辑实体（聚合工具/凭证/命名空间），其上可挂多个实例
 // （endpoint+transport）；工具发现/健康探测作用于某个具体实例，负载均衡在
@@ -10,8 +10,10 @@ package registry
 
 import (
 	"context"
+	"log/slog"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/errs"
@@ -211,7 +213,7 @@ func (s *Service) DeleteServer(ctx context.Context, id string) error {
 }
 
 // UpdateServerPatch 是逻辑 Server 可编辑字段（name 不可改：改名会重建对外工具
-// 命名空间，涉及删除/重发现，v0.1 不在线支持；endpoint/transport 属于实例，
+// 命名空间，涉及删除/重发现，当前版本不在线支持；endpoint/transport 属于实例，
 // 请编辑实例）。
 type UpdateServerPatch struct {
 	Description *string `json:"description,omitempty"`
@@ -429,12 +431,21 @@ type RediscoverChange struct {
 	NameProtected   bool   `json:"name_protected"`
 }
 
+// RediscoverConflict 描述一次重新发现中因其他 Server 已占用对外工具名而跳过的工具。
+type RediscoverConflict struct {
+	GatewayName     string `json:"gateway_name"`
+	OwnerServerID   string `json:"owner_server_id"`
+	OwnerServerName string `json:"owner_server_name"`
+}
+
 // RediscoverPlan 是一次"重新发现"的只读预演结果：调用方据此人工确认后再真正落库。
 type RediscoverPlan struct {
-	ServerID string             `json:"server_id"`
-	Added    int                `json:"added"`
-	Updated  int                `json:"updated"`
-	Changes  []RediscoverChange `json:"changes"`
+	ServerID      string               `json:"server_id"`
+	Added         int                  `json:"added"`
+	Updated       int                  `json:"updated"`
+	ConflictCount int                  `json:"conflict_count"`
+	Changes       []RediscoverChange   `json:"changes"`
+	Conflicts     []RediscoverConflict `json:"conflicts"`
 }
 
 // PlanRediscover 连接主实例执行一次上游发现并计算相对当前登记的变更，但不写库、
@@ -449,7 +460,6 @@ func (s *Service) PlanRediscover(ctx context.Context, serverID string) (*Redisco
 	if err != nil {
 		return nil, err
 	}
-	namespace := namespaceFor(server.Name)
 	upstream, err := s.discoverer.Discover(ctx, *server, *instance)
 	if err != nil {
 		return nil, errs.Wrap(errs.CodeUpstream, err, "发现 Server %q 工具失败", server.Name)
@@ -457,9 +467,18 @@ func (s *Service) PlanRediscover(ctx context.Context, serverID string) (*Redisco
 
 	// Changes 显式初始化为空切片（而非 nil），保证序列化输出 [] 而不是 null，
 	// 避免前端对 plan.changes.length 读 null 报错。
-	plan := &RediscoverPlan{ServerID: server.ID, Changes: []RediscoverChange{}}
+	plan := &RediscoverPlan{
+		ServerID:  server.ID,
+		Changes:   []RediscoverChange{},
+		Conflicts: []RediscoverConflict{},
+	}
 	for _, dt := range upstream {
-		gw := namespace + "." + dt.Name
+		gw := defaultGatewayName(dt.Name)
+		if conflict, ok := s.gatewayNameConflict(ctx, server.ID, gw); ok {
+			plan.ConflictCount++
+			plan.Conflicts = append(plan.Conflicts, conflict)
+			continue
+		}
 		existing, foundErr := s.stores.GetToolBySource(ctx, server.ID, dt.Name)
 		if foundErr != nil {
 			// 未登记过的上游工具 → 新增（默认启用，与 discover 一致）。
@@ -533,7 +552,7 @@ func (s *Service) UpdateTool(ctx context.Context, id string, patch UpdateToolPat
 		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Tool 失败")
 	}
 	oldName := tool.GatewayName
-	canonicalName := namespaceForServerTool(tool.ServerID, tool.OriginalName, s.stores, ctx)
+	canonicalName := defaultGatewayName(tool.OriginalName)
 	if patch.ResetName {
 		tool.GatewayName, tool.NameOverridden = canonicalName, false
 	} else if patch.GatewayName != nil {
@@ -570,12 +589,10 @@ func (s *Service) UpdateTool(ctx context.Context, id string, patch UpdateToolPat
 	return tool, nil
 }
 
-func namespaceForServerTool(serverID, originalName string, stores Stores, ctx context.Context) string {
-	server, err := stores.GetServer(ctx, serverID)
-	if err != nil {
-		return originalName
-	}
-	return namespaceFor(server.Name) + "." + originalName
+// defaultGatewayName 返回上游工具默认对外名。平台不再为 Server 添加命名空间；
+// 多 Server 重名由发现前的冲突预检处理。
+func defaultGatewayName(originalName string) string {
+	return originalName
 }
 
 func (s *Service) renameReferences(ctx context.Context, oldName, newName string) error {
@@ -725,13 +742,13 @@ func (s *Service) discoverServer(ctx context.Context, serverID string) {
 }
 
 // discover 拨测 Server 的主实例发现并落库工具；成功后把该实例标 healthy、
-// 失败标 unhealthy 并重算聚合。同一对外名重复时覆盖（保留运维启停/覆盖）。
+// 失败标 unhealthy 并重算聚合。跨 Server 对外名冲突时跳过冲突工具，
+// 其余工具仍正常入库并返回 advisory 错误提示。
 func (s *Service) discover(ctx context.Context, server model.Server) error {
 	instance, err := s.pickDiscoveryInstance(ctx, server)
 	if err != nil {
 		return err
 	}
-	namespace := namespaceFor(server.Name)
 	tools, err := s.discoverer.Discover(ctx, server, *instance)
 	if err != nil {
 		s.markInstanceHealth(ctx, instance.ID, model.ServerStatusUnhealthy)
@@ -740,8 +757,13 @@ func (s *Service) discover(ctx context.Context, server model.Server) error {
 	s.markInstanceHealth(ctx, instance.ID, model.ServerStatusHealthy)
 
 	now := model.Now()
+	conflicts := make([]RediscoverConflict, 0)
 	for _, dt := range tools {
-		gw := namespace + "." + dt.Name
+		gw := defaultGatewayName(dt.Name)
+		if conflict, ok := s.gatewayNameConflict(ctx, server.ID, gw); ok {
+			conflicts = append(conflicts, conflict)
+			continue
+		}
 		// 保留既有启停状态：重新发现（rediscover / 注册 / test）不应清掉
 		// 运维手工禁用的工具；仅新工具默认启用。
 		enabled := true
@@ -764,28 +786,37 @@ func (s *Service) discover(ctx context.Context, server model.Server) error {
 			return errs.Wrap(errs.CodeInternal, err, "保存工具 %q 失败", dt.Name)
 		}
 	}
+	if len(conflicts) > 0 {
+		message := rediscoverConflictMessage(conflicts)
+		slog.Warn("工具发现存在名称冲突，已跳过冲突项", "server_id", server.ID, "server_name", server.Name, "conflict_count", len(conflicts), "message", message)
+		return errs.New(errs.CodeInvalidArgument, "%s", message)
+	}
 	return nil
 }
 
-// namespaceFor 由 Server 名称派生对外工具命名空间（小写、特殊字符转下划线）。
-func namespaceFor(name string) string {
-	var b strings.Builder
-	prevDash := true
-	for _, r := range strings.ToLower(name) {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-			prevDash = false
-		default:
-			if !prevDash {
-				b.WriteByte('_')
-				prevDash = true
-			}
-		}
+// gatewayNameConflict 返回其他 Server 已占用 gatewayName 时的归属信息。
+// 查无记录时 Store 以普通错误表示；这里与 UpdateTool 的同名预检保持一致。
+func (s *Service) gatewayNameConflict(ctx context.Context, serverID, gatewayName string) (RediscoverConflict, bool) {
+	tool, err := s.stores.GetToolByGatewayName(ctx, gatewayName)
+	if err != nil || tool.ServerID == serverID {
+		return RediscoverConflict{}, false
 	}
-	ns := strings.Trim(b.String(), "_")
-	if ns == "" {
-		return "server"
+	ownerName := tool.ServerID
+	if owner, ownerErr := s.stores.GetServer(ctx, tool.ServerID); ownerErr == nil {
+		ownerName = owner.Name
 	}
-	return ns
+	return RediscoverConflict{
+		GatewayName:     gatewayName,
+		OwnerServerID:   tool.ServerID,
+		OwnerServerName: ownerName,
+	}, true
+}
+
+func rediscoverConflictMessage(conflicts []RediscoverConflict) string {
+	first := conflicts[0]
+	message := "工具名冲突：" + first.GatewayName + " 已被 Server「" + first.OwnerServerName + "」占用，已跳过（可在工具详情改名后重新发现）"
+	if len(conflicts) > 1 {
+		message += "；另有 " + strconv.Itoa(len(conflicts)-1) + " 个工具冲突"
+	}
+	return message
 }
