@@ -534,11 +534,12 @@ async function testInstance(record: ServerInstance) {
   try {
     const updated = await testServerInstance(id.value, record.id)
     message.success(`${t('serverDetail.testOk')} · ${updated.health_status}`)
-    await loadInstances()
   } catch (e) {
     message.error(`${t('serverDetail.connectFail')}: ${e}`)
   } finally {
+    // 无论成败都刷新实例列表：失败时后端已把该实例标 unhealthy，行状态需与落库一致。
     testingInst.value = ''
+    await loadInstances()
   }
 }
 

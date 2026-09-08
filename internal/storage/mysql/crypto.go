@@ -84,7 +84,12 @@ func encryptValue(c *credentialCipher, value string) (string, error) {
 // decryptValue 解码从库中读出的凭证值。
 func decryptValue(c *credentialCipher, sealedHex string) (string, error) {
 	if c == nil {
-		// 无密钥时旧数据理论上不应存在；按空处理并保持安全。
+		// 未配置 encryption_key 时理论上不应存在非空密文；若确实存在说明密钥
+		// 缺失/被移除，明确报错（fail-closed），避免把"读不出"静默成"没配置"
+		// 而匿名请求上游。
+		if sealedHex != "" {
+			return "", errors.New("未配置 credentials.encryption_key，无法解密已存在的凭证密文")
+		}
 		return "", nil
 	}
 	return c.decryptHex(sealedHex)

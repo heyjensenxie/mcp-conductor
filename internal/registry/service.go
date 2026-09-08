@@ -10,6 +10,7 @@ package registry
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"regexp"
@@ -398,9 +399,50 @@ func (s *Service) TestInstance(ctx context.Context, serverID, instanceID string)
 		return nil, err
 	}
 	if probeErr != nil {
-		return instance, errs.Wrap(errs.CodeUpstream, probeErr, "实例 %q 探测失败", instance.Endpoint)
+		return instance, probeFailError(probeErr, *instance)
 	}
 	return instance, nil
+}
+
+// probeFailError 构造"实例探测失败"统一错误：超时归 CodeTimeout、本地内部错误
+// （如凭据读取/解密失败）归 CodeInternal，其余 CodeUpstream；Message 内使用脱敏
+// endpoint 并附 errs.SafeCause 安全根因，避免把端点 query/userinfo 或上游响应
+// 正文泄给控制台/日志。
+func probeFailError(probeErr error, instance model.Instance) *errs.Error {
+	code := errs.CodeUpstream
+	switch {
+	case errs.IsTimeout(probeErr):
+		code = errs.CodeTimeout
+	case errs.Is(probeErr, errs.CodeInternal):
+		code = errs.CodeInternal
+	}
+	message := fmt.Sprintf("实例 %s 探测失败", errs.RedactEndpoint(instance.Endpoint))
+	if cause := errs.SafeCause(probeErr); cause != "" {
+		message += "：" + cause
+	}
+	return errs.Wrap(code, probeErr, "%s", message)
+}
+
+// discoverFailError 构造"工具发现失败"统一错误：超时归 CodeTimeout、本地内部错误
+// 归 CodeInternal，其余 CodeUpstream；Message 含 Server 名与脱敏 endpoint，并附
+// errs.SafeCause 安全根因，供手工测试/重新发现控制台展示，不透出端点
+// query/userinfo 或上游正文。
+func discoverFailError(err error, server model.Server, instance model.Instance) *errs.Error {
+	code := errs.CodeUpstream
+	switch {
+	case errs.IsTimeout(err):
+		code = errs.CodeTimeout
+	case errs.Is(err, errs.CodeInternal):
+		code = errs.CodeInternal
+	}
+	message := fmt.Sprintf("发现 Server %q 工具失败", server.Name)
+	if endpoint := errs.RedactEndpoint(instance.Endpoint); endpoint != "" {
+		message += fmt.Sprintf("（实例 %s）", endpoint)
+	}
+	if cause := errs.SafeCause(err); cause != "" {
+		message += "：" + cause
+	}
+	return errs.Wrap(code, err, "%s", message)
 }
 
 // Rediscover 重新发现逻辑 Server 的工具（测试连接/刷新 Registry 用），
@@ -462,7 +504,7 @@ func (s *Service) PlanRediscover(ctx context.Context, serverID string) (*Redisco
 	}
 	upstream, err := s.discoverer.Discover(ctx, *server, *instance)
 	if err != nil {
-		return nil, errs.Wrap(errs.CodeUpstream, err, "发现 Server %q 工具失败", server.Name)
+		return nil, discoverFailError(err, *server, *instance)
 	}
 
 	// Changes 显式初始化为空切片（而非 nil），保证序列化输出 [] 而不是 null，
@@ -675,8 +717,10 @@ func (s *Service) getServerInstance(ctx context.Context, serverID, instanceID st
 	return instance, nil
 }
 
-// pickDiscoveryInstance 返回首个"启用且非 unhealthy"的实例用于发现拨测；
-// 全不可用时返回错误（调用方不应回退到禁用实例）。
+// pickDiscoveryInstance 返回一个"启用"的实例用于发现拨测：优先首个可用实例
+// （启用且非 unhealthy，含 unknown 乐观可调）；当启用实例全部被标为 unhealthy
+// 时，回退到首个启用实例，让手工"测试连接/重新发现"能重新探测 unhealthy 实例并
+// 在其恢复后转 healthy。禁用实例永不参与。
 func (s *Service) pickDiscoveryInstance(ctx context.Context, server model.Server) (*model.Instance, error) {
 	instances, err := s.stores.ListInstancesByServer(ctx, server.ID)
 	if err != nil {
@@ -687,7 +731,13 @@ func (s *Service) pickDiscoveryInstance(ctx context.Context, server model.Server
 			return &instances[i], nil
 		}
 	}
-	return nil, errs.New(errs.CodeRoute, "Server %q 没有可用的启用实例用于发现", server.Name)
+	// 回退：全 unhealthy 时仍允许拨测首个启用实例，供手工测试重探恢复。
+	for i := range instances {
+		if instances[i].Enabled {
+			return &instances[i], nil
+		}
+	}
+	return nil, errs.New(errs.CodeRoute, "Server %q 没有启用的实例用于发现", server.Name)
 }
 
 // syncAggregate 读取实例集合、推导聚合健康并写回 Server（仅在变化时更新）。
@@ -752,7 +802,7 @@ func (s *Service) discover(ctx context.Context, server model.Server) error {
 	tools, err := s.discoverer.Discover(ctx, server, *instance)
 	if err != nil {
 		s.markInstanceHealth(ctx, instance.ID, model.ServerStatusUnhealthy)
-		return errs.Wrap(errs.CodeUpstream, err, "发现 Server %q 工具失败", server.Name)
+		return discoverFailError(err, server, *instance)
 	}
 	s.markInstanceHealth(ctx, instance.ID, model.ServerStatusHealthy)
 

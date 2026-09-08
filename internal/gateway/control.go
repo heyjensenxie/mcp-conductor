@@ -214,7 +214,9 @@ func (c *Control) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 // handleTestServer 测试连接并重新发现工具。
 func (c *Control) handleTestServer(w http.ResponseWriter, r *http.Request) {
 	if err := c.registry.Rediscover(r.Context(), r.PathValue("id")); err != nil {
-		writeGatewayError(w, r, statusForError(err), err)
+		// 只回传脱敏后的外层文案（errs.SafeMessage），不透出端点 query/userinfo
+		// 或上游响应正文；错误码与 HTTP 状态语义保持不变。
+		writeEnvelope(w, statusForError(err), string(errs.CodeOf(err)), errs.SafeMessage(err), RequestIDFrom(r.Context()), nil)
 		return
 	}
 	writeOK(w, RequestIDFrom(r.Context()), map[string]string{"status": "ok"})
@@ -225,7 +227,7 @@ func (c *Control) handleTestServer(w http.ResponseWriter, r *http.Request) {
 func (c *Control) handleServerRediscoverPlan(w http.ResponseWriter, r *http.Request) {
 	plan, err := c.registry.PlanRediscover(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeGatewayError(w, r, statusForError(err), err)
+		writeEnvelope(w, statusForError(err), string(errs.CodeOf(err)), errs.SafeMessage(err), RequestIDFrom(r.Context()), nil)
 		return
 	}
 	writeOK(w, RequestIDFrom(r.Context()), plan)

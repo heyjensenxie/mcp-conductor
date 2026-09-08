@@ -23,8 +23,9 @@ import (
 // Adapter 适配上游 MCP Server。
 type Adapter struct {
 	// headerFor 按逻辑 Server 返回调用上游时附加的 header（如注入 API Key / Token）。
-	// 同一逻辑 Server 的所有实例共享这套上游凭证。nil 表示不注入。
-	headerFor func(ctx context.Context, server model.Server) map[string]string
+	// 同一逻辑 Server 的所有实例共享这套上游凭证。返回错误时中止拨测（凭据
+	// 读取/解密失败不再匿名盲发）；nil 表示不注入。
+	headerFor func(ctx context.Context, server model.Server) (map[string]string, error)
 	// stdioEnv 是启动 stdio 子进程时附加的环境变量（追加在当前进程环境之上）。
 	// stdio 上游身份凭据由进程自身环境自持，通常经此注入。
 	stdioEnv []string
@@ -36,7 +37,8 @@ func New() *Adapter {
 }
 
 // WithHeaderFor 配置按逻辑 Server 组装额外 header 的回调（由应用层注入凭据）。
-func (a *Adapter) WithHeaderFor(fn func(ctx context.Context, server model.Server) map[string]string) *Adapter {
+// 回调返回错误（如凭据读取/解密失败）时，拨测以内部错误中止，不匿名发送。
+func (a *Adapter) WithHeaderFor(fn func(ctx context.Context, server model.Server) (map[string]string, error)) *Adapter {
 	a.headerFor = fn
 	return a
 }
@@ -65,7 +67,7 @@ func (a *Adapter) Discover(ctx context.Context, server model.Server, instance mo
 	}
 	defer c.Close()
 	if _, err := c.Initialize(ctx); err != nil {
-		return nil, errs.Wrap(codeForError(err), err, "与 Server %q 实例 %q 握手失败", server.Name, instance.Endpoint)
+		return nil, errs.Wrap(codeForError(err), err, "与 Server %q 实例 %q 握手失败", server.Name, errs.RedactEndpoint(instance.Endpoint))
 	}
 	tools, err := c.ListTools(ctx)
 	if err != nil {
@@ -101,7 +103,7 @@ func (a *Adapter) Probe(ctx context.Context, server model.Server, instance model
 	defer c.Close()
 	init, err := c.Initialize(ctx)
 	if err != nil {
-		return nil, errs.Wrap(codeForError(err), err, "与 Server %q 实例 %q 握手失败", server.Name, instance.Endpoint)
+		return nil, errs.Wrap(codeForError(err), err, "与 Server %q 实例 %q 握手失败", server.Name, errs.RedactEndpoint(instance.Endpoint))
 	}
 	tools, err := c.ListTools(ctx)
 	if err != nil {
@@ -194,7 +196,11 @@ func (a *Adapter) dial(ctx context.Context, server model.Server, instance model.
 	}
 	var opts []mcp.Option
 	if a.headerFor != nil {
-		for k, v := range a.headerFor(ctx, server) {
+		headers, err := a.headerFor(ctx, server)
+		if err != nil {
+			return nil, errs.Wrap(errs.CodeInternal, err, "读取 Server %q 凭据失败", server.Name)
+		}
+		for k, v := range headers {
 			opts = append(opts, mcp.WithHeader(k, v))
 		}
 	}

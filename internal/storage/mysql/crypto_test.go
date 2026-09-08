@@ -67,3 +67,21 @@ func TestEncryptValueRequiresKeyForNonEmpty(t *testing.T) {
 		t.Fatal("无密钥时非空值应被拒绝")
 	}
 }
+
+func TestDecryptValueNilCipherFailsOnNonEmpty(t *testing.T) {
+	cipher, _ := newCredentialCipher(testCredentialKeyHex)
+	sealed, err := cipher.encryptHex("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// fail-closed：无密钥却存在非空密文时明确报错，避免静默成"没配置"。
+	if _, err := decryptValue(nil, sealed); err == nil {
+		t.Fatal("无密钥 + 非空密文应报错")
+	}
+	if plain, err := decryptValue(nil, ""); err != nil || plain != "" {
+		t.Fatalf("无密钥 + 空密文应返回空: plain=%q err=%v", plain, err)
+	}
+	if plain, err := decryptValue(cipher, ""); err != nil || plain != "" {
+		t.Fatalf("有密钥 + 空密文应返回空: plain=%q err=%v", plain, err)
+	}
+}

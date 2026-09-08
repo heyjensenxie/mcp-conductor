@@ -90,12 +90,13 @@ func (c *Control) handleToggleInstance(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, RequestIDFrom(r.Context()), instance)
 }
 
-// handleTestInstance 对单个实例执行同步健康探测并回写状态；失败以 200 返回
-// unhealthy 的实例（消息在 message 字段，供前端提示）。
+// handleTestInstance 对单个实例执行同步健康探测并回写状态；失败仍以 200 返回
+// unhealthy 的实例（信封 code 非 "ok"、消息为脱敏诊断，供前端提示并据 code
+// 区分超时/上游错误），避免控制台把失败误显示为成功。
 func (c *Control) handleTestInstance(w http.ResponseWriter, r *http.Request) {
 	instance, probeErr := c.registry.TestInstance(r.Context(), r.PathValue("id"), r.PathValue("iid"))
 	if probeErr != nil {
-		writeEnvelope(w, http.StatusOK, "ok", errs.SafeMessage(probeErr), RequestIDFrom(r.Context()), instance)
+		writeEnvelope(w, http.StatusOK, string(errs.CodeOf(probeErr)), errs.SafeMessage(probeErr), RequestIDFrom(r.Context()), instance)
 		return
 	}
 	writeOK(w, RequestIDFrom(r.Context()), instance)

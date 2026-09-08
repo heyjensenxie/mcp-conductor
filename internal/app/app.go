@@ -258,12 +258,13 @@ func openStore(ctx context.Context, cfg config.Config) (storage.Store, func(), e
 
 // credentialHeaders 按 Server 的已配置凭证组装上游注入 header：
 // static_token → Authorization: Bearer <value>；api_key → Header: <value>。
-// 值均来自存储解密，不落日志。
-func credentialHeaders(store storage.CredentialStore) func(context.Context, model.Server) map[string]string {
-	return func(ctx context.Context, server model.Server) map[string]string {
+// 值均来自存储解密，不落日志。读取/解密失败（如 encryption_key 缺失或更换）
+// 时返回错误，由 mcpclient 中止拨测，避免匿名盲发、也不再把失败静默吞掉。
+func credentialHeaders(store storage.CredentialStore) func(context.Context, model.Server) (map[string]string, error) {
+	return func(ctx context.Context, server model.Server) (map[string]string, error) {
 		creds, err := store.ListCredentialsByServer(ctx, server.ID)
 		if err != nil {
-			return nil
+			return nil, err
 		}
 		headers := make(map[string]string)
 		for _, cred := range creds {
@@ -279,7 +280,7 @@ func credentialHeaders(store storage.CredentialStore) func(context.Context, mode
 				}
 			}
 		}
-		return headers
+		return headers, nil
 	}
 }
 

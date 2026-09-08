@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/heyjensenxie/mcp-conductor/internal/mcp"
 	"github.com/heyjensenxie/mcp-conductor/internal/model"
 	"github.com/heyjensenxie/mcp-conductor/internal/registry"
 	"github.com/heyjensenxie/mcp-conductor/internal/storage/memory"
@@ -221,6 +222,55 @@ func TestControlInstances_TestInstancePersistsHealthy(t *testing.T) {
 	}
 	if got, _ := store.GetInstance(context.Background(), iid); got.HealthStatus != model.ServerStatusHealthy {
 		t.Fatalf("探测结果应落库 healthy，得到 %s", got.HealthStatus)
+	}
+}
+
+// TestControlInstances_TestInstanceFailureSurfacesSafeEnvelope 验证实例测试失败时
+// 信封 code 非 "ok"（供前端进入错误分支）、HTTP 仍 200 且携带落库后的 unhealthy
+// 实例；消息为脱敏诊断，只含 HTTP 状态，不含上游响应体回显的凭据。
+func TestControlInstances_TestInstanceFailureSurfacesSafeEnvelope(t *testing.T) {
+	prober := &fakeInstanceProber{err: &mcp.UpstreamHTTPError{
+		Status: http.StatusUnauthorized,
+		Body:   `{"echo":"Bearer sekret-token"}`,
+	}}
+	ctrl, store := newInstancesControl(prober)
+	id := seedControlServer(t, ctrl)
+	iid := instanceIDByEndpoint(t, store, id, "http://localhost:9000/mcp")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/servers/"+id+"/instances/"+iid+"/test", nil)
+	req.SetPathValue("id", id)
+	req.SetPathValue("iid", iid)
+	rec := httptest.NewRecorder()
+	ctrl.handleTestInstance(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("TestInstance 失败应 200，得到 %d / %s", rec.Code, rec.Body.String())
+	}
+	var e struct {
+		Code    string          `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil {
+		t.Fatalf("解析信封失败: %v", err)
+	}
+	if e.Code == "ok" {
+		t.Fatalf("失败信封 code 不应为 ok：%s", rec.Body.String())
+	}
+	if strings.Contains(e.Message, "sekret") || strings.Contains(e.Message, "Bearer") {
+		t.Fatalf("信封消息不应泄露上游响应体/凭据：%q", e.Message)
+	}
+	if !strings.Contains(e.Message, "上游返回 HTTP 状态 401") {
+		t.Fatalf("信封消息应含可诊断的 HTTP 状态：%q", e.Message)
+	}
+	var inst struct {
+		ID           string `json:"id"`
+		HealthStatus string `json:"health_status"`
+	}
+	if err := json.Unmarshal(e.Data, &inst); err != nil || inst.ID != iid || inst.HealthStatus != "unhealthy" {
+		t.Fatalf("失败信封仍应携带 unhealthy 实例：err=%v inst=%+v", err, inst)
+	}
+	if got, _ := store.GetInstance(context.Background(), iid); got.HealthStatus != model.ServerStatusUnhealthy {
+		t.Fatalf("探测失败结果应落库 unhealthy，得到 %s", got.HealthStatus)
 	}
 }
 

@@ -190,9 +190,9 @@ func TestAdapter_ExtraHeadersOfferedPerTool(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	adapter := New().WithHeaderFor(func(_ context.Context, server model.Server) map[string]string {
+	adapter := New().WithHeaderFor(func(_ context.Context, server model.Server) (map[string]string, error) {
 		// Server 级凭据也声明 X-Tenant，验证工具级覆盖。
-		return map[string]string{"X-Upstream-Key": "k-abcd", "X-Tenant": "server-tenant"}
+		return map[string]string{"X-Upstream-Key": "k-abcd", "X-Tenant": "server-tenant"}, nil
 	})
 
 	if _, err := adapter.Call(context.Background(), model.Server{ID: "srv-1"}, instanceFor(upstream.URL),
@@ -237,11 +237,11 @@ func TestAdapter_InjectsCredentialHeaders(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	adapter := New().WithHeaderFor(func(_ context.Context, server model.Server) map[string]string {
+	adapter := New().WithHeaderFor(func(_ context.Context, server model.Server) (map[string]string, error) {
 		if server.ID == "srv-1" {
-			return map[string]string{"X-Upstream-Key": "k-abcd"}
+			return map[string]string{"X-Upstream-Key": "k-abcd"}, nil
 		}
-		return nil
+		return nil, nil
 	})
 
 	if _, err := adapter.Discover(context.Background(), model.Server{ID: "srv-1"}, instanceFor(upstream.URL)); err != nil {
@@ -249,6 +249,28 @@ func TestAdapter_InjectsCredentialHeaders(t *testing.T) {
 	}
 	if gotHeader != "k-abcd" {
 		t.Fatalf("上游应收到注入的凭据 header，得到 %q", gotHeader)
+	}
+}
+
+// TestAdapter_HeaderForErrorAbortsDial 验证凭据读取/解密失败时拨测以内部错误中止，
+// 不匿名请求上游（fail-closed，避免把本地解密失败掩盖成上游 401）。
+func TestAdapter_HeaderForErrorAbortsDial(t *testing.T) {
+	hit := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		http.Error(w, "unexpected upstream hit", http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	adapter := New().WithHeaderFor(func(_ context.Context, server model.Server) (map[string]string, error) {
+		return nil, errors.New("读取 Server 凭据失败（测试）")
+	})
+
+	if _, err := adapter.Discover(context.Background(), model.Server{ID: "srv-1", Name: "Mock"}, instanceFor(upstream.URL)); !errs.Is(err, errs.CodeInternal) {
+		t.Fatalf("凭据读取失败应按内部错误中止拨测，得到 %v", err)
+	}
+	if hit {
+		t.Fatal("凭据读取失败时不应匿名请求上游")
 	}
 }
 

@@ -35,6 +35,12 @@ func (e *RPCErrorResponse) Error() string {
 	return fmt.Sprintf("上游调用失败 [%d] %s", e.Code, e.Message)
 }
 
+// CauseSummary 返回可对外展示的根因摘要（不含上游 Message，防止把回显/正文
+// 泄入控制台文案）；供 errs.SafeCause 识别为安全摘要来源。
+func (e *RPCErrorResponse) CauseSummary() string {
+	return fmt.Sprintf("上游返回 JSON-RPC 错误 %d", e.Code)
+}
+
 // UpstreamHTTPError 表示上游以非 2xx HTTP 状态应答（服务端已可达）。Status 落在
 // 4xx 表示客户端/参数被拒（非实例故障），其余（5xx 等）仍视为实例级故障，
 // 由上层按 Status 分类。
@@ -46,6 +52,12 @@ type UpstreamHTTPError struct {
 // Error 返回与既往日志一致的文本。
 func (e *UpstreamHTTPError) Error() string {
 	return fmt.Sprintf("上游返回非 2xx: %d %s", e.Status, e.Body)
+}
+
+// CauseSummary 返回可对外展示的根因摘要（只含状态码，不含响应体——上游可能
+// 在错误正文回显 Authorization/API-Key 头）；供 errs.SafeCause 识别。
+func (e *UpstreamHTTPError) CauseSummary() string {
+	return fmt.Sprintf("上游返回 HTTP 状态 %d", e.Status)
 }
 
 // HTTPClient 是基于 net/http 的最小 MCP 上游客户端。

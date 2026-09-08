@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heyjensenxie/mcp-conductor/internal/errs"
 	"github.com/heyjensenxie/mcp-conductor/internal/model"
 	"github.com/heyjensenxie/mcp-conductor/internal/storage/memory"
 )
@@ -370,5 +371,45 @@ func TestPlanRediscoverReportAndApply(t *testing.T) {
 	}
 	if findTool(tools, "detail") == nil {
 		t.Fatal("确认后 detail 工具应落库")
+	}
+}
+
+// TestRediscoverReprobesUnhealthyEnabledInstance 验证手工"测试连接/重新发现"在启用
+// 实例全部 unhealthy 时会回退拨测首个启用实例（而非报 route_error），成功后把该
+// 实例转 healthy；仅剩禁用实例时仍返回 route_error。
+func TestRediscoverReprobesUnhealthyEnabledInstance(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	svc := NewService(store, &fakeDiscoverer{})
+
+	created, err := svc.CreateServer(ctx, CreateServerInput{Name: "Mock", Endpoint: "http://down:9000/mcp", Transport: model.TransportStreamableHTTP})
+	if err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+	seedID := instancesByEndpoint(t, store, created.ID, "http://down:9000/mcp")
+
+	// 模拟健康检查失败：唯一启用实例被标为 unhealthy。
+	seed, _ := store.GetInstance(ctx, seedID)
+	seed.HealthStatus = model.ServerStatusUnhealthy
+	if err := store.UpdateInstance(ctx, seed); err != nil {
+		t.Fatalf("标记实例 unhealthy: %v", err)
+	}
+
+	// 全 unhealthy 时 Rediscover 应回退拨测该启用实例，成功后转 healthy。
+	if err := svc.Rediscover(ctx, created.ID); err != nil {
+		t.Fatalf("Rediscover 应回退拨测 unhealthy 启用实例成功，得到 %v", err)
+	}
+	if got, _ := store.GetInstance(ctx, seedID); got.HealthStatus != model.ServerStatusHealthy {
+		t.Fatalf("回退拨测成功后实例应 healthy，得到 %s", got.HealthStatus)
+	}
+
+	// 无启用实例时不应回退到禁用实例，返回 route_error。
+	inst, _ := store.GetInstance(ctx, seedID)
+	inst.Enabled = false
+	if err := store.UpdateInstance(ctx, inst); err != nil {
+		t.Fatalf("禁用实例: %v", err)
+	}
+	if err := svc.Rediscover(ctx, created.ID); !errs.Is(err, errs.CodeRoute) {
+		t.Fatalf("无启用实例应返回 route_error，得到 %v", err)
 	}
 }
