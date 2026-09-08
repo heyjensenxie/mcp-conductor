@@ -38,9 +38,7 @@
           <template v-else-if="column.key === 'actions'">
             <a-space :size="4">
               <a-button size="small" @click="openEdit(record)">{{ t('common.edit') }}</a-button>
-              <a-popconfirm :title="t('routes.confirmDelete')" @confirm="remove(record)">
-                <a-button size="small" danger>{{ t('common.delete') }}</a-button>
-              </a-popconfirm>
+              <a-button size="small" danger @click="requestDelete(record)">{{ t('common.delete') }}</a-button>
             </a-space>
           </template>
         </template>
@@ -71,6 +69,17 @@
         </a-form-item>
       </a-form>
     </a-modal>
+
+    <DeleteConfirmModal
+      v-model:open="deleteVisible"
+      :title="t('routes.deleteTitle')"
+      :description="t('routes.deleteWarning')"
+      :target="deleteTarget?.name"
+      :confirm-text="t('common.delete')"
+      :cancel-text="t('common.cancel')"
+      :loading="deleting"
+      @confirm="confirmDelete"
+    />
   </div>
 </template>
 
@@ -80,6 +89,7 @@ import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { createRoute, deleteRoute, listAllServers, listAllTools, listRoutes, primaryEndpoint, toggleRoute, updateRoute } from '@/api'
+import DeleteConfirmModal from '@/components/DeleteConfirmModal.vue'
 import type { MCPServer, Route } from '@/types'
 
 const { t } = useI18n()
@@ -98,6 +108,9 @@ const pagination = reactive({
 const filters = reactive<{ q: string; serverId?: string; enabled?: string }>({ q: '' })
 const dialogVisible = ref(false)
 const saving = ref(false)
+const deleteVisible = ref(false)
+const deleteTarget = ref<Route | null>(null)
+const deleting = ref(false)
 const editingId = ref('')
 // server_id 下拉未选保持 undefined：antd Select 仅在值为空(null/undefined)时展示占位文案。
 const form = reactive<{ name: string; server_id?: string; tool_names: string[] }>({
@@ -215,13 +228,25 @@ async function toggle(record: Route, enabled: boolean) {
   }
 }
 
-async function remove(record: Route) {
+function requestDelete(record: Route) {
+  deleteTarget.value = record
+  deleteVisible.value = true
+}
+
+async function confirmDelete() {
+  const record = deleteTarget.value
+  if (!record) return
+  deleting.value = true
   try {
     await deleteRoute(record.id)
     message.success(t('routes.deletedOk'))
+    deleteVisible.value = false
+    deleteTarget.value = null
     await load()
   } catch (e) {
     message.error(String(e))
+  } finally {
+    deleting.value = false
   }
 }
 </script>

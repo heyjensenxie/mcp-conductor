@@ -32,7 +32,7 @@
               </a-tooltip>
             </template>
             <template v-else-if="column.key === 'tools_count'"><a-tag color="blue">{{ record.grants?.length ?? 0 }} {{ t('access.grantsUnit') }}</a-tag></template>
-            <template v-else-if="column.key === 'actions'"><a-space><a-button type="link" @click="openDetail(record.id)">{{ t('access.openWorkspace') }}</a-button><a-popconfirm :title="t('common.confirmDelete')" @confirm="remove(record)"><a-button type="link" danger>{{ t('common.delete') }}</a-button></a-popconfirm></a-space></template>
+            <template v-else-if="column.key === 'actions'"><a-space><a-button type="link" @click="openDetail(record.id)">{{ t('access.openWorkspace') }}</a-button><a-button type="link" danger @click="requestDelete(record)">{{ t('common.delete') }}</a-button></a-space></template>
           </template>
         </a-table>
 
@@ -51,6 +51,16 @@
       <a-input-group compact class="secret-row"><a-input :value="createdSecret" read-only class="mono" /><a-button @click="copySecret"><template #icon><CopyOutlined /></template>{{ t('access.copy') }}</a-button></a-input-group>
       <a-button block type="primary" class="configure-btn" @click="openCreatedDetail">{{ t('access.configureNow') }}</a-button>
     </a-modal>
+    <DeleteConfirmModal
+      v-model:open="deleteVisible"
+      :title="t('access.deleteTitle')"
+      :description="t('access.deleteWarning')"
+      :target="deleteTarget?.name"
+      :confirm-text="t('common.delete')"
+      :cancel-text="t('common.cancel')"
+      :loading="deleting"
+      @confirm="confirmDelete"
+    />
   </a-spin>
 </template>
 
@@ -61,6 +71,7 @@ import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { CopyOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { createKey, deleteKey, getAuthStatus, getRuntimeConfig, listKeys } from '@/api'
+import DeleteConfirmModal from '@/components/DeleteConfirmModal.vue'
 import type { AccessKey } from '@/types'
 
 const { t } = useI18n()
@@ -81,6 +92,9 @@ const authRequired = ref<boolean | null>(null)
 const createVisible = ref(false)
 const creating = ref(false)
 const secretVisible = ref(false)
+const deleteVisible = ref(false)
+const deleteTarget = ref<AccessKey | null>(null)
+const deleting = ref(false)
 const createdSecret = ref('')
 const createdKeyID = ref('')
 const createForm = reactive({ name: '', subject: '', qps: 0, burst: 0, window_seconds: 0, unlimited: false })
@@ -153,7 +167,24 @@ async function submitCreate() {
     await loadKeys()
   } catch (e) { message.error(String(e)) } finally { creating.value = false }
 }
-async function remove(key: AccessKey) { try { await deleteKey(key.id); pagination.current = 1; await loadKeys(); message.success(t('access.deletedOk')) } catch (e) { message.error(String(e)) } }
+function requestDelete(key: AccessKey) { deleteTarget.value = key; deleteVisible.value = true }
+async function confirmDelete() {
+  const key = deleteTarget.value
+  if (!key) return
+  deleting.value = true
+  try {
+    await deleteKey(key.id)
+    pagination.current = 1
+    deleteVisible.value = false
+    deleteTarget.value = null
+    await loadKeys()
+    message.success(t('access.deletedOk'))
+  } catch (e) {
+    message.error(String(e))
+  } finally {
+    deleting.value = false
+  }
+}
 async function copySecret() { try { await navigator.clipboard.writeText(createdSecret.value); message.success(t('access.copied')) } catch { message.warning(t('access.copyFailed')) } }
 
 async function refreshWindow() {

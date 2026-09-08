@@ -62,9 +62,7 @@
               <a-button size="small" :danger="record.enabled" @click="toggle(record)">
                 {{ record.enabled ? t('servers.disable') : t('servers.enable') }}
               </a-button>
-              <a-popconfirm :title="t('servers.confirmDelete')" @confirm="remove(record)">
-                <a-button size="small" danger>{{ t('servers.delete') }}</a-button>
-              </a-popconfirm>
+              <a-button size="small" danger @click="requestDelete(record)">{{ t('servers.delete') }}</a-button>
             </a-space>
           </template>
         </template>
@@ -121,6 +119,19 @@
         </template>
       </a-form>
     </a-modal>
+
+    <DeleteConfirmModal
+      v-model:open="deleteVisible"
+      :title="t('servers.deleteTitle')"
+      :description="t('servers.deleteWarning')"
+      :target="deleteTarget?.name"
+      :requires-target="true"
+      :typing-hint="t('servers.deleteTypingHint', { name: deleteTarget?.name })"
+      :confirm-text="t('common.delete')"
+      :cancel-text="t('common.cancel')"
+      :loading="deleting"
+      @confirm="confirmDelete"
+    />
   </div>
 </template>
 
@@ -130,6 +141,7 @@ import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { PlusOutlined, DeleteOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { createCredential, createServer, deleteServer, getServerMetrics, listServers, listServerToolsAll, primaryEndpoint, primaryTransport, testServer, toggleServer, updateServer } from '@/api'
+import DeleteConfirmModal from '@/components/DeleteConfirmModal.vue'
 import type { MCPServer, MetricSnapshot, Transport } from '@/types'
 
 const { t } = useI18n()
@@ -150,6 +162,9 @@ const filters = reactive<{ q: string; enabled?: string; health?: string }>({ q: 
 const healthOptions = ['unknown', 'healthy', 'unhealthy', 'disabled']
 const dialogVisible = ref(false)
 const submitting = ref(false)
+const deleteVisible = ref(false)
+const deleteTarget = ref<MCPServer | null>(null)
+const deleting = ref(false)
 const form = reactive<{ name: string; endpoint: string; transport: Transport; description: string; args: string }>({
   name: '',
   endpoint: '',
@@ -391,13 +406,25 @@ async function test(row: MCPServer) {
   }
 }
 
-async function remove(row: MCPServer) {
+function requestDelete(row: MCPServer) {
+  deleteTarget.value = row
+  deleteVisible.value = true
+}
+
+async function confirmDelete() {
+  const row = deleteTarget.value
+  if (!row) return
+  deleting.value = true
   try {
     await deleteServer(row.id)
     message.success(t('servers.deletedOk'))
+    deleteVisible.value = false
+    deleteTarget.value = null
     await load()
   } catch (e) {
     message.error(String(e))
+  } finally {
+    deleting.value = false
   }
 }
 
