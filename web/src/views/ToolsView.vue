@@ -208,5 +208,5 @@ function invoke(record: Tool) {
 .hint { margin-bottom: 16px; }
 .filters { margin-bottom: 12px; }
 .reset { padding-left: 0; margin-top: 4px; }
-.link { color: #1677ff; }
+.link { color: var(--mc-accent-light); }
 </style>

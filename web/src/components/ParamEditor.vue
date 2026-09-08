@@ -165,7 +165,7 @@ function removeRow(n: ParamNode, index: number) {
   word-break: break-all;
 }
 .req {
-  color: #ff4d4f;
+  color: var(--mc-danger-light);
   margin-left: 2px;
 }
 .pe-desc {
@@ -182,9 +182,9 @@ function removeRow(n: ParamNode, index: number) {
 .pe-rows,
 .pe-objs {
   padding: 8px 10px;
-  border: 1px solid var(--mc-border, #f0f0f0);
+  border: 1px solid var(--mc-line);
   border-radius: 6px;
-  background: var(--mc-bg-soft, #fafafa);
+  background: var(--mc-bg-code);
 }
 .pe-rows,
 .pe-objs {

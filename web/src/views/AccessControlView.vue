@@ -212,10 +212,10 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.access-hero { display: flex; justify-content: space-between; align-items: flex-end; margin: 2px 0 22px; padding: 25px 28px; border: 1px solid #d9e5f5; border-radius: 12px; background: linear-gradient(112deg, #f7fbff, #eef5ff 58%, #f9fcff); }
-.access-hero h2 { margin: 2px 0 5px; font-size: 24px; color: #102a43; }
-.access-hero p { margin: 0; color: #627d98; max-width: 620px; }
-.eyebrow { color: #1677ff !important; font-family: var(--mc-mono); font-size: 11px; letter-spacing: .12em; }
+.access-hero { display: flex; justify-content: space-between; align-items: flex-end; margin: 2px 0 22px; padding: 25px 28px; border: 1px solid var(--mc-line); border-radius: var(--mc-radius-lg); background: var(--mc-hero-bg); box-shadow: var(--mc-shadow); }
+.access-hero h2 { margin: 2px 0 5px; font-size: 24px; color: var(--mc-ink-strong); }
+.access-hero p { margin: 0; color: var(--mc-ink-2); max-width: 620px; }
+.eyebrow { color: var(--mc-accent-light) !important; font-family: var(--mc-mono); font-size: 11px; letter-spacing: .12em; }
 .mb { margin-bottom: 16px; }
 .quota-default { font-size: 12px; color: var(--mc-ink-3); }
 .form-hint { margin: -2px 0 10px 0; padding-left: 33.3333%; font-size: 12px; color: var(--mc-ink-3); line-height: 1.5; }

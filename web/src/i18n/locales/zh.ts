@@ -41,6 +41,12 @@ export default {
     zh: '简体中文',
     en: 'English',
   },
+  theme: {
+    appearance: '外观主题',
+    light: '浅色',
+    dark: '深色',
+    system: '跟随系统',
+  },
   menu: {
     dashboard: '仪表盘',
     servers: 'MCP 服务器',

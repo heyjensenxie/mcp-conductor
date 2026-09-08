@@ -439,7 +439,7 @@ const healthColor = (s: string) => (s === 'healthy' ? 'green' : s === 'unhealthy
   margin-bottom: 12px;
 }
 .link {
-  color: #1677ff;
+  color: var(--mc-accent-light);
   font-weight: 500;
 }
 .auth-divider {
@@ -463,19 +463,19 @@ const healthColor = (s: string) => (s === 'healthy' ? 'green' : s === 'unhealthy
   flex: 1;
 }
 .auth-empty {
-  color: #999;
+  color: var(--mc-ink-3);
   font-size: 12px;
   padding: 2px 0 8px;
 }
 .field-hint {
   display: block;
-  color: #999;
+  color: var(--mc-ink-3);
   font-size: 12px;
   line-height: 18px;
   margin-top: 4px;
 }
 .edit-hint {
-  color: #999;
+  color: var(--mc-ink-3);
   font-size: 12px;
 }
 </style>

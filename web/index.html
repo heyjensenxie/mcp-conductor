@@ -9,6 +9,14 @@
   </head>
   <body>
     <div id="app"></div>
+    <script>
+      (() => {
+        const mode = localStorage.getItem('mcp-conductor-theme') || 'system'
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+        document.documentElement.dataset.theme = mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode
+        document.documentElement.dataset.themeMode = mode
+      })()
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

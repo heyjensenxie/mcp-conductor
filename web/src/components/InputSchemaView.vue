@@ -184,7 +184,7 @@ const pretty = computed(() => JSON.stringify(schema.value, null, 2))
   margin-left: 4px;
 }
 .req {
-  color: #ff4d4f;
+  color: var(--mc-danger-light);
 }
 .muted {
   color: var(--mc-ink-3);

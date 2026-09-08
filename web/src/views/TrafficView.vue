@@ -354,7 +354,7 @@ async function runReplay() {
   margin-bottom: 12px;
 }
 .hint {
-  color: #999;
+  color: var(--mc-ink-3);
   font-size: 12px;
 }
 .meta-text {
@@ -362,7 +362,7 @@ async function runReplay() {
   font-size: 12px;
 }
 .err-cell {
-  color: #cf1322;
+  color: var(--mc-danger-light);
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-all;
@@ -395,7 +395,7 @@ async function runReplay() {
   overflow: auto;
   margin: 0;
   padding: 8px;
-  background: var(--mc-bg-code, #f5f5f5);
+  background: var(--mc-bg-code);
   font-family: var(--mc-mono);
   font-size: 12px;
   white-space: pre-wrap;

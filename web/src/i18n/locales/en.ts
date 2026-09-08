@@ -41,6 +41,12 @@ export default {
     zh: '简体中文',
     en: 'English',
   },
+  theme: {
+    appearance: 'Appearance',
+    light: 'Light',
+    dark: 'Dark',
+    system: 'Follow system',
+  },
   menu: {
     dashboard: 'Dashboard',
     servers: 'MCP Servers',

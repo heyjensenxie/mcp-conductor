@@ -583,7 +583,7 @@ onMounted(async () => {
   font-family: var(--mc-mono);
   font-size: 13px;
   color: var(--mc-ink);
-  background: #f6f8fb;
+  background: var(--mc-bg-code);
   border: 1px solid var(--mc-line-soft);
   border-radius: 6px;
   padding: 6px 10px;
@@ -639,7 +639,7 @@ onMounted(async () => {
   font-family: var(--mc-mono);
   font-size: 12.5px;
   color: var(--mc-ink);
-  background: #f6f8fb;
+  background: var(--mc-bg-code);
   border: 1px solid var(--mc-line-soft);
   border-radius: 5px;
   padding: 3px 7px;
@@ -681,7 +681,7 @@ onMounted(async () => {
   font-family: var(--mc-mono);
   font-size: 13px;
   color: var(--mc-ink);
-  background: #f6f8fb;
+  background: var(--mc-bg-code);
   border: 1px solid var(--mc-line-soft);
   border-radius: 6px;
   padding: 8px 10px;

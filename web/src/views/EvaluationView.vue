@@ -406,7 +406,7 @@ function scoreTag(v: number) {
 }
 
 function scoreColor(v: number) {
-  return v >= 80 ? '#52c41a' : v >= 50 ? '#fa8c16' : '#f5222d'
+  return v >= 80 ? '#22c55e' : v >= 50 ? '#f59e0b' : '#ef4444'
 }
 
 function scoreText(v?: number) {
@@ -449,7 +449,7 @@ function formatTime(iso: string) {
 .score-big {
   font-size: 56px;
   font-weight: 700;
-  color: #1f6feb;
+  color: var(--mc-accent-light);
   line-height: 1;
 }
 .report-head-side {
@@ -560,10 +560,10 @@ function formatTime(iso: string) {
   color: var(--mc-ink-2);
 }
 .stat.ok b {
-  color: #52c41a;
+  color: var(--mc-ok-light);
 }
 .stat.bad b {
-  color: #f5222d;
+  color: var(--mc-danger-light);
 }
 .snippet {
   font-size: 12px;

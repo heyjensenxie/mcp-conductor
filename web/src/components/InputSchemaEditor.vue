@@ -575,8 +575,8 @@ defineExpose({ commit })
   min-width: 0;
 }
 .enum-trigger.has {
-  color: #1677ff;
-  border-color: #91caff;
+  color: var(--mc-accent-light);
+  border-color: rgba(59, 130, 246, 0.35);
 }
 .num {
   width: 100%;
@@ -625,7 +625,7 @@ defineExpose({ commit })
   font-size: 12px;
 }
 .err {
-  color: #ff4d4f;
+  color: var(--mc-danger-light);
   font-size: 12px;
   margin-top: 6px;
 }

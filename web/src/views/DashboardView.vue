@@ -321,6 +321,7 @@ import { getLogs, getMetricsTrend, listAllServers, listServerToolsAll } from '@/
 import { backendTimeMs, parseBackendTime } from '@/utils/time'
 import type { MCPServer, TrafficSample, TrendPoint } from '@/types'
 import CallTrendChart, { type TrendSeries } from '@/components/CallTrendChart.vue'
+import { getChartTheme, THEME_CHANGE_EVENT } from '@/theme'
 
 // ---------- 类型与常量 ----------
 type TrendMode = 'requests' | 'success' | 'latency'
@@ -328,6 +329,11 @@ type ToolTab = 'calls' | 'slow' | 'fail'
 type LogCat = 'failed' | 'timeout' | 'limited' | 'denied' | 'unavailable'
 
 const CAT_ORDER: LogCat[] = ['failed', 'timeout', 'limited', 'denied', 'unavailable']
+const themeRevision = ref(0)
+
+function onThemeChange() {
+  themeRevision.value += 1
+}
 // 日志 status 分类：success 之外按错误码归类；未列出的归为调用失败。
 function catOf(status: string): LogCat {
   switch (status) {
@@ -655,6 +661,8 @@ watch(logs, () => {
 })
 
 const activeTrend = computed<{ categories: string[]; series: TrendSeries[]; unit: string; yMin: number; yMax?: number } | null>(() => {
+  void themeRevision.value
+  const palette = getChartTheme()
   if (mode.value === 'latency') {
     if (!latencyPoints.value.length) return null
     return {
@@ -662,8 +670,8 @@ const activeTrend = computed<{ categories: string[]; series: TrendSeries[]; unit
       unit: 'ms',
       yMin: 0,
       series: [
-        { name: t('dashboard.latencyAvg'), color: '#1f6feb', data: latencyPoints.value.map((p) => p.avg) },
-        { name: t('dashboard.latencyP95'), color: '#7a8aa0', dashed: true, data: latencyPoints.value.map((p) => p.p95) },
+        { name: t('dashboard.latencyAvg'), color: palette.primary, data: latencyPoints.value.map((p) => p.avg) },
+        { name: t('dashboard.latencyP95'), color: palette.axis, dashed: true, data: latencyPoints.value.map((p) => p.p95) },
       ],
     }
   }
@@ -678,7 +686,7 @@ const activeTrend = computed<{ categories: string[]; series: TrendSeries[]; unit
       series: [
         {
           name: t('dashboard.trendSuccess'),
-          color: '#12a150',
+          color: palette.success,
           data: trendPoints.value.map((p) => (p.totals ? pct(((p.totals - p.errors) / p.totals) * 100) : null)),
         },
       ],
@@ -688,7 +696,7 @@ const activeTrend = computed<{ categories: string[]; series: TrendSeries[]; unit
     categories,
     unit: '',
     yMin: 0,
-    series: [{ name: t('dashboard.trendRequests'), color: '#1f6feb', data: trendPoints.value.map((p) => p.totals) }],
+    series: [{ name: t('dashboard.trendRequests'), color: palette.primary, data: trendPoints.value.map((p) => p.totals) }],
   }
 })
 
@@ -897,12 +905,14 @@ const checkAgo = computed(() => {
 })
 
 onMounted(() => {
+  window.addEventListener(THEME_CHANGE_EVENT, onThemeChange)
   tickTimer = window.setInterval(() => {
     nowTick.value = Date.now()
   }, 1000)
   void boot()
 })
 onBeforeUnmount(() => {
+  window.removeEventListener(THEME_CHANGE_EVENT, onThemeChange)
   clearTimeout(pollTimer)
   clearInterval(tickTimer)
 })
@@ -1424,7 +1434,7 @@ onBeforeUnmount(() => {
   display: block;
   height: 100%;
   border-radius: 5px;
-  background: linear-gradient(90deg, #1f6feb, #6ea2f2);
+  background: linear-gradient(90deg, var(--mc-accent-strong), var(--mc-accent-light));
   transition: width 0.25s ease;
 }
 .route-pct {

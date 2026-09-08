@@ -352,7 +352,7 @@ async function save() {
   margin-top: 12px;
 }
 .link {
-  color: #1677ff;
+  color: var(--mc-accent-light);
 }
 .fields {
   margin-bottom: 12px;
@@ -362,7 +362,7 @@ async function save() {
   color: var(--mc-ink-3);
 }
 .result {
-  background: #f5f5f5;
+  background: var(--mc-bg-code);
   border-radius: 4px;
   padding: 12px;
   white-space: pre-wrap;
@@ -372,8 +372,8 @@ async function save() {
   margin-bottom: 0;
 }
 .result-error {
-  background: #fff1f0;
-  color: #cf1322;
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--mc-danger-light);
 }
 .muted {
   color: var(--mc-ink-3);

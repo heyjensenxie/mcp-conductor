@@ -56,12 +56,12 @@ watch(() => props.open, (open) => {
 .delete-target {
   margin: 0 0 12px;
   padding: 8px 10px;
-  border: 1px solid #ffccc7;
-  border-radius: 6px;
-  background: #fff2f0;
-  color: #a8071a;
+  border: 1px solid rgba(239, 68, 68, 0.18);
+  border-radius: var(--mc-radius-sm);
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--mc-danger-light);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   overflow-wrap: anywhere;
 }
-.delete-instruction { margin: 0 0 8px; color: rgba(0, 0, 0, 0.65); }
+.delete-instruction { margin: 0 0 8px; color: var(--mc-ink-2); }
 </style>

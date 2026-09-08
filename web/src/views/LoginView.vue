@@ -1,7 +1,6 @@
 <template>
   <div class="login-page">
-    <a-config-provider :theme="loginTheme">
-      <main class="login-card">
+    <main class="login-card">
         <div class="brand">
           <img src="/logo.png" alt="MCP Conductor" class="logo" />
           <h1 class="brand-name">{{ store.instanceName }}</h1>
@@ -63,8 +62,7 @@
             {{ t('auth.submit') }}
           </a-button>
         </form>
-      </main>
-    </a-config-provider>
+    </main>
   </div>
 </template>
 
@@ -87,28 +85,6 @@ const username = ref('')
 const password = ref('')
 const loggingIn = ref(false)
 const authRequired = ref(true)
-
-// 登录页局部主题：贴合品牌蓝紫（Logo 靛色家族），只作用于本卡片内的组件。
-const loginTheme = {
-  token: {
-    colorPrimary: '#4f46e5',
-    colorInfo: '#4f46e5',
-    colorError: '#e0453c',
-    colorText: '#1e2530',
-    colorTextSecondary: '#5b6472',
-    colorBorder: '#dfe3ea',
-    colorBorderSecondary: '#e9edf3',
-    colorBgContainer: '#ffffff',
-    borderRadius: 8,
-    borderRadiusLG: 8,
-    fontSize: 14,
-    fontSizeLG: 14,
-    controlHeight: 40,
-    controlHeightLG: 40,
-    controlOutline: 'rgba(79, 70, 229, 0.14)',
-    controlOutlineWidth: 3,
-  },
-}
 
 // 字段级错误：pwError 为必填提示；authError 为服务端校验失败（账号/密码错误、限流等）。
 const pwError = ref('')
@@ -176,9 +152,9 @@ async function doLogin() {
   justify-content: center;
   padding: 48px 20px 56px;
   background:
-    radial-gradient(1100px 720px at 50% -12%, rgba(99, 102, 241, 0.12), transparent 62%),
-    radial-gradient(900px 640px at 92% 112%, rgba(31, 111, 235, 0.08), transparent 60%),
-    linear-gradient(180deg, #0b1120 0%, #0a101d 100%);
+    radial-gradient(1000px 640px at 50% -16%, rgba(59, 130, 246, 0.12), transparent 62%),
+    radial-gradient(780px 540px at 92% 112%, rgba(34, 211, 238, 0.05), transparent 60%),
+    var(--mc-login-bg);
   overflow: hidden;
 }
 
@@ -187,9 +163,9 @@ async function doLogin() {
   content: '';
   position: absolute;
   inset: 0;
-  background-image: linear-gradient(rgba(148, 163, 200, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(148, 163, 200, 0.05) 1px, transparent 1px);
-  background-size: 26px 26px;
+  background-image: linear-gradient(var(--mc-login-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--mc-login-grid) 1px, transparent 1px);
+  background-size: 32px 32px;
   pointer-events: none;
 }
 
@@ -200,7 +176,7 @@ async function doLogin() {
   inset: 0;
   background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27240%27%20height%3D%27240%27%20viewBox%3D%270%200%20240%20240%27%3E%3Cg%20fill%3D%27none%27%20stroke%3D%27%238fa0cc%27%20stroke-width%3D%271%27%3E%3Cpath%20d%3D%27M44%2058%20L96%20104%20M96%20104%20L168%2074%20M96%20104%20L104%20140%20M104%20140%20L192%20158%27%20opacity%3D%270.55%27%2F%3E%3Ccircle%20cx%3D%2744%27%20cy%3D%2758%27%20r%3D%273%27%20fill%3D%27%238fa0cc%27%20opacity%3D%270.5%27%2F%3E%3Ccircle%20cx%3D%2796%27%20cy%3D%27104%27%20r%3D%274%27%20fill%3D%27%238fa0cc%27%20opacity%3D%270.7%27%2F%3E%3Ccircle%20cx%3D%27168%27%20cy%3D%2774%27%20r%3D%272.5%27%20fill%3D%27%238fa0cc%27%20opacity%3D%270.45%27%2F%3E%3Ccircle%20cx%3D%27104%27%20cy%3D%27140%27%20r%3D%273%27%20fill%3D%27%238fa0cc%27%20opacity%3D%270.6%27%2F%3E%3Ccircle%20cx%3D%27192%27%20cy%3D%27158%27%20r%3D%272.5%27%20fill%3D%27%238fa0cc%27%20opacity%3D%270.4%27%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E");
   background-size: 240px 240px;
-  opacity: 0.12;
+  opacity: 0.08;
   pointer-events: none;
 }
 
@@ -210,13 +186,10 @@ async function doLogin() {
   width: 420px;
   max-width: 100%;
   padding: 46px 40px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafd 100%);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 14px;
-  box-shadow:
-    0 0 0 1px rgba(13, 21, 32, 0.06),
-    0 2px 5px rgba(4, 8, 18, 0.22),
-    0 26px 64px -22px rgba(4, 8, 18, 0.52);
+  background: var(--mc-login-card-bg);
+  border: 1px solid var(--mc-login-border);
+  border-radius: var(--mc-radius-xl);
+  box-shadow: var(--mc-login-shadow);
   animation: card-in 0.36s cubic-bezier(0.2, 0.7, 0.3, 1) both;
 }
 @keyframes card-in {
@@ -247,7 +220,7 @@ async function doLogin() {
   font-weight: 700;
   line-height: 1.25;
   letter-spacing: 0.01em;
-  color: #171e2b;
+  color: var(--mc-ink-strong);
 }
 .brand-sub {
   margin: 9px auto 0;
@@ -256,7 +229,7 @@ async function doLogin() {
   font-size: 13px;
   font-weight: 400;
   line-height: 1.5;
-  color: #7a858f;
+  color: var(--mc-ink-2);
 }
 
 .form {
@@ -272,51 +245,59 @@ async function doLogin() {
   font-size: 13px;
   font-weight: 500;
   line-height: 20px;
-  color: #3b4351;
+  color: var(--mc-ink-2);
 }
 
 /* 输入框：默认边框弱化，Focus 品牌蓝紫 + 极淡外发光 */
 .field :deep(.ant-input),
 .field :deep(.ant-input-affix-wrapper) {
-  border-color: #dfe3ea;
+  background: var(--mc-input-bg) !important;
+  border-color: var(--mc-line);
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+.field :deep(input:-webkit-autofill),
+.field :deep(input:-webkit-autofill:hover),
+.field :deep(input:-webkit-autofill:focus) {
+  -webkit-text-fill-color: var(--mc-ink) !important;
+  -webkit-box-shadow: 0 0 0 1000px var(--mc-input-bg) inset !important;
+  box-shadow: 0 0 0 1000px var(--mc-input-bg) inset !important;
 }
 .field :deep(.ant-input)::placeholder,
 .field :deep(.ant-input-affix-wrapper input::placeholder) {
-  color: #a0a8b5;
+  color: var(--mc-ink-3);
 }
 .field :deep(.ant-input):hover,
 .field :deep(.ant-input-affix-wrapper:hover) {
-  border-color: #b3b4f2;
+  border-color: rgba(59, 130, 246, 0.4);
 }
 .field :deep(.ant-input):focus,
 .field :deep(.ant-input-focused),
 .field :deep(.ant-input-affix-wrapper-focused) {
-  border-color: #5b54ea;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.14);
+  border-color: rgba(59, 130, 246, 0.65);
+  box-shadow: var(--mc-shadow-focus);
 }
 .field :deep(.ant-input-password-icon) {
-  color: #8a94a3;
+  color: var(--mc-ink-3);
 }
 .field :deep(.ant-input-password-icon:hover) {
-  color: #4f46e5;
+  color: var(--mc-accent-light);
 }
 
 /* 字段错误态 */
 .field.is-error :deep(.ant-input),
 .field.is-error :deep(.ant-input-affix-wrapper) {
-  border-color: #e0453c;
+  border-color: var(--mc-danger);
 }
 .field.is-error :deep(.ant-input:focus),
 .field.is-error :deep(.ant-input-affix-wrapper-focused) {
-  box-shadow: 0 0 0 3px rgba(224, 69, 60, 0.12);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12);
 }
 .field-error {
   margin: 7px 2px 0;
   font-family: var(--mc-body);
   font-size: 12px;
   line-height: 1.4;
-  color: #d9443b;
+  color: var(--mc-danger-light);
 }
 
 /* 账号/密码错误（服务端） */
@@ -327,20 +308,20 @@ async function doLogin() {
   margin: 0 0 14px;
   padding: 9px 12px;
   border-radius: 8px;
-  background: rgba(224, 69, 60, 0.06);
-  border: 1px solid rgba(224, 69, 60, 0.18);
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.18);
   font-family: var(--mc-body);
   font-size: 13px;
   line-height: 1.4;
-  color: #b93a32;
+  color: var(--mc-danger-light);
 }
 .auth-error-icon {
   flex: none;
   font-size: 14px;
-  color: #e0453c;
+  color: var(--mc-danger);
 }
 
-/* 主按钮：品牌蓝紫，Hover 微亮、Active 轻微下压 */
+/* 主按钮：信号蓝，Hover 微亮、Active 轻微下压 */
 .login-submit {
   height: 42px;
   margin-top: 4px;
@@ -349,11 +330,11 @@ async function doLogin() {
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 0.04em;
-  box-shadow: 0 1px 2px rgba(79, 70, 229, 0.35), 0 12px 24px -12px rgba(79, 70, 229, 0.55);
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.35), 0 12px 24px -12px rgba(37, 99, 235, 0.35);
   transition: box-shadow 0.18s ease, transform 0.12s ease;
 }
 .login-submit:not(:disabled):hover {
-  box-shadow: 0 2px 6px rgba(79, 70, 229, 0.42), 0 16px 32px -14px rgba(79, 70, 229, 0.62);
+  box-shadow: 0 2px 6px rgba(59, 130, 246, 0.36), 0 16px 32px -14px rgba(37, 99, 235, 0.4);
 }
 .login-submit:active {
   transform: translateY(1px);
