@@ -12,7 +12,7 @@ import (
 type Transport string
 
 const (
-	// TransportStdio 表示通过标准输入输出进程式调用（MVP 可先不接入）。
+	// TransportStdio 表示通过标准输入输出进程式调用。
 	TransportStdio Transport = "stdio"
 	// TransportStreamableHTTP 表示 streamable HTTP 传输（MCP 现行主流）。
 	TransportStreamableHTTP Transport = "https"

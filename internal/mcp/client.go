@@ -75,7 +75,7 @@ func WithHeader(key, value string) Option {
 	return func(c *HTTPClient) { c.headers[key] = value }
 }
 
-// WithClientInfo 覆盖客户端身份（默认 mcp-conductor/0.1.0）。
+// WithClientInfo 覆盖客户端身份（默认 mcp-conductor/1.0.0）。
 func WithClientInfo(info Implementation) Option {
 	return func(c *HTTPClient) { c.info = info }
 }

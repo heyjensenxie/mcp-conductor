@@ -57,7 +57,7 @@
             <a-select-option value="zh-CN">{{ t('lang.zh') }}</a-select-option>
             <a-select-option value="en-US">{{ t('lang.en') }}</a-select-option>
           </a-select>
-          <a-tag color="#1f6feb" class="mono">v0.1.0</a-tag>
+          <a-tag color="#1f6feb" class="mono">v1.0.0</a-tag>
           <template v-if="authRequired && store.token">
             <a-tag class="mono user-tag">{{ userTag }}</a-tag>
             <a-popconfirm :title="t('auth.confirmLogout')" :ok-text="t('auth.logout')" :cancel-text="t('common.cancel')" @confirm="onLogout">

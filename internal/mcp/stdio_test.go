@@ -21,12 +21,7 @@ func TestStdioServerHelper(t *testing.T) {
 	if os.Getenv("MCP_HELPER_STDIO") != "1" {
 		t.Skip("helper process: 仅当作为子进程运行时执行")
 	}
-	mode := ""
-	for i, a := range os.Args {
-		if a == "-mode" && i+1 < len(os.Args) {
-			mode = os.Args[i+1]
-		}
-	}
+	mode := os.Getenv("MCP_HELPER_MODE")
 	svc := HelperService{mode: mode}
 	if err := ServeStdio(context.Background(), svc, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "helper serve error:", err)
@@ -48,6 +43,9 @@ func (h HelperService) ListTools(_ context.Context) ([]Tool, error) {
 }
 
 func (h HelperService) CallTool(_ context.Context, name string, arguments map[string]any) (*CallToolResult, error) {
+	if h.mode == "hang" {
+		time.Sleep(10 * time.Second)
+	}
 	if name == "fail" {
 		return &CallToolResult{Content: []ContentBlock{{Type: "text", Text: "boom"}}, IsError: true}, nil
 	}
@@ -64,10 +62,7 @@ func newStdioClient(t *testing.T, mode string) *StdioClient {
 		t.Fatalf("os.Executable: %v", err)
 	}
 	args := []string{"-test.run=TestStdioServerHelper"}
-	if mode != "" {
-		args = append(args, "-mode", mode)
-	}
-	return NewStdioClient(self, args).WithStdioEnv("MCP_HELPER_STDIO=1")
+	return NewStdioClient(self, args).WithStdioEnv("MCP_HELPER_STDIO=1", "MCP_HELPER_MODE="+mode)
 }
 
 // startHelper 启动 helper（通过一次带短超时的 ListTools 触发惰性 spawn 并确认就绪）。
@@ -117,9 +112,27 @@ func TestStdioClient_ImplicitInitialize(t *testing.T) {
 	}
 }
 
+// TestStdioClient_InitialRequestContextDoesNotOwnProcess 验证首次请求的 Context
+// 只约束该次握手，不会在请求完成后终止仍需复用的 stdio 会话。
+func TestStdioClient_InitialRequestContextDoesNotOwnProcess(t *testing.T) {
+	c := newStdioClient(t, "")
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if _, err := c.ListTools(ctx); err != nil {
+		cancel()
+		t.Fatalf("首次 ListTools 失败: %v", err)
+	}
+	cancel()
+	// CommandContext 的取消会异步杀进程，留出时间让旧实现稳定暴露竞态。
+	time.Sleep(50 * time.Millisecond)
+	if _, err := c.CallTool(context.Background(), "search", nil); err != nil {
+		t.Fatalf("首次请求结束后 stdio 会话应保持可用: %v", err)
+	}
+}
+
 // TestStdioClient_IsErrorCall 验证 isError 结果（业务失败）被透传且不报传输错误。
 func TestStdioClient_IsErrorCall(t *testing.T) {
-	c := startHelper(t, "")
+	c := startHelper(t, "iserror")
 	defer c.Close()
 	res, err := c.CallTool(context.Background(), "fail", nil)
 	if err != nil {
@@ -127,6 +140,17 @@ func TestStdioClient_IsErrorCall(t *testing.T) {
 	}
 	if !res.IsError {
 		t.Fatal("应透传 isError=true 的上游业务失败")
+	}
+}
+
+func TestStdioClient_RequestTimeoutStopsBlockedProcess(t *testing.T) {
+	c := startHelper(t, "hang")
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := c.CallTool(ctx, "search", nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("沉默的 stdio 子进程应受请求超时约束，得到 %v", err)
 	}
 }
 

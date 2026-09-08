@@ -15,7 +15,7 @@ type ToolService interface {
 }
 
 // ServerVersion 是网关自身在 initialize 中暴露的版本标识。
-const ServerVersion = "0.1.0"
+const ServerVersion = "1.0.0"
 
 // Handler 是 MCP 统一端点（streamable HTTP 无状态模式）的 HTTP 处理器。
 //

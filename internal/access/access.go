@@ -4,7 +4,7 @@
 // 命中的工具（支持 "*" 与 "server.*" 通配）才可见、可调；控制面 Operator
 // 身份（含鉴权关闭时的匿名放行）是可信身份，直接放行；其余无 Key 且非
 // Operator 的调用一律拒绝（请改用受管 API Key）。legacy 策略规则已随
-// v0.1 授权模型收口下线。
+// 当前授权模型已收口到 Access Key × 工具白名单。
 package access
 
 import (

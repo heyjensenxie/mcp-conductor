@@ -2,7 +2,10 @@
 
 ## Supported Versions
 
-当前处于 v0.1 开发期，仅维护最新 `main`；正式发布后在此更新受支持版本矩阵。
+| Version | Supported |
+| --- | --- |
+| 1.0.x | ✅ |
+| < 1.0 | ❌ |
 
 ## Reporting a Vulnerability
 

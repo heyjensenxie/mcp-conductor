@@ -1,7 +1,7 @@
 {
   "name": "mcp-conductor-console",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,10 +13,10 @@
     "ant-design-vue": "^4.2.6",
     "axios": "^1.7.7",
     "dayjs": "^1.11.13",
-    "echarts": "^5.5.1",
+    "echarts": "6.1.0",
     "pinia": "^2.2.6",
     "vue": "^3.5.13",
-    "vue-i18n": "^9.14.4",
+    "vue-i18n": "9.14.5",
     "vue-router": "^4.4.5"
   },
   "devDependencies": {

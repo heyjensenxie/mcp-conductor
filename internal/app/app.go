@@ -204,7 +204,7 @@ func randomHex(n int) (string, error) {
 }
 
 // seedBootstrapKeys 把 config 中的静态 API Key（subject:key）落库为数据面
-// AccessKey，保留 v0.1 配置式体验：已存在按 subject 跳过，seed 默认全量授权
+// AccessKey，保留配置式引导体验：已存在按 subject 跳过，seed 默认全量授权
 // （*），使引导 key 在 /mcp 上"全量可见可调"。这些 key 无法访问 /api 控制面
 // （控制面使用 auth.operator_token），避免配置型凭据升级为管理权限。
 func seedBootstrapKeys(ctx context.Context, store storage.AccessKeyStore, apiKeys []string, tokenSecretHex string) error {

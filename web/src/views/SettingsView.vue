@@ -385,7 +385,7 @@ function maskToken(value: string): string {
 
 /* ================= 系统信息 ================= */
 
-const appVersion = 'v0.1.0'
+const appVersion = 'v1.0.0'
 const mcpEndpoint = '/mcp'
 const buildCommit = __APP_COMMIT__
 const buildTime = __APP_BUILD_TIME__

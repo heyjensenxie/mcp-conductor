@@ -41,6 +41,7 @@ type StdioClient struct {
 
 	mu        sync.Mutex // 串行化管道上的请求/应答
 	cmd       *exec.Cmd  // 已启动的子进程句柄（nil = 未启动）
+	stop      context.CancelFunc
 	stdin     io.WriteCloser
 	stdout    *bufio.Scanner
 	started   bool // 进程是否已启动
@@ -105,6 +106,7 @@ func (c *StdioClient) Close() error {
 		c.mu.Lock()
 		stdin := c.stdin
 		cmd := c.cmd
+		stop := c.stop
 		c.closed = true
 		c.mu.Unlock()
 		if stdin != nil {
@@ -116,7 +118,7 @@ func (c *StdioClient) Close() error {
 			select {
 			case <-done:
 			case <-time.After(stdioCloseGrace):
-				_ = cmd.Process.Kill()
+				stop()
 				<-done
 			}
 		}
@@ -164,27 +166,34 @@ func (c *StdioClient) startLocked(ctx context.Context) error {
 	if c.command == "" {
 		return fmt.Errorf("注册了一个空命令的 stdio 实例")
 	}
-	cmd := exec.CommandContext(ctx, c.command, c.args...)
+	// 子进程属于 StdioClient 会话，而不是触发首次启动的那个请求。请求 Context
+	// 仍由 requestLocked 负责超时取消；Close 负责终止整个会话。
+	processCtx, stop := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(processCtx, c.command, c.args...)
 	if len(c.env) > 0 {
 		cmd.Env = append(os.Environ(), c.env...)
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		stop()
 		return fmt.Errorf("创建 stdio 子进程 stdin 管道失败: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		stop()
 		return fmt.Errorf("创建 stdio 子进程 stdout 管道失败: %w", err)
 	}
 	// stderr 只作日志：捕获尾段供失败诊断，但不视为错误（规范明确）。
 	cmd.Stderr = c.stderr
 	if err := cmd.Start(); err != nil {
+		stop()
 		return fmt.Errorf("启动 stdio 子进程 %q 失败: %w", c.command, err)
 	}
 	// 放大 Scanner 缓冲，适配大文本工具结果；超出上限按协议错误返回。
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64<<10), stdioMaxMessage)
 	c.cmd = cmd
+	c.stop = stop
 	c.stdin = stdin
 	c.stdout = scanner
 	c.started = true
@@ -201,6 +210,19 @@ func (c *StdioClient) notifyLocked(method string) {
 // 服务端期间推送的通知、未匹配的响应按换行协议跳过，直到找到匹配 id 的响应。
 // 调用方持有 mu。
 func (c *StdioClient) requestLocked(ctx context.Context, method string, params any, out any) error {
+	requestDone := make(chan struct{})
+	defer close(requestDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			// 管道读取在各平台未必支持 deadline；终止进程可可靠解除阻塞。
+			if c.stop != nil {
+				c.stop()
+			}
+		case <-requestDone:
+		}
+	}()
+
 	rawParams, err := json.Marshal(params)
 	if err != nil {
 		return fmt.Errorf("序列化请求参数失败: %w", err)
@@ -270,6 +292,9 @@ func (c *StdioClient) writeLine(ctx context.Context, body []byte) error {
 // readMessage 读取一条换行分隔的 JSON-RPC 消息并解码到 v。
 func (c *StdioClient) readMessage(ctx context.Context, v any) error {
 	if !c.stdout.Scan() {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("等待 stdio 应答超时: %w (%s)", err, c.stderr.snapshot())
+		}
 		if err := c.stdout.Err(); err != nil {
 			return fmt.Errorf("读取 stdio 应答失败: %w (%s)", err, c.stderr.snapshot())
 		}
