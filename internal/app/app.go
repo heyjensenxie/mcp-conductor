@@ -59,7 +59,7 @@ func Run(ctx context.Context) error {
 
 	adapter := mcpclient.New().WithHeaderFor(credentialHeaders(store))
 
-	registrySvc := registry.NewService(store, adapter).WithProber(adapter)
+	registrySvc := registry.NewService(store, adapter).WithProber(adapter).WithDraftProber(adapter)
 	resolver := router.NewResolver(store, store).WithRoutes(store).WithInstances(store)
 	authorizer := access.NewAuthorizer()
 	metrics := observability.NewMetrics()

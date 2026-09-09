@@ -140,14 +140,32 @@
             <a-card :bordered="true" :title="t('serverDetail.configServer')" class="mb">
               <a-form :label-col="{ span: 6 }" :wrapper-col="{ span: 18 }">
                 <a-form-item :label="t('common.name')">
-                  <a-input :value="server?.name" disabled />
+                  <a-input v-model:value="editForm.name" readonly :placeholder="t('servers.namePlaceholder')" />
+                  <span class="inst-args-hint">{{ t('serverDetail.nameReadonlyHint') }}</span>
                 </a-form-item>
                 <a-form-item :label="t('common.description')">
                   <a-textarea v-model:value="editForm.description" :rows="2" />
                 </a-form-item>
+                <a-form-item :label="isEditStdio ? t('serverDetail.instanceCommand') : t('serverDetail.endpoint')" :required="true">
+                  <a-input v-model:value="editForm.endpoint" :placeholder="isEditStdio ? t('servers.commandPlaceholder') : t('servers.endpointPlaceholder')" />
+                </a-form-item>
+                <a-form-item :label="t('serverDetail.instanceTransport')">
+                  <a-select v-model:value="editForm.transport">
+                    <a-select-option value="https">{{ t('servers.transportStreamable') }}</a-select-option>
+                    <a-select-option value="sse">{{ t('servers.transportSSE') }}</a-select-option>
+                    <a-select-option value="stdio">{{ t('servers.transportStdio') }}</a-select-option>
+                  </a-select>
+                </a-form-item>
+                <a-form-item v-if="isEditStdio" :label="t('servers.args')">
+                  <a-input v-model:value="editForm.args" :placeholder="t('servers.argsPlaceholder')" />
+                  <span class="inst-args-hint">{{ t('servers.stdioHint') }}</span>
+                </a-form-item>
                 <a-form-item :wrapper-col="{ offset: 6, span: 18 }">
-                  <a-button type="primary" :loading="savingServer" @click="saveServerEdit">{{ t('serverDetail.saveServer') }}</a-button>
-                  <span class="endpoint-edit-hint">{{ t('serverDetail.endpointEditGoesToInstances') }}</span>
+                  <a-space>
+                    <a-button type="primary" :loading="savingServer" @click="saveServerEdit">{{ t('serverDetail.saveServer') }}</a-button>
+                    <a-button :loading="testingServer" @click="testServerConfig">{{ t('serverDetail.testBeforeSave') }}</a-button>
+                  </a-space>
+                  <div class="endpoint-edit-hint">{{ t('serverDetail.configPrimaryHint') }}</div>
                 </a-form-item>
               </a-form>
             </a-card>
@@ -356,6 +374,7 @@ import {
   primaryEndpoint,
   primaryTransport,
   testServer,
+  testServerConnection,
   testServerInstance,
   toggleServer,
   toggleServerInstance,
@@ -497,7 +516,8 @@ async function saveInstance() {
     message.warning(t('servers.fillRequired'))
     return
   }
-  const args = isInstStdio.value ? parseStdioArgs(instForm.args) : undefined
+  // 非 stdio 传输提交空数组：切换传输时清掉遗留的 stdio 启动参数。
+  const args = isInstStdio.value ? parseStdioArgs(instForm.args) : []
   if (args === null) {
     message.warning(t('servers.argsInvalid'))
     return
@@ -682,9 +702,18 @@ function onLogTableChange(p: { current?: number; pageSize?: number }) {
   void loadLogsPage()
 }
 
-// ---- Configuration：Server 逻辑字段（description；端点编辑在 Instances 页）----
-const editForm = reactive<{ description: string }>({ description: '' })
+// ---- Configuration：逻辑 Server（description）+ 主实例（endpoint/transport/args）----
+// 主实例 = instances[0]（最早创建）；其余实例仍在「实例」页单独维护。
+const editForm = reactive<{ name: string; description: string; endpoint: string; transport: Transport; args: string }>({
+  name: '',
+  description: '',
+  endpoint: '',
+  transport: 'https',
+  args: '',
+})
+const isEditStdio = computed(() => editForm.transport === 'stdio')
 const savingServer = ref(false)
+const testingServer = ref(false)
 
 const credentials = ref<Credential[]>([])
 const credsLoading = ref(false)
@@ -821,20 +850,72 @@ async function toggle() {
 }
 
 function syncEditForm(srv: MCPServer) {
+  const primary = srv.instances?.[0]
+  // name 只读回显：改名走列表页「编辑」弹窗，此处不提交 name。
+  editForm.name = srv.name ?? ''
   editForm.description = srv.description ?? ''
+  editForm.endpoint = primary?.endpoint ?? ''
+  editForm.transport = primary?.transport ?? 'https'
+  editForm.args = primary?.args?.length ? JSON.stringify(primary.args) : ''
 }
 
+// saveServerEdit 保存逻辑 Server 描述 + 主实例连接参数（name 只读）。
 async function saveServerEdit() {
+  if (!editForm.endpoint.trim()) {
+    message.warning(t('servers.fillRequired'))
+    return
+  }
+  const args = isEditStdio.value ? parseStdioArgs(editForm.args) : []
+  if (args === null) {
+    message.warning(t('servers.argsInvalid'))
+    return
+  }
   savingServer.value = true
   try {
-    const updated = await updateServer(id.value, { description: editForm.description })
+    const updated = await updateServer(id.value, {
+      description: editForm.description,
+      endpoint: editForm.endpoint.trim(),
+      transport: editForm.transport,
+      args,
+    })
     server.value = updated
     syncEditForm(updated)
     message.success(t('servers.updatedOk'))
+    // 主实例参数变更会复位健康并触发即时探活，刷新实例列表以保持一致。
+    await loadInstances()
   } catch (e) {
     message.error(String(e))
   } finally {
     savingServer.value = false
+  }
+}
+
+// testServerConfig 保存前测试连接：临时数据拨测，不落库、不改健康。
+// server_id 使后端自动加载该 Server 已保存的请求头。
+async function testServerConfig() {
+  if (!editForm.endpoint.trim()) {
+    message.warning(t('servers.fillRequired'))
+    return
+  }
+  const args = isEditStdio.value ? parseStdioArgs(editForm.args) : []
+  if (args === null) {
+    message.warning(t('servers.argsInvalid'))
+    return
+  }
+  testingServer.value = true
+  try {
+    await testServerConnection({
+      server_id: id.value,
+      name: editForm.name.trim() || server.value?.name,
+      endpoint: editForm.endpoint.trim(),
+      transport: editForm.transport,
+      args,
+    })
+    message.success(t('servers.testConnOk'))
+  } catch (e) {
+    message.error(`${t('serverDetail.connectFail')}: ${e}`)
+  } finally {
+    testingServer.value = false
   }
 }
 
@@ -930,9 +1011,11 @@ const healthColor = (s?: string) => (s === 'healthy' ? 'green' : s === 'unhealth
   margin-bottom: 12px;
 }
 .endpoint-edit-hint {
-  margin-left: 8px;
+  display: block;
+  margin-top: 6px;
   color: #999;
   font-size: 12px;
+  line-height: 18px;
 }
 .inst-args-hint {
   display: block;

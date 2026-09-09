@@ -163,3 +163,59 @@ func TestKeySecretRotateReturnsOnce(t *testing.T) {
 		t.Fatalf("轮换后 get 不得回读明文 secret: %s", getRaw.Data)
 	}
 }
+
+// TestKeyRename 验证 API Key 名称可修改（展示名，稳定标识是 id/subject）：改名去空白
+// 落库、不影响授权与密钥，空白名称被拒绝且不落库。
+func TestKeyRename(t *testing.T) {
+	store := memory.New()
+	ctrl := NewControl(nil, store, nil, func(token string) (string, error) { return "hash-" + token, nil })
+
+	rec := httptest.NewRecorder()
+	ctrl.handleCreateKey(rec, httptest.NewRequest(http.MethodPost, "/api/keys",
+		strings.NewReader(`{"name":"Partner A","subject":"partner-a","grants":[{"gateway_name":"svc1.prod"}]}`)))
+	created := decodeEnvelope(t, rec)
+	var createdKey struct {
+		ID     string `json:"id"`
+		Secret string `json:"secret"`
+	}
+	if err := json.Unmarshal(created.Data, &createdKey); err != nil || createdKey.ID == "" {
+		t.Fatalf("解析创建响应失败: %v / %s", err, created.Data)
+	}
+
+	// 改名：首尾空白被裁剪。
+	updReq := httptest.NewRequest(http.MethodPatch, "/api/keys/"+createdKey.ID,
+		strings.NewReader(`{"name":"  Partner A (renamed)  "}`))
+	updReq.SetPathValue("id", createdKey.ID)
+	rec = httptest.NewRecorder()
+	ctrl.handleUpdateKey(rec, updReq)
+	e := decodeEnvelope(t, rec)
+	var updated model.AccessKey
+	if err := json.Unmarshal(e.Data, &updated); err != nil {
+		t.Fatalf("解析改名响应失败: %v / %s", err, e.Data)
+	}
+	if updated.Name != "Partner A (renamed)" || updated.ID != createdKey.ID || updated.Subject != "partner-a" {
+		t.Fatalf("改名应只改展示名: %+v", updated)
+	}
+	if len(updated.Grants) != 1 || updated.Grants[0].GatewayName != "svc1.prod" {
+		t.Fatalf("改名不应影响授权: %+v", updated.Grants)
+	}
+	if strings.Contains(string(e.Data), createdKey.Secret) {
+		t.Fatalf("改名响应不得回读明文 secret: %s", e.Data)
+	}
+
+	// 空白名称：400 且不落库。
+	badReq := httptest.NewRequest(http.MethodPatch, "/api/keys/"+createdKey.ID, strings.NewReader(`{"name":"   "}`))
+	badReq.SetPathValue("id", createdKey.ID)
+	rec = httptest.NewRecorder()
+	ctrl.handleUpdateKey(rec, badReq)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("空白名称应返回 400，得到 %d / %s", rec.Code, rec.Body.String())
+	}
+	got, err := store.GetAccessKey(context.Background(), createdKey.ID)
+	if err != nil {
+		t.Fatalf("GetAccessKey: %v", err)
+	}
+	if got.Name != "Partner A (renamed)" {
+		t.Fatalf("被拒绝的改名不应落库，得到 %q", got.Name)
+	}
+}

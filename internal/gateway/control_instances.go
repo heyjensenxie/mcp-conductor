@@ -19,6 +19,25 @@ func (c *Control) hydrateServer(ctx context.Context, server model.Server) (model
 	return server, nil
 }
 
+// hydrateServers 批量水合 Server 实例。列表页若逐个调用 hydrateServer 会产生
+// N+1 存储查询；一次读取全部实例后按 server_id 分组，保持实例原有排序。
+func (c *Control) hydrateServers(ctx context.Context, servers []model.Server) ([]model.Server, error) {
+	instances, err := c.store.ListInstances(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byServer := make(map[string][]model.Instance, len(servers))
+	for _, instance := range instances {
+		byServer[instance.ServerID] = append(byServer[instance.ServerID], instance)
+	}
+	hydrated := make([]model.Server, len(servers))
+	for i, server := range servers {
+		server.Instances = byServer[server.ID]
+		hydrated[i] = server
+	}
+	return hydrated, nil
+}
+
 // handleListInstances 列出指定 Server 的实例（按 (created_at, id) 升序）。
 func (c *Control) handleListInstances(w http.ResponseWriter, r *http.Request) {
 	instances, err := c.registry.ListInstances(r.Context(), r.PathValue("id"))

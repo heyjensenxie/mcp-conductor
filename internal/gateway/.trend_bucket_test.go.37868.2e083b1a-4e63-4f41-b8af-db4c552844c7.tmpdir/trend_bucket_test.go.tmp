@@ -1,0 +1,93 @@
+package gateway
+
+import (
+	"testing"
+	"time"
+
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/observability"
+)
+
+// TestTrendBucketMinutes 验证桶宽推导：短窗口按分钟，长窗口自动降采样到整齐桶宽，
+// 且点数不超过上限。
+func TestTrendBucketMinutes(t *testing.T) {
+	cases := []struct {
+		minutes int
+		want    int
+	}{
+		{30, 1}, {60, 1}, {360, 1},
+		{1440, 5},   // 1 天 → 288 点
+		{4320, 10},  // 3 天 → 432 点
+		{10080, 30}, // 7 天 → 336 点
+		{43200, 720},
+	}
+	for _, tc := range cases {
+		if got := trendBucketMinutes(tc.minutes); got != tc.want {
+			t.Fatalf("minutes=%d 桶宽应为 %d，得到 %d", tc.minutes, tc.want, got)
+		}
+		if points := (tc.minutes + trendBucketMinutes(tc.minutes) - 1) / trendBucketMinutes(tc.minutes); points > maxTrendPoints {
+			t.Fatalf("minutes=%d 点数 %d 超过上限 %d", tc.minutes, points, maxTrendPoints)
+		}
+	}
+}
+
+// TestBucketTrendSeries 验证趋势序列按桶合并：桶内求和、时间戳取桶起点。
+func TestBucketTrendSeries(t *testing.T) {
+	base := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC).Unix()
+	series := make([]observability.TrendPoint, 0, 10)
+	for i := 0; i < 10; i++ {
+		series = append(series, observability.TrendPoint{TS: base + int64(i)*60, Totals: int64(i + 1), Errors: int64(i % 2)})
+	}
+	bucketed := bucketTrendSeries(series, 5)
+	if len(bucketed) != 2 {
+		t.Fatalf("10 分钟按 5 分钟合并应得 2 个桶，得到 %d", len(bucketed))
+	}
+	// 第一桶 = 1+2+3+4+5 = 15；错误 = 0+1+0+1+0 = 2。
+	if bucketed[0].Totals != 15 || bucketed[0].Errors != 2 {
+		t.Fatalf("首桶汇总错误: %+v", bucketed[0])
+	}
+	// 第二桶 = 6+7+8+9+10 = 40。
+	if bucketed[1].Totals != 40 {
+		t.Fatalf("次桶汇总错误: %+v", bucketed[1])
+	}
+	// 桶起点对齐。
+	if got := bucketed[0].TS; got%300 != 0 {
+		t.Fatalf("桶起点应对齐到 5 分钟边界，得到 %d", got)
+	}
+}
+
+// TestFillWindowMinutes 验证窗口分钟桶：按桶宽合并、缺桶补零、延迟分位由合并后的
+// 直方图重算，且序列覆盖整个窗口。
+func TestFillWindowMinutes(t *testing.T) {
+	from := time.Date(2026, 9, 10, 10, 0, 0, 0, time.UTC)
+	to := from.Add(30 * time.Minute)
+
+	var slow, fast model.LatencyStats
+	slow.Add(1000)
+	fast.Add(10)
+	stats := []model.TrafficMinuteStats{
+		{Minute: from.Add(1 * time.Minute).Unix(), Totals: 2, Success: 2, Latency: fast},
+		{Minute: from.Add(6 * time.Minute).Unix(), Totals: 1, Success: 0, Errors: 1, Latency: slow},
+		{Minute: from.Add(7 * time.Minute).Unix(), Totals: 3, Success: 3, Latency: fast},
+	}
+
+	points := fillWindowMinutes(stats, from, to, 10)
+	// 10:00~10:30 按 10 分钟桶 → 4 个桶（10:00、10:10、10:20、10:30）。
+	if len(points) != 4 {
+		t.Fatalf("应返回 4 个桶，得到 %d: %+v", len(points), points)
+	}
+	if points[0].Totals != 2 || points[0].Errors != 0 {
+		t.Fatalf("首桶（10:00）汇总错误: %+v", points[0])
+	}
+	// 10:10 桶合并了第 6、7 分钟：1 失败 + 3 成功。
+	if points[1].Totals != 4 || points[1].Success != 3 || points[1].Errors != 1 {
+		t.Fatalf("次桶（10:10）汇总错误: %+v", points[1])
+	}
+	if points[1].Avg != 257.5 {
+		t.Fatalf("次桶均值应为 (1000+10*3)/4=257.5，得到 %v", points[1].Avg)
+	}
+	// 空桶补零。
+	if points[2].Totals != 0 || points[3].Totals != 0 {
+		t.Fatalf("空桶应补零: %+v / %+v", points[2], points[3])
+	}
+}

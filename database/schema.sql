@@ -188,7 +188,8 @@ CREATE TABLE IF NOT EXISTS trend_minute (
   totals     BIGINT       NOT NULL DEFAULT 0 COMMENT '该分钟调用量',
   errors     BIGINT       NOT NULL DEFAULT 0 COMMENT '该分钟失败数',
   PRIMARY KEY (scope, dim_key, minute),
-  KEY idx_trend_scope_server_minute (scope, server_id, minute)
+  KEY idx_trend_scope_server_minute (scope, server_id, minute),
+  KEY idx_trend_scope_minute (scope, minute)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='已闭合分钟桶趋势（幂等 upsert，按保留天数清理）';
 
 -- -----------------------------------------------------------------------------

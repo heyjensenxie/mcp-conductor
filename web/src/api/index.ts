@@ -1,5 +1,5 @@
 import http, { unwrap } from './http'
-import type { AccessKey, Credential, EvalMeta, EvalReport, EvalSuiteCase, EvalSuiteResult, KeyInvokeResult, MCPServer, MetricSnapshot, Paged, RediscoverPlan, Route, RuntimeConfig, RuntimeConfigView, ServerInstance, ServerStatus, Session, Tool, ToolGrant, TrafficDetail, TrafficReplayResult, TrafficSample, Transport, TrendPoint } from '@/types'
+import type { AccessKey, Credential, EvalMeta, EvalReport, EvalSuiteCase, EvalSuiteResult, KeyInvokeResult, MCPServer, MetricsWindow, MetricSnapshot, Paged, RediscoverPlan, Route, RuntimeConfig, RuntimeConfigView, ServerInstance, ServerStatus, Session, Tool, ToolGrant, TrafficDetail, TrafficReplayResult, TrafficSample, Transport, TrendPoint } from '@/types'
 
 // ---- 管理面列表查询（服务端分页 + 筛选）----
 //
@@ -11,6 +11,7 @@ import type { AccessKey, Credential, EvalMeta, EvalReport, EvalSuiteCase, EvalSu
 export interface ListParams {
   page?: number
   page_size?: number
+  include_total?: boolean
 }
 
 export interface ServerListParams extends ListParams {
@@ -26,6 +27,28 @@ export interface CreateServerPayload {
   endpoint: string
   transport?: Transport
   args?: string[]
+}
+
+// 更新 Server 入参：name 是展示名（可改，对外稳定标识是 Server ID）、description 更新
+// 逻辑 Server；endpoint/transport/args 更新主实例（instances[0]，即最早创建的实例）；
+// 其余实例仍走实例管理接口。
+export interface UpdateServerPayload {
+  name?: string
+  description?: string
+  endpoint?: string
+  transport?: Transport
+  args?: string[]
+}
+
+// 保存前测试连接入参：server_id 为空表示新增流程（无已保存凭据）；非空表示编辑已有
+// Server，后端会加载其已保存凭据，headers 中的同名临时头覆盖已保存头。
+export interface TestServerConnectionPayload {
+  server_id?: string
+  name?: string
+  endpoint: string
+  transport?: Transport
+  args?: string[]
+  headers?: Record<string, string>
 }
 
 export interface ToolListParams extends ListParams {
@@ -52,7 +75,9 @@ export interface KeyListParams extends ListParams {
 }
 
 export interface LogListParams extends ListParams {
-  q?: string
+	// 仪表盘只消费当前页样本时可跳过后端 COUNT(*)，返回 total=0。
+	include_total?: boolean
+	q?: string
   server_id?: string
   instance_id?: string
   status?: string
@@ -89,22 +114,28 @@ export const getServer = (id: string) => unwrap<MCPServer>(http.get(`/servers/${
 export const toggleServer = (id: string, enabled: boolean) =>
   unwrap<MCPServer>(http.patch(`/servers/${id}/toggle`, { enabled }))
 
-// 更新 Server 逻辑字段（name/endpoint/transport 不可改；端点属于实例）。
-export const updateServer = (id: string, payload: Partial<Pick<MCPServer, 'description'>>) =>
+// 更新 Server：description 更新逻辑 Server；endpoint/transport/args 更新主实例。
+export const updateServer = (id: string, payload: UpdateServerPayload) =>
   unwrap<MCPServer>(http.patch(`/servers/${id}`, payload))
 
 export const deleteServer = (id: string) => unwrap<void>(http.delete(`/servers/${id}`))
 
 export const testServer = (id: string) => unwrap<{ status: string }>(http.post(`/servers/${id}/test`))
 
+// testServerConnection 保存前测试连接（无副作用）：用草稿配置 + 临时请求头执行一次
+// MCP initialize 握手。不创建 Server/实例、不刷新 Tools、不改健康状态、不保存临时头。
+export const testServerConnection = (payload: TestServerConnectionPayload) =>
+  unwrap<{ status: string }>(http.post('/servers/test-connection', payload))
+
 // previewRediscover 只读预演：重新发现但不落库，返回相对当前登记的变更清单，
 // 供前端弹窗对比；人工确认后再 POST /servers/:id/test 真正应用。
 export const previewRediscover = (id: string) =>
   unwrap<RediscoverPlan>(http.post(`/servers/${id}/rediscover/plan`))
 
-// 主实例（最早创建）端点，用于列表/详情展示。
+// 主实例（最早创建）端点/传输/参数，用于列表、详情展示与表单回显。
 export const primaryEndpoint = (s: MCPServer): string => s.instances?.[0]?.endpoint ?? ''
 export const primaryTransport = (s: MCPServer): string => s.instances?.[0]?.transport ?? ''
+export const primaryArgs = (s: MCPServer): string[] => s.instances?.[0]?.args ?? []
 
 // ---- Server 实例（多实例负载均衡）----
 
@@ -221,12 +252,22 @@ export const getInstanceMetrics = (serverId: string) =>
 
 // getMetricsTrend 读取真时序趋势（分钟桶，长程已持久化、跨重启可回溯）。
 // scope 支持 tool|server|instance；instance 须传 server_id；minutes 超保留天数后端截断；
-// dim_key 可选（tool=gateway名 / server=server id / instance=instance id），非空只查单维。
+// dim_key 可选（tool=gateway名 / server=server id / instance=instance id），非空只查单维；
+// 长窗口（3 天/7 天）后端自动降采样，bucket_minutes 返回实际桶宽。
 export const getMetricsTrend = (
   scope: 'tool' | 'server' | 'instance' = 'tool',
   minutes = 30,
   extra?: { server_id?: string; dim_key?: string },
-) => unwrap<{ series: TrendPoint[] }>(http.get('/metrics/trend', { params: { scope, minutes, ...extra } }))
+) => unwrap<{ series: TrendPoint[]; bucket_minutes?: number }>(http.get('/metrics/trend', { params: { scope, minutes, ...extra } }))
+
+// getMetricsWindow 读取窗口内的服务端聚合统计（看板/观测）：
+// 计数/成功率/平均延迟精确，分位延迟为固定桶直方图近似，分组按调用量截断；
+// by_minute 按窗口自动降采样（bucket_minutes 返回实际桶宽），长窗口点数 ≤ 500。
+// 成本与窗口内行数成正比、与表总量无关，取代“拉日志样本再前端聚合”。
+export const getMetricsWindow = (
+  minutes: number,
+  extra?: { server_id?: string; top_tools?: number; top_ips?: number; bucket_minutes?: number },
+) => unwrap<MetricsWindow>(http.get('/metrics/window', { params: { minutes, ...extra } }))
 
 // getLogs 分页读取调用日志，支持 server_id/instance_id/q/status/from/to 筛选。
 // 注意：traffic_log 为流水大表，服务端对 page_size 设上限（200）且不支持 0=全量，
@@ -264,8 +305,8 @@ export const runEvalSuite = (id: string, cases: EvalSuiteCase[], instanceId?: st
 
 // ---- 全量辅助（page_size=0，供 picker/下拉/弹层等需要完整目录的消费）----
 
-export const listAllServers = async () => (await listServers({ page_size: 0 })).items
-export const listAllTools = async () => (await listTools({ page_size: 0 })).items
+export const listAllServers = async (includeTotal = true) => (await listServers({ page_size: 0, include_total: includeTotal })).items
+export const listAllTools = async (includeTotal = true) => (await listTools({ page_size: 0, include_total: includeTotal })).items
 export const listServerToolsAll = async (id: string) => (await listServerTools(id, { page_size: 0 })).items
 export const listServerCredentialsAll = async (id: string) => (await listServerCredentials(id, { page_size: 0 })).items
 export const listAllRoutes = async () => (await listRoutes({ page_size: 0 })).items

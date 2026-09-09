@@ -137,6 +137,10 @@ type AccessKeyQueryStore interface {
 // TrafficQueryStore 分页查询调用日志。
 type TrafficQueryStore interface {
 	QueryTraffic(ctx context.Context, q query.TrafficQuery) ([]model.TrafficSample, int, error)
+	// QueryTrafficWindow 在时间窗口内做服务端聚合（不返回行）：计数/成功率精确、
+	// 平均延迟精确、分位延迟由固定桶直方图近似、分组按调用量降序截断。
+	// 成本与窗口内行数成正比、与表总量无关（走 ts 索引范围扫描），供看板/观测使用。
+	QueryTrafficWindow(ctx context.Context, q query.TrafficWindowQuery) (model.TrafficWindowStats, error)
 }
 
 // TrendStore 持久化分钟桶趋势：进程内指标聚合器的“已闭合分钟”由 app 定期

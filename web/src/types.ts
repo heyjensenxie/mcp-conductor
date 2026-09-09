@@ -164,6 +164,61 @@ export interface TrendPoint {
   errors: number
 }
 
+// ---- 窗口聚合（GET /api/metrics/window）----
+// 服务端在时间窗口内做的聚合：计数/成功率/均值精确，分位延迟由固定桶直方图近似。
+// 看板/观测用它替代“拉取日志样本再前端聚合”，口径不受样本截断影响；成本与窗口内
+// 行数成正比、与表总量无关。
+
+// MetricsWindowGroup 是某个分组维度（server / tool / client_ip）的窗口统计。
+export interface MetricsWindowGroup {
+  key: string
+  totals: number
+  success: number
+  errors: number
+  success_rate: number
+  avg: number
+  p50: number
+  p95: number
+  p99: number
+}
+
+// MetricsWindowMinute 是窗口内单个分钟桶（供延迟/成功率趋势）。
+export interface MetricsWindowMinute {
+  minute: number
+  totals: number
+  success: number
+  errors: number
+  avg: number
+  p95: number
+}
+
+// MetricsWindowStatusCount 是窗口内某个调用状态（success 或错误码）的计数。
+export interface MetricsWindowStatusCount {
+  status: string
+  count: number
+}
+
+export interface MetricsWindow {
+  from: string
+  to: string
+  minutes: number
+  // by_minute 的桶宽（分钟）：长窗口服务端自动降采样（3 天=10、7 天=30），点数 ≤ 500。
+  bucket_minutes: number
+  totals: number
+  success: number
+  errors: number
+  success_rate: number
+  avg: number
+  p50: number
+  p95: number
+  p99: number
+  by_server?: MetricsWindowGroup[]
+  by_tool?: MetricsWindowGroup[]
+  by_client_ip?: MetricsWindowGroup[]
+  by_status?: MetricsWindowStatusCount[]
+  by_minute?: MetricsWindowMinute[]
+}
+
 // 重新发现预演的单个工具变更（advisory：只读报告，需人工确认后应用）。
 export interface RediscoverChange {
   kind: 'add' | 'update'

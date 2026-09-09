@@ -51,7 +51,51 @@ func main() {
 		log.Fatalf("应用 Schema 文件 %s 失败: %v", *schema, err)
 	}
 	fmt.Printf("applied %s\n", *schema)
+
+	if err := ensureIndexes(ctx, db); err != nil {
+		log.Fatalf("补齐索引失败: %v", err)
+	}
 	fmt.Println("初始化完成：Schema 已应用")
+}
+
+// indexMigration 描述一个需要幂等补齐的索引（首个发布版本之后新增的索引）。
+// schema.sql 使用 CREATE TABLE IF NOT EXISTS，对**已存在**的表不会新增索引，
+// 因此这里按 information_schema 检查后补齐（可重复执行，已存在即跳过）。
+type indexMigration struct {
+	table string
+	name  string
+	ddl   string
+}
+
+// indexMigrations 是发布后新增的索引清单（追加即可，勿修改历史条目）。
+var indexMigrations = []indexMigration{
+	{
+		table: "trend_minute",
+		name:  "idx_trend_scope_minute",
+		ddl:   "ALTER TABLE trend_minute ADD INDEX idx_trend_scope_minute (scope, minute)",
+	},
+}
+
+// ensureIndexes 幂等补齐 indexMigrations 中缺失的索引。
+func ensureIndexes(ctx context.Context, db *sql.DB) error {
+	for _, m := range indexMigrations {
+		var n int
+		err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM information_schema.statistics
+			 WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`,
+			m.table, m.name).Scan(&n)
+		if err != nil {
+			return fmt.Errorf("检查索引 %s.%s 失败: %w", m.table, m.name, err)
+		}
+		if n > 0 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, m.ddl); err != nil {
+			return fmt.Errorf("创建索引 %s.%s 失败: %w", m.table, m.name, err)
+		}
+		fmt.Printf("added index %s.%s\n", m.table, m.name)
+	}
+	return nil
 }
 
 // ensureMultiStatements 在 DSN 上补充 multiStatements=true，使单个迁移文件

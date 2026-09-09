@@ -175,6 +175,21 @@ func (a *Adapter) Check(ctx context.Context, server model.Server, instance model
 	return model.ServerStatusHealthy, nil
 }
 
+// CheckDraft 用"尚未落库的实例草稿"执行一次 initialize 握手，供控制台在保存前
+// 测试连接。headers 是本次拨测使用的完整 header 集合（调用方已合并已保存凭据与
+// 临时头），因此本方法不读凭据、不落库、不改变任何健康状态——纯拨测。
+func (a *Adapter) CheckDraft(ctx context.Context, server model.Server, instance model.Instance, headers map[string]string) (model.ServerStatus, error) {
+	c, err := a.dialWithHeaders(ctx, instance, headers)
+	if err != nil {
+		return model.ServerStatusUnhealthy, err
+	}
+	defer c.Close()
+	if _, err := c.Initialize(ctx); err != nil {
+		return model.ServerStatusUnhealthy, err
+	}
+	return model.ServerStatusHealthy, nil
+}
+
 // dial 选择传输方式并为给定实例构建客户端；header 合并顺序为 Server 级凭据
 // 优先、extraHeaders（工具级）后置从而覆盖同名头。
 //
@@ -182,9 +197,40 @@ func (a *Adapter) Check(ctx context.Context, server model.Server, instance model
 // spawn-per-dial（每次操作新建并回收子进程），因此 Header 凭据注入对 stdio
 // 不适用，仅在 HTTP 传输族上组装。
 func (a *Adapter) dial(ctx context.Context, server model.Server, instance model.Instance, extraHeaders map[string]string) (mcp.Client, error) {
+	headers, err := a.serverHeaders(ctx, server)
+	if err != nil {
+		return nil, err
+	}
+	if len(extraHeaders) > 0 {
+		if headers == nil {
+			headers = make(map[string]string, len(extraHeaders))
+		}
+		for k, v := range extraHeaders {
+			headers[k] = v
+		}
+	}
+	return a.dialWithHeaders(ctx, instance, headers)
+}
+
+// serverHeaders 读取 Server 级凭据 header（由应用层注入的回调组装）；回调失败
+// 视为内部错误（fail-closed，不匿名盲发）。
+func (a *Adapter) serverHeaders(ctx context.Context, server model.Server) (map[string]string, error) {
+	if a.headerFor == nil {
+		return nil, nil
+	}
+	headers, err := a.headerFor(ctx, server)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeInternal, err, "读取 Server %q 凭据失败", server.Name)
+	}
+	return headers, nil
+}
+
+// dialWithHeaders 用给定的 header 集合构建客户端（不再读取 Server 级凭据）。
+// 供草稿拨测复用同一套传输选择逻辑。
+func (a *Adapter) dialWithHeaders(_ context.Context, instance model.Instance, headers map[string]string) (mcp.Client, error) {
 	switch instance.Transport {
 	case "", model.TransportStreamableHTTP, model.TransportSSE:
-		// 支持的 HTTP 传输族：纯 streamable HTTP + SSE 片段兼容解析。
+		// HTTP 传输继续组装下方 header；客户端类型稍后按传输区分。
 	case model.TransportStdio:
 		client := mcp.NewStdioClient(instance.Endpoint, instance.Args)
 		if len(a.stdioEnv) > 0 {
@@ -194,18 +240,12 @@ func (a *Adapter) dial(ctx context.Context, server model.Server, instance model.
 	default:
 		return nil, errs.New(errs.CodeInternal, "未知传输方式 %q", instance.Transport)
 	}
-	var opts []mcp.Option
-	if a.headerFor != nil {
-		headers, err := a.headerFor(ctx, server)
-		if err != nil {
-			return nil, errs.Wrap(errs.CodeInternal, err, "读取 Server %q 凭据失败", server.Name)
-		}
-		for k, v := range headers {
-			opts = append(opts, mcp.WithHeader(k, v))
-		}
-	}
-	for k, v := range extraHeaders {
+	opts := make([]mcp.Option, 0, len(headers))
+	for k, v := range headers {
 		opts = append(opts, mcp.WithHeader(k, v))
+	}
+	if instance.Transport == model.TransportSSE {
+		return mcp.NewSSEClient(instance.Endpoint, opts...), nil
 	}
 	return mcp.NewHTTPClient(instance.Endpoint, opts...), nil
 }

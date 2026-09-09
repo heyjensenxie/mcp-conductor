@@ -104,14 +104,10 @@ func (c *Control) handleListServers(w http.ResponseWriter, r *http.Request) {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
-	hydrated := make([]model.Server, 0, len(servers))
-	for i := range servers {
-		h, hErr := c.hydrateServer(r.Context(), servers[i])
-		if hErr != nil {
-			writeGatewayError(w, r, http.StatusInternalServerError, hErr)
-			return
-		}
-		hydrated = append(hydrated, h)
+	hydrated, err := c.hydrateServers(r.Context(), servers)
+	if err != nil {
+		writeGatewayError(w, r, http.StatusInternalServerError, err)
+		return
 	}
 	writeOK(w, RequestIDFrom(r.Context()), pageData[model.Server]{Items: hydrated, Total: total, Page: q.Page, PageSize: q.PageSize})
 }
@@ -168,6 +164,10 @@ func (c *Control) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
+	// 主实例连接参数变更后即时探活，避免停留在旧健康结论等待周期巡检。
+	if (patch.Endpoint != nil || patch.Transport != nil || patch.Args != nil) && c.probeNow != nil {
+		c.probeNow(server.ID)
+	}
 	hydrated, err := c.hydrateServer(r.Context(), *server)
 	if err != nil {
 		writeGatewayError(w, r, http.StatusInternalServerError, err)
@@ -216,6 +216,25 @@ func (c *Control) handleTestServer(w http.ResponseWriter, r *http.Request) {
 	if err := c.registry.Rediscover(r.Context(), r.PathValue("id")); err != nil {
 		// 只回传脱敏后的外层文案（errs.SafeMessage），不透出端点 query/userinfo
 		// 或上游响应正文；错误码与 HTTP 状态语义保持不变。
+		writeEnvelope(w, statusForError(err), string(errs.CodeOf(err)), errs.SafeMessage(err), RequestIDFrom(r.Context()), nil)
+		return
+	}
+	writeOK(w, RequestIDFrom(r.Context()), map[string]string{"status": "ok"})
+}
+
+// handleTestServerConnection 保存前测试连接（无副作用）：用提交中的草稿配置
+// （name/endpoint/transport/args）+ 临时请求头执行一次 MCP initialize 握手。
+// 不创建 Server、不创建实例、不刷新 Tools、不更新健康状态、不保存临时请求头；
+// 编辑已有 Server 时后端会加载其已保存凭据，临时 Header 覆盖同名已保存 Header。
+func (c *Control) handleTestServerConnection(w http.ResponseWriter, r *http.Request) {
+	var in registry.TestConnectionInput
+	if err := decodeBody(r, &in); err != nil {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.Wrap(errs.CodeInvalidArgument, err, "请求体无效"))
+		return
+	}
+	if _, err := c.registry.TestConnection(r.Context(), in); err != nil {
+		// 与测试连接/重新发现同契约：回传脱敏后的外层文案（errs.SafeMessage），
+		// 不透出端点 query/userinfo 或上游响应正文。
 		writeEnvelope(w, statusForError(err), string(errs.CodeOf(err)), errs.SafeMessage(err), RequestIDFrom(r.Context()), nil)
 		return
 	}
@@ -768,13 +787,18 @@ func (c *Control) handleUpdateKey(w http.ResponseWriter, r *http.Request) {
 			errs.New(errs.CodeInvalidArgument, "key.qps 仅支持 -1（不设 key 上限）、0（跟随默认）或 >0"))
 		return
 	}
+	// name 为展示名：允许改名，但拒绝空白（避免列表出现无名条目）。
+	if input.Name != nil && strings.TrimSpace(*input.Name) == "" {
+		writeGatewayError(w, r, http.StatusBadRequest, errs.New(errs.CodeInvalidArgument, "key.name 不能为空"))
+		return
+	}
 	key, err := c.store.GetAccessKey(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeGatewayError(w, r, statusForError(err), err)
 		return
 	}
 	if input.Name != nil {
-		key.Name = *input.Name
+		key.Name = strings.TrimSpace(*input.Name)
 	}
 	if input.Enabled != nil {
 		key.Enabled = *input.Enabled

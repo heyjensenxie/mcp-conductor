@@ -48,6 +48,13 @@ type metricRow struct {
 	Errors  int64
 	latency []float64 // 单位 ms，达到上限后仅保留最新
 
+	// sortedLatency 是 latency 的惰性排序缓存，latDirty 标记其是否失效。
+	// 分位计算此前每次读快照都要复制并排序最多 metricsCap 个样本（维度多时
+	// 单次 /api/metrics 可达百毫秒级并产生大量临时对象）；改为按需重建后，
+	// 无新样本的重复读取只做 O(维度数) 的读取。
+	sortedLatency []float64
+	latDirty      bool
+
 	// buckets 是按分钟（UTC Unix）计数的调用时序，供趋势端点读取。
 	buckets map[int64]*trendBucket
 }
@@ -86,6 +93,7 @@ func (m *Metrics) Record(key string, ok bool, latency time.Duration) {
 	if len(row.latency) > metricsCap {
 		row.latency = row.latency[len(row.latency)-metricsCap:]
 	}
+	row.latDirty = true
 
 	// 分钟级时序桶（UTC），并修剪超出保留窗口的旧桶。
 	now := time.Now().UTC()
@@ -290,19 +298,28 @@ func (m *Metrics) SnapshotAll() []Snapshot {
 	return out
 }
 
-// snapshotOf 计算单个维度的汇总与分位延迟。
+// snapshotOf 计算单个维度的汇总与分位延迟（调用方持锁）。
 func snapshotOf(key string, row *metricRow) Snapshot {
 	s := Snapshot{Key: key, Totals: row.Totals, Success: row.Success, Errors: row.Errors}
 	if row.Totals > 0 {
 		s.SuccessRate = float64(row.Success) / float64(row.Totals)
 	}
-	if len(row.latency) > 0 {
-		sorted := append([]float64(nil), row.latency...)
-		sort.Float64s(sorted)
-		s.P50 = percentile(sorted, 0.50)
-		s.P95 = percentile(sorted, 0.95)
-		s.P99 = percentile(sorted, 0.99)
+	if len(row.latency) == 0 {
+		return s
 	}
+	// 惰性重建排序缓存：新样本到达后只重排一次，重复读取不再复制/排序。
+	if row.latDirty || len(row.sortedLatency) != len(row.latency) {
+		if cap(row.sortedLatency) < len(row.latency) {
+			row.sortedLatency = make([]float64, len(row.latency))
+		}
+		row.sortedLatency = row.sortedLatency[:len(row.latency)]
+		copy(row.sortedLatency, row.latency)
+		sort.Float64s(row.sortedLatency)
+		row.latDirty = false
+	}
+	s.P50 = percentile(row.sortedLatency, 0.50)
+	s.P95 = percentile(row.sortedLatency, 0.95)
+	s.P99 = percentile(row.sortedLatency, 0.99)
 	return s
 }
 

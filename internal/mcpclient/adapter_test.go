@@ -28,6 +28,18 @@ func instanceFor(endpoint string) model.Instance {
 	}
 }
 
+func TestAdapter_DialSelectsLegacySSEClient(t *testing.T) {
+	instance := instanceFor("https://example.com/sse")
+	instance.Transport = model.TransportSSE
+	client, err := New().dial(context.Background(), model.Server{ID: "srv-1"}, instance, nil)
+	if err != nil {
+		t.Fatalf("构建 SSE 客户端失败: %v", err)
+	}
+	if _, ok := client.(*mcp.SSEClient); !ok {
+		t.Fatalf("transport=sse 应选择 SSEClient，实际为 %T", client)
+	}
+}
+
 // stdioInstanceFor 构造一个挂在 "srv-1" 下的 stdio 实例（command 在测试里填充）。
 
 // TestAdapter_StdioDiscoverAndCheck 验证 stdio 实例经 Adapter 走子进程传输完成

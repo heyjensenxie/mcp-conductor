@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -303,5 +304,147 @@ func TestQueryTraffic_filterClientIP(t *testing.T) {
 	got, total, _ = st.QueryTraffic(ctx, query.TrafficQuery{Q: "198.51"})
 	if len(got) != 1 || total != 1 {
 		t.Fatalf("q 命中另一 IP 片段异常: %d / %d", len(got), total)
+	}
+}
+
+// TestQueryTraffic_pageDoesNotMaterializeAll 锁定分页内存契约：只物化请求页的行
+// （不把全部匹配行复制一遍）。以 SkipTotal 的“最近 N 条”路径断言返回行与总量。
+func TestQueryTraffic_pageDoesNotMaterializeAll(t *testing.T) {
+	st := New()
+	ctx := context.Background()
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 500; i++ {
+		if err := st.AppendTraffic(ctx, model.TrafficSample{
+			RequestID: fmt.Sprintf("req-%03d", i),
+			ServerID:  "s1", Tool: "alpha.search", Status: "success",
+			LatencyMS: int64(i), Timestamp: model.T(base.Add(time.Duration(i) * time.Minute)),
+		}); err != nil {
+			t.Fatalf("AppendTraffic: %v", err)
+		}
+	}
+
+	// 第一页：返回最新 20 条且 total 为 0（SkipTotal 语义）。
+	got, total, err := st.QueryTraffic(ctx, query.TrafficQuery{
+		Paging: query.Paging{Page: 1, PageSize: 20}, SkipTotal: true,
+	})
+	if err != nil || len(got) != 20 || total != 0 {
+		t.Fatalf("SkipTotal 首页异常: items=%d total=%d err=%v", len(got), total, err)
+	}
+	if got[0].RequestID != "req-499" || got[19].RequestID != "req-480" {
+		t.Fatalf("倒序首页内容异常: %s .. %s", got[0].RequestID, got[19].RequestID)
+	}
+
+	// 第二页：跳过 20 条后取 10 条。
+	got, _, _ = st.QueryTraffic(ctx, query.TrafficQuery{
+		Paging: query.Paging{Page: 3, PageSize: 10}, SkipTotal: true,
+	})
+	if len(got) != 10 || got[0].RequestID != "req-479" || got[9].RequestID != "req-470" {
+		t.Fatalf("第 3 页内容异常: %d / %s", len(got), got[0].RequestID)
+	}
+
+	// 需要 total 时仍返回精确匹配总数。
+	got, total, _ = st.QueryTraffic(ctx, query.TrafficQuery{Paging: query.Paging{Page: 1, PageSize: 5}})
+	if len(got) != 5 || total != 500 {
+		t.Fatalf("需要 total 时异常: items=%d total=%d", len(got), total)
+	}
+}
+
+// TestQueryTrafficWindow_aggregates 验证窗口聚合：整体/分组/状态/分钟桶口径一致，
+// 分组按调用量降序并支持 TopN 截断。
+func TestQueryTrafficWindow_aggregates(t *testing.T) {
+	st := New()
+	ctx := context.Background()
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	samples := []model.TrafficSample{
+		{RequestID: "r1", ServerID: "s1", Tool: "alpha.search", ClientIP: "10.0.0.1", Status: "success", LatencyMS: 10, Timestamp: model.T(base)},
+		{RequestID: "r2", ServerID: "s1", Tool: "alpha.search", ClientIP: "10.0.0.1", Status: "success", LatencyMS: 20, Timestamp: model.T(base.Add(10 * time.Second))},
+		{RequestID: "r3", ServerID: "s1", Tool: "alpha.detail", ClientIP: "10.0.0.2", Status: "upstream_error", LatencyMS: 300, Timestamp: model.T(base.Add(70 * time.Second))},
+		{RequestID: "r4", ServerID: "s2", Tool: "beta.search", ClientIP: "10.0.0.2", Status: "timeout_error", LatencyMS: 5000, Timestamp: model.T(base.Add(80 * time.Second))},
+		// 窗口外（更早）：不应计入。
+		{RequestID: "old", ServerID: "s1", Tool: "alpha.search", ClientIP: "10.0.0.1", Status: "success", LatencyMS: 1, Timestamp: model.T(base.Add(-time.Hour))},
+	}
+	for _, sample := range samples {
+		if err := st.AppendTraffic(ctx, sample); err != nil {
+			t.Fatalf("AppendTraffic: %v", err)
+		}
+	}
+
+	stats, err := st.QueryTrafficWindow(ctx, query.TrafficWindowQuery{
+		From: base.Add(-time.Minute), To: base.Add(5 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("QueryTrafficWindow: %v", err)
+	}
+	if stats.Totals != 4 || stats.Success != 2 || stats.Errors != 2 {
+		t.Fatalf("整体口径错误: %+v", stats)
+	}
+	if got := stats.SuccessRate(); got != 0.5 {
+		t.Fatalf("成功率应为 0.5，得到 %v", got)
+	}
+	if got := stats.Latency.Avg(); got != (10+20+300+5000)/4.0 {
+		t.Fatalf("平均延迟错误: %v", got)
+	}
+
+	// by_server：s1 3 条（2 成功）、s2 1 条。
+	if len(stats.ByServer) != 2 || stats.ByServer[0].Key != "s1" || stats.ByServer[0].Totals != 3 ||
+		stats.ByServer[0].Success != 2 || stats.ByServer[1].Key != "s2" {
+		t.Fatalf("by_server 错误: %+v", stats.ByServer)
+	}
+	// by_tool：alpha.search 2 条最多。
+	if len(stats.ByTool) != 3 || stats.ByTool[0].Key != "alpha.search" || stats.ByTool[0].Totals != 2 {
+		t.Fatalf("by_tool 错误: %+v", stats.ByTool)
+	}
+	// by_client_ip：两个 IP 各 2 条（同量按 key 升序）。
+	if len(stats.ByClientIP) != 2 || stats.ByClientIP[0].Key != "10.0.0.1" || stats.ByClientIP[0].Totals != 2 {
+		t.Fatalf("by_client_ip 错误: %+v", stats.ByClientIP)
+	}
+	// by_status：四类各 1（按计数降序、同量按状态名升序）。
+	if len(stats.ByStatus) != 3 {
+		t.Fatalf("by_status 错误: %+v", stats.ByStatus)
+	}
+	// by_minute：base 与 base+1min 两个桶。
+	if len(stats.ByMinute) != 2 || stats.ByMinute[0].Minute != base.Unix() ||
+		stats.ByMinute[0].Totals != 2 || stats.ByMinute[1].Totals != 2 {
+		t.Fatalf("by_minute 错误: %+v", stats.ByMinute)
+	}
+
+	// TopN 截断与 Server 过滤。
+	limited, err := st.QueryTrafficWindow(ctx, query.TrafficWindowQuery{
+		From: base.Add(-time.Minute), To: base.Add(5 * time.Minute),
+		TopTools: 1, TopIPs: 1, ServerID: "s1",
+	})
+	if err != nil {
+		t.Fatalf("QueryTrafficWindow(limited): %v", err)
+	}
+	if limited.Totals != 3 || len(limited.ByTool) != 1 || limited.ByTool[0].Key != "alpha.search" ||
+		len(limited.ByClientIP) != 1 {
+		t.Fatalf("TopN/ServerID 过滤错误: %+v", limited)
+	}
+}
+
+// TestQueryTrafficWindow_topMinutes 验证长窗口下只返回最近 N 个分钟桶。
+func TestQueryTrafficWindow_topMinutes(t *testing.T) {
+	st := New()
+	ctx := context.Background()
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 10; i++ {
+		if err := st.AppendTraffic(ctx, model.TrafficSample{
+			RequestID: fmt.Sprintf("r%d", i), ServerID: "s1", Tool: "t", Status: "success",
+			Timestamp: model.T(base.Add(time.Duration(i) * time.Minute)),
+		}); err != nil {
+			t.Fatalf("AppendTraffic: %v", err)
+		}
+	}
+	stats, err := st.QueryTrafficWindow(ctx, query.TrafficWindowQuery{
+		From: base, To: base.Add(10 * time.Minute), TopMinutes: 3,
+	})
+	if err != nil {
+		t.Fatalf("QueryTrafficWindow: %v", err)
+	}
+	if len(stats.ByMinute) != 3 {
+		t.Fatalf("TopMinutes 应只返回最近 3 个桶，得到 %d", len(stats.ByMinute))
+	}
+	if got := stats.ByMinute[0].Minute; got != base.Add(7*time.Minute).Unix() {
+		t.Fatalf("应返回最后 3 个桶，首个为 base+7min，得到 %d", got)
 	}
 }

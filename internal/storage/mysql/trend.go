@@ -38,10 +38,17 @@ func (s *Store) UpsertTrendBuckets(ctx context.Context, buckets []model.TrendMin
 
 // QueryTrendBuckets 按 query.TrendQuery 读取窗口内的分钟桶（minute 升序）。
 // scope=server/instance 时 server_id 可作归属过滤；dim_key 非空则只读单维。
+//
+// 索引要点：主键是 (scope, dim_key, minute)，minute 不是前缀，仅用 scope 前缀会让
+// 窗口条件退化为“扫描该 scope 在保留期内的全部行再 filesort”（tool 维可达数百万行）。
+// 因此这里始终显式带上 server_id（tool 维恒为空串），命中
+// idx_trend_scope_server_minute (scope, server_id, minute) 得到 minute 范围扫描；
+// scope=server 且未指定 server_id（看全部 Server）时由 idx_trend_scope_minute
+// (scope, minute) 覆盖，同样按 minute 有序、无需 filesort。
 func (s *Store) QueryTrendBuckets(ctx context.Context, q query.TrendQuery) ([]model.TrendMinute, error) {
 	cond := []string{"scope = ?"}
 	args := []any{q.Scope}
-	if q.ServerID != "" {
+	if q.Scope == "tool" || q.ServerID != "" {
 		cond = append(cond, "server_id = ?")
 		args = append(args, q.ServerID)
 	}

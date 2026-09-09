@@ -69,34 +69,51 @@
       </a-table>
     </a-card>
 
-    <a-modal v-model:open="dialogVisible" :title="editing ? t('servers.editTitle') : t('servers.dialogTitle')" :confirm-loading="submitting" @ok="submit" :ok-text="editing ? t('servers.saveEdit') : t('servers.register')" :cancel-text="t('common.cancel')">
+    <!-- 新增/编辑统一表单：逻辑 Server（name/description）+ 主实例（endpoint/transport/args）+ 请求头 -->
+    <a-modal
+      v-model:open="dialogVisible"
+      :title="editing ? t('servers.editTitle') : t('servers.dialogTitle')"
+      :confirm-loading="submitting"
+      :mask-closable="false"
+    >
+      <template #footer>
+        <a-button @click="dialogVisible = false">{{ t('common.cancel') }}</a-button>
+        <a-button :loading="testing" @click="testDraft">
+          <template #icon><ApiOutlined /></template>{{ t('servers.testConnection') }}
+        </a-button>
+        <a-button type="primary" :loading="submitting" @click="submit">
+          {{ editing ? t('servers.saveEdit') : t('servers.register') }}
+        </a-button>
+      </template>
       <a-form :label-col="{ span: 6 }" :wrapper-col="{ span: 18 }">
-        <a-form-item :label="t('common.name')" :required="!editing">
-          <a-input v-model:value="form.name" :disabled="editing" :placeholder="editing ? t('servers.nameReadonlyHint') : 'University MCP'" />
+        <a-form-item :label="t('common.name')" :required="true">
+          <a-input v-model:value="form.name" :placeholder="t('servers.namePlaceholder')" />
+          <span v-if="editing" class="field-hint">{{ t('servers.nameDisplayHint') }}</span>
         </a-form-item>
-        <a-form-item v-if="!editing" :label="isStdio ? t('servers.command') : t('servers.endpoint')" :required="true">
+        <a-form-item :label="t('common.description')">
+          <a-textarea v-model:value="form.description" :rows="2" />
+        </a-form-item>
+        <a-form-item :label="isStdio ? t('servers.command') : t('servers.endpoint')" :required="true">
           <a-input v-model:value="form.endpoint" :placeholder="isStdio ? t('servers.commandPlaceholder') : t('servers.endpointPlaceholder')" />
         </a-form-item>
-        <a-form-item v-if="!editing" :label="t('servers.transport')">
+        <a-form-item :label="t('servers.transport')">
           <a-select v-model:value="form.transport">
             <a-select-option value="https">{{ t('servers.transportStreamable') }}</a-select-option>
             <a-select-option value="sse">{{ t('servers.transportSSE') }}</a-select-option>
             <a-select-option value="stdio">{{ t('servers.transportStdio') }}</a-select-option>
           </a-select>
         </a-form-item>
-        <a-form-item v-if="!editing && isStdio" :label="t('servers.args')">
+        <a-form-item v-if="isStdio" :label="t('servers.args')">
           <a-input v-model:value="form.args" :placeholder="t('servers.argsPlaceholder')" />
           <span class="field-hint">{{ t('servers.stdioHint') }}</span>
         </a-form-item>
         <a-form-item v-if="editing" class="edit-hint">
           <span>{{ t('servers.endpointsInDetailHint') }}</span>
         </a-form-item>
-        <a-form-item :label="t('common.description')">
-          <a-textarea v-model:value="form.description" :rows="2" />
-        </a-form-item>
 
-        <template v-if="!editing">
-          <a-divider orientation="left" class="auth-divider">{{ t('servers.auth') }}</a-divider>
+        <a-divider orientation="left" class="auth-divider">{{ t('servers.auth') }}</a-divider>
+        <div v-if="authLoading" class="auth-empty">{{ t('servers.authLoading') }}</div>
+        <template v-else>
           <div v-if="reqHeaders.length" class="auth-rows">
             <div v-for="(row, i) in reqHeaders" :key="i" class="auth-row">
               <a-input
@@ -106,7 +123,7 @@
                 class="auth-header"
               />
               <a-checkbox v-model:checked="row.bearer">{{ t('servers.authBearer') }}</a-checkbox>
-              <a-input-password v-model:value="row.value" :placeholder="t('servers.authValuePh')" class="auth-value" />
+              <a-input-password v-model:value="row.value" :placeholder="valuePlaceholder(row)" class="auth-value" />
               <a-button type="text" size="small" @click="reqHeaders.splice(i, 1)">
                 <template #icon><DeleteOutlined /></template>
               </a-button>
@@ -139,10 +156,26 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { PlusOutlined, DeleteOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
-import { createCredential, createServer, deleteServer, getServerMetrics, listServers, listServerToolsAll, primaryEndpoint, primaryTransport, testServer, toggleServer, updateServer } from '@/api'
+import { PlusOutlined, DeleteOutlined, ReloadOutlined, SearchOutlined, ApiOutlined } from '@ant-design/icons-vue'
+import {
+  createCredential,
+  createServer,
+  deleteCredential,
+  deleteServer,
+  getServerMetrics,
+  listServerCredentialsAll,
+  listServers,
+  listServerToolsAll,
+  primaryEndpoint,
+  primaryTransport,
+  testServer,
+  testServerConnection,
+  toggleServer,
+  updateCredential,
+  updateServer,
+} from '@/api'
 import DeleteConfirmModal from '@/components/DeleteConfirmModal.vue'
-import type { MCPServer, MetricSnapshot, Transport } from '@/types'
+import type { Credential, MCPServer, MetricSnapshot, Transport } from '@/types'
 
 const { t } = useI18n()
 
@@ -162,6 +195,7 @@ const filters = reactive<{ q: string; enabled?: string; health?: string }>({ q: 
 const healthOptions = ['unknown', 'healthy', 'unhealthy', 'disabled']
 const dialogVisible = ref(false)
 const submitting = ref(false)
+const testing = ref(false)
 const deleteVisible = ref(false)
 const deleteTarget = ref<MCPServer | null>(null)
 const deleting = ref(false)
@@ -174,18 +208,24 @@ const form = reactive<{ name: string; endpoint: string; transport: Transport; de
 })
 // stdio 传输：endpoint 承载可执行命令并展示启动参数输入框。
 const isStdio = computed(() => form.transport === 'stdio')
-// 注册时可配置任意多条"上游请求头"（可选）：每条 = 请求头名 + 值，
-// 勾选 Bearer 时该条固定注入 Authorization: Bearer <值>（走 static_token）。
-// 落库为 Credential，值 AES 加密；header 可留空代表无附加头。
+// 上游请求头行：每条落库为一条 Credential（值加密存储）。
+// credId 非空表示"已有凭证"——编辑时从后端加载，用于区分已有/新增，
+// 避免每次保存都重复创建凭证；已有凭证留空密钥表示保留原值。
 interface AuthRow {
+  credId?: string
+  name?: string
   header: string
   bearer: boolean
   value: string
+  hasValue?: boolean
 }
 const reqHeaders = ref<AuthRow[]>([])
-// 编辑态：true 时同一弹窗承担"编辑 Server 可编辑字段"（name 只读、不配凭证）。
+// 编辑态：true 时同一弹窗承担"编辑 Server（name 只读）+ 主实例连接参数 + 请求头"。
 const editing = ref(false)
 const editingId = ref('')
+// 编辑时加载的已有凭证（用于删除判定：不在表单中的已有凭证 = 已删除）。
+const loadedCreds = ref<Credential[]>([])
+const authLoading = ref(false)
 // 按 Server 聚合的指标（key = server:<id>），供 Requests / P95 列。
 const serverMetrics = ref<MetricSnapshot[]>([])
 const metricByID = computed<Record<string, MetricSnapshot>>(() => {
@@ -274,43 +314,83 @@ function openCreate() {
   form.description = ''
   form.args = ''
   reqHeaders.value = []
+  loadedCreds.value = []
+  authLoading.value = false
   dialogVisible.value = true
 }
 
-// 编辑：name 不可改（后端会拒绝改名）；端点/传输属于实例，编辑只更新 description。
-function openEdit(row: MCPServer) {
+// 编辑：name（展示名，可改）与 description 更新 Server；endpoint/transport/args 更新
+// 主实例；请求头异步回显已保存凭证（密钥值不从后端返回，仅标记"已配置"）。
+async function openEdit(row: MCPServer) {
   editing.value = true
   editingId.value = row.id
+  const primary = row.instances?.[0]
   form.name = row.name
-  form.endpoint = ''
-  form.transport = 'https'
   form.description = row.description ?? ''
-  form.args = ''
+  form.endpoint = primary?.endpoint ?? ''
+  form.transport = primary?.transport ?? 'https'
+  form.args = primary?.args?.length ? JSON.stringify(primary.args) : ''
   reqHeaders.value = []
+  loadedCreds.value = []
   dialogVisible.value = true
+  authLoading.value = true
+  try {
+    const creds = await listServerCredentialsAll(row.id)
+    loadedCreds.value = creds
+    reqHeaders.value = creds.map(credToRow)
+  } catch (e) {
+    message.error(`${t('servers.authLoadFail')}: ${e}`)
+  } finally {
+    authLoading.value = false
+  }
+}
+
+// credToRow 把已有凭证转换为表单行：api_key 显示真实 header 名；
+// static_token 固定显示为 Authorization + Bearer。
+function credToRow(cred: Credential): AuthRow {
+  if (cred.kind === 'static_token') {
+    return { credId: cred.id, name: cred.name, header: 'Authorization', bearer: true, value: '', hasValue: cred.has_value }
+  }
+  return { credId: cred.id, name: cred.name, header: cred.header ?? '', bearer: false, value: '', hasValue: cred.has_value }
+}
+
+// valuePlaceholder 提示已有凭证的留空语义：留空 = 保留原密钥。
+function valuePlaceholder(row: AuthRow): string {
+  if (row.credId && row.hasValue) return t('servers.authValueKeepPh')
+  return t('servers.authValuePh')
 }
 
 function addAuthRow() {
   reqHeaders.value.push({ header: '', bearer: false, value: '' })
 }
 
-// 校验并生成要落库的凭证列表：密钥值未填的行视为无效并忽略；
-// 自定义 Header 行（非 Bearer）必须填写请求头名，否则拦截提醒。
-function buildAuthCredentials() {
-  const rows: { kind: 'api_key' | 'static_token'; header: string; value: string }[] = []
-  for (const row of reqHeaders.value) {
-    if (!row.value) continue // 无密钥值 → 忽略该行
-    if (!row.bearer && !row.header) return null // 有值但缺 header
-    rows.push({
-      kind: row.bearer ? 'static_token' : 'api_key',
-      header: row.bearer ? '' : row.header,
-      value: row.value,
-    })
-  }
-  return rows
+// rowToCredential 归一化一行请求头；bearer 行固定走 static_token（后端注入
+// Authorization: Bearer <值>），其余为 api_key + 自定义 header 名。
+function rowToCredential(row: AuthRow): { kind: 'api_key' | 'static_token'; header: string; value: string } | null {
+  if (row.bearer) return { kind: 'static_token', header: '', value: row.value }
+  const header = row.header.trim()
+  if (!header) return null
+  return { kind: 'api_key', header, value: row.value }
 }
 
-// 解析 stdio 启动参数（JSON 数组文本）；非法或非字符串数组时返回 null 供拦截。
+// buildTempHeaders 组装"保存前测试"用的临时请求头（仅包含本次输入了密钥的行；
+// 已有凭证留空的行由后端按 server_id 加载已保存值）。
+function buildTempHeaders(): Record<string, string> | null {
+  const headers: Record<string, string> = {}
+  for (const row of reqHeaders.value) {
+    if (!row.value) continue
+    if (row.bearer) {
+      headers.Authorization = `Bearer ${row.value}`
+      continue
+    }
+    const header = row.header.trim()
+    if (!header) return null
+    headers[header] = row.value
+  }
+  return headers
+}
+
+// parseStdioArgs 解析 stdio 启动参数（JSON 数组文本）；非法或非字符串数组时返回 null 供拦截。
 function parseStdioArgs(text: string): string[] | null {
   const trimmed = text.trim()
   if (!trimmed) return []
@@ -323,60 +403,78 @@ function parseStdioArgs(text: string): string[] | null {
   }
 }
 
+// draftPayload 汇总当前表单为草稿拨测载荷（不落库）。
+function draftPayload() {
+  // 非 stdio 传输显式提交空数组，避免切换传输后残留 stdio 启动参数被后端拒绝。
+  const args = isStdio.value ? parseStdioArgs(form.args) : []
+  if (args === null) {
+    message.warning(t('servers.argsInvalid'))
+    return null
+  }
+  if (!form.endpoint.trim()) {
+    message.warning(t('servers.fillRequired'))
+    return null
+  }
+  const headers = buildTempHeaders()
+  if (headers === null) {
+    message.warning(t('servers.authHeaderRequired'))
+    return null
+  }
+  return {
+    server_id: editing.value ? editingId.value : undefined,
+    name: form.name.trim() || undefined,
+    endpoint: form.endpoint.trim(),
+    transport: form.transport,
+    args,
+    headers,
+  }
+}
+
+// testDraft 保存前测试连接：使用临时数据执行一次握手，不创建 Server/实例、
+// 不刷新 Tools、不改健康状态、不保存临时请求头。
+async function testDraft() {
+  const payload = draftPayload()
+  if (!payload) return
+  testing.value = true
+  try {
+    await testServerConnection(payload)
+    message.success(t('servers.testConnOk'))
+  } catch (e) {
+    message.error(`${t('servers.connectFail')}: ${e}`)
+  } finally {
+    testing.value = false
+  }
+}
+
 async function submit() {
-  if (!form.name || (!editing.value && !form.endpoint)) {
+  if (!form.name.trim() || !form.endpoint.trim()) {
     message.warning(t('servers.fillRequired'))
     return
   }
-  submitting.value = true
-  // 编辑态：name 不可改，仅提交逻辑字段（description）；端点编辑走 Server 详情页。
-  if (editing.value) {
-    try {
-      await updateServer(editingId.value, { description: form.description })
-      message.success(t('servers.updatedOk'))
-      dialogVisible.value = false
-      await load()
-    } catch (e) {
-      message.error(String(e))
-    } finally {
-      submitting.value = false
-    }
-    return
-  }
-  const authRows = buildAuthCredentials()
-  if (authRows === null) {
-    message.warning(t('servers.authHeaderRequired'))
-    return
-  }
-  const args = isStdio.value ? parseStdioArgs(form.args) : undefined
+  // 非 stdio 传输提交空数组：切换传输时清掉遗留的 stdio 启动参数。
+  const args = isStdio.value ? parseStdioArgs(form.args) : []
   if (args === null) {
-    submitting.value = false
     message.warning(t('servers.argsInvalid'))
     return
   }
+  // 校验请求头行（api_key 必须有 header 名）；完全空白的行忽略。
+  const rows: { row: AuthRow; cred: { kind: 'api_key' | 'static_token'; header: string; value: string } }[] = []
+  for (const row of reqHeaders.value) {
+    if (!row.credId && !row.value && !row.bearer && !row.header.trim()) continue
+    const cred = rowToCredential(row)
+    if (cred === null) {
+      message.warning(t('servers.authHeaderRequired'))
+      return
+    }
+    rows.push({ row, cred })
+  }
+
   submitting.value = true
   try {
-    const server = await createServer({ name: form.name, description: form.description, endpoint: form.endpoint, transport: form.transport, args })
-    // 注册时若有请求头配置，随即逐条落 Credential（值加密存储）。
-    const failures: string[] = []
-    for (const [i, row] of authRows.entries()) {
-      try {
-        await createCredential(server.id, {
-          name: `${server.name} auth#${i + 1}`,
-          kind: row.kind,
-          header: row.header,
-          value: row.value,
-        })
-      } catch (e) {
-        failures.push(String(e))
-      }
-    }
-    if (failures.length) {
-      message.warning(`${t('servers.registeredOk')}，${t('servers.authFail')}: ${failures[0]}`)
-    } else if (authRows.length) {
-      message.success(t('servers.authApplied'))
+    if (editing.value) {
+      await saveEdit(args, rows)
     } else {
-      message.success(t('servers.registeredOk'))
+      await saveCreate(args, rows)
     }
     dialogVisible.value = false
     await load()
@@ -384,6 +482,94 @@ async function submit() {
     message.error(String(e))
   } finally {
     submitting.value = false
+  }
+}
+
+// saveCreate 新增：先建逻辑 Server + 主实例，再逐条落凭证（值加密存储）。
+async function saveCreate(
+  args: string[],
+  rows: { row: AuthRow; cred: { kind: 'api_key' | 'static_token'; header: string; value: string } }[],
+) {
+  const server = await createServer({
+    name: form.name.trim(),
+    description: form.description,
+    endpoint: form.endpoint.trim(),
+    transport: form.transport,
+    args,
+  })
+  const failures: string[] = []
+  let created = 0
+  for (const [i, { cred }] of rows.entries()) {
+    if (!cred.value) continue // 无密钥值 → 不创建空凭证
+    try {
+      await createCredential(server.id, { name: `${server.name} auth#${i + 1}`, ...cred })
+      created += 1
+    } catch (e) {
+      failures.push(String(e))
+    }
+  }
+  if (failures.length) {
+    message.warning(`${t('servers.registeredOk')}，${t('servers.authFail')}: ${failures[0]}`)
+  } else if (created) {
+    message.success(`${t('servers.registeredOk')}，${t('servers.authApplied')}`)
+  } else {
+    message.success(t('servers.registeredOk'))
+  }
+}
+
+// saveEdit 编辑：description 更新 Server；endpoint/transport/args 更新主实例；
+// 请求头按"已有凭证（留空保留原值 / 填值替换）/ 新增行（创建）/ 删除行（按 ID 删除）"
+// 三类动作分别落库，避免重复创建已有凭证。
+async function saveEdit(
+  args: string[],
+  rows: { row: AuthRow; cred: { kind: 'api_key' | 'static_token'; header: string; value: string } }[],
+) {
+  await updateServer(editingId.value, {
+    name: form.name.trim(),
+    description: form.description,
+    endpoint: form.endpoint.trim(),
+    transport: form.transport,
+    args,
+  })
+
+  const failures: string[] = []
+  const keptIds = new Set(rows.map(({ row }) => row.credId).filter((id): id is string => Boolean(id)))
+  // 表单中已移除的已有凭证 → 按 Credential ID 删除。
+  for (const cred of loadedCreds.value) {
+    if (keptIds.has(cred.id)) continue
+    try {
+      await deleteCredential(editingId.value, cred.id)
+    } catch (e) {
+      failures.push(String(e))
+    }
+  }
+  for (const [i, { row, cred }] of rows.entries()) {
+    try {
+      if (row.credId) {
+        const original = loadedCreds.value.find((c) => c.id === row.credId)
+        const headerChanged = (original?.header ?? '') !== cred.header || original?.kind !== cred.kind
+        // 已有凭证：密钥留空表示保留原值；未改名/未换类型时无需请求。
+        if (!cred.value && !headerChanged) continue
+        const payload: { name?: string; kind: 'api_key' | 'static_token'; header?: string; value?: string } = {
+          name: original?.name ?? `${form.name} auth#${i + 1}`,
+          kind: cred.kind,
+        }
+        if (cred.header) payload.header = cred.header
+        if (cred.value) payload.value = cred.value
+        await updateCredential(editingId.value, row.credId, payload)
+        continue
+      }
+      // 新增行：无密钥值则不创建。
+      if (!cred.value) continue
+      await createCredential(editingId.value, { name: `${form.name} auth#${i + 1}`, ...cred })
+    } catch (e) {
+      failures.push(String(e))
+    }
+  }
+  if (failures.length) {
+    message.warning(`${t('servers.updatedOk')}，${t('servers.authReconcileFail')}: ${failures[0]}`)
+  } else {
+    message.success(t('servers.updatedOk'))
   }
 }
 

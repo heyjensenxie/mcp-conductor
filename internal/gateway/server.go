@@ -112,6 +112,8 @@ func registerControlRoutes(mux *http.ServeMux, deps Deps, runtimeCache *runtimeC
 
 	mux.HandleFunc("GET /api/servers", control.handleListServers)
 	mux.HandleFunc("POST /api/servers", control.handleCreateServer)
+	// 保存前测试连接：无副作用的草稿拨测（不建 Server/实例、不刷新 Tools、不改健康）。
+	mux.HandleFunc("POST /api/servers/test-connection", control.handleTestServerConnection)
 	mux.HandleFunc("GET /api/servers/{id}", control.handleGetServer)
 	mux.HandleFunc("PATCH /api/servers/{id}", control.handleUpdateServer)
 	mux.HandleFunc("PATCH /api/servers/{id}/toggle", control.handleToggleServer)
@@ -149,6 +151,8 @@ func registerControlRoutes(mux *http.ServeMux, deps Deps, runtimeCache *runtimeC
 	mux.HandleFunc("POST /api/keys/{id}/invoke", control.handleKeyInvoke)
 
 	mux.HandleFunc("GET /api/metrics", control.handleMetrics)
+	// 窗口聚合：看板/观测的服务端统计（一次范围扫描返回计数/均值/分位直方图 + 分组）。
+	mux.HandleFunc("GET /api/metrics/window", control.handleMetricsWindow)
 	mux.HandleFunc("GET /api/metrics/trend", control.handleMetricsTrend)
 	mux.HandleFunc("GET /api/logs", control.handleLogs)
 	mux.HandleFunc("GET /api/logs/{id}", control.handleGetLogDetail)

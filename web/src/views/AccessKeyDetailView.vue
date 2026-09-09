@@ -12,7 +12,18 @@
             <span class="ph-eyebrow-var mono">{{ key?.subject ?? '…' }}</span>
           </div>
           <div class="ph-titleline">
-            <h1 class="ph-name">{{ key?.name ?? '…' }}</h1>
+            <a-input
+              v-if="editingName"
+              v-model:value="form.name"
+              class="ph-name-input"
+              :placeholder="t('access.namePlaceholder')"
+              @press-enter="commitName"
+              @blur="commitName"
+            />
+            <h1 v-else class="ph-name">{{ displayName || '…' }}</h1>
+            <button v-if="!editingName" type="button" class="ph-rename" :title="t('access.renameName')" @click="startEditName">
+              <EditOutlined />
+            </button>
             <p class="ph-sub">{{ t('access.detailSubtitle') }}</p>
           </div>
         </div>
@@ -93,7 +104,11 @@
               <p class="pane-kicker">PLATFORM CATALOG</p>
               <h3 class="pane-title">{{ t('access.catalogTitle') }}</h3>
             </div>
-            <span class="pane-count mono">{{ enabledTools.length }}</span>
+            <div class="pane-head-acts">
+              <a-button type="text" size="small" class="pane-mini" @click="expandAllServers">{{ t('access.expandAll') }}</a-button>
+              <a-button type="text" size="small" class="pane-mini" @click="collapseAllServers">{{ t('access.collapseAll') }}</a-button>
+              <span class="pane-count mono">{{ enabledTools.length }}</span>
+            </div>
           </header>
 
           <div class="cat-tools">
@@ -113,27 +128,33 @@
               </template>
 
               <section v-for="group in catalogGroups" :key="group.server.id" class="sg">
-                <header class="sg-head">
+                <button type="button" class="sg-head" @click="toggleServerGroup(group.server.id)">
+                  <span class="sg-chev" :class="{ open: !isCollapsed(group.server.id) }"><DownOutlined /></span>
                   <i class="sdot" :class="serverDotClass(group.server)" />
                   <b class="sg-name">{{ group.server.name }}</b>
-                  <span class="sg-count mono">{{ group.tools.length }}</span>
-                </header>
-                <button
-                  v-for="tool in group.tools"
-                  :key="tool.id"
-                  type="button"
-                  class="ctool"
-                  :class="{ granted: isGranted(tool.gateway_name), cur: focusTool === tool.gateway_name }"
-                  @mouseenter="hover = tool.gateway_name"
-                  @mouseleave="hover = ''"
-                  @click="toggleTool(tool)"
-                >
-                  <span class="ctool-ck">{{ isGranted(tool.gateway_name) ? '✓' : '+' }}</span>
-                  <span class="ctool-tx">
-                    <b class="mono">{{ tool.gateway_name }}</b>
-                    <i>{{ tool.description || tool.original_name }}</i>
-                  </span>
+                  <span
+                    class="sg-granted mono"
+                    :title="t('access.grantedInServer', { granted: grantedCount(group), total: group.tools.length })"
+                  >{{ grantedCount(group) }}/{{ group.tools.length }}</span>
                 </button>
+                <div v-show="!isCollapsed(group.server.id)" class="sg-body">
+                  <button
+                    v-for="tool in group.tools"
+                    :key="tool.id"
+                    type="button"
+                    class="ctool"
+                    :class="{ granted: isGranted(tool.gateway_name), cur: focusTool === tool.gateway_name }"
+                    @mouseenter="hover = tool.gateway_name"
+                    @mouseleave="hover = ''"
+                    @click="toggleTool(tool)"
+                  >
+                    <span class="ctool-ck">{{ isGranted(tool.gateway_name) ? '✓' : '+' }}</span>
+                    <span class="ctool-tx">
+                      <b class="mono">{{ tool.gateway_name }}</b>
+                      <i>{{ tool.description || tool.original_name }}</i>
+                    </span>
+                  </button>
+                </div>
               </section>
 
               <p v-if="servers.length > 0 && catalogGroups.length === 0" class="cat-note">{{ t('common.empty') }}</p>
@@ -158,7 +179,7 @@
               <!-- Access Key -->
               <article class="g-node g-node--key" :class="{ hot: grants.length > 0 }">
                 <p class="g-eyebrow">ACCESS KEY</p>
-                <h4 class="g-name">{{ key.name }}</h4>
+                <h4 class="g-name">{{ displayName || key.name }}</h4>
                 <p class="g-sub mono">{{ key.subject }}</p>
                 <div class="g-chips">
                   <span class="g-chip acc"><b class="mono">{{ visibleGrantCount }}</b>{{ t('access.grantsUnit') }}</span>
@@ -397,7 +418,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { ArrowLeftOutlined, CopyOutlined, DeleteOutlined, DownOutlined, ExperimentOutlined, InfoCircleOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
+import { ArrowLeftOutlined, CopyOutlined, DeleteOutlined, DownOutlined, EditOutlined, ExperimentOutlined, InfoCircleOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { getKey, getRuntimeConfig, invokeKey, listAllServers, listAllTools, rotateKey, updateKey } from '@/api'
 import type { AccessKey, KeyInvokeResult, MCPServer, Tool, ToolGrant } from '@/types'
@@ -443,13 +464,60 @@ const invokeModel = ref<Record<string, any>>({})
 const invokeJsonInjected = ref(false)
 
 const grants = ref<GrantEditor[]>([])
-const form = reactive({ qps: 0, burst: 0, windowSeconds: 0, unlimited: false, enabled: true })
+const form = reactive({ name: '', qps: 0, burst: 0, windowSeconds: 0, unlimited: false, enabled: true })
+// 名称内联编辑：name 是展示名（稳定标识是 id/subject），改动进入 form 由「保存」统一提交。
+const editingName = ref(false)
+const displayName = computed(() => form.name.trim() || key.value?.name || '')
 // 滑动窗口（秒）来自运行期配置；获取失败回退默认 60（1 分钟）。
 const winSec = ref(60)
 let baseline = ''
 
 // ---- 派生数据 ----
 const enabledTools = computed(() => tools.value.filter((tool) => tool.enabled))
+
+// ---- 目录按 MCP Server 折叠（工具多时便于定位）----
+// 折叠状态按 Server ID 记录；搜索时自动全部展开，避免"搜到了却被折叠隐藏"。
+const collapsedServers = reactive<Record<string, boolean>>({})
+
+function isCollapsed(serverID: string): boolean {
+  return !!collapsedServers[serverID]
+}
+
+function toggleServerGroup(serverID: string) {
+  if (collapsedServers[serverID]) delete collapsedServers[serverID]
+  else collapsedServers[serverID] = true
+}
+
+function expandAllServers() {
+  for (const id of Object.keys(collapsedServers)) delete collapsedServers[id]
+}
+
+function collapseAllServers() {
+  for (const group of catalogGroups.value) collapsedServers[group.server.id] = true
+}
+
+// grantedCount 统计该 Server 分组内"有效授权"的工具数（含 * / 前缀通配规则）。
+function grantedCount(group: { tools: Tool[] }): number {
+  return group.tools.filter((tool) => toolGranted(tool.gateway_name)).length
+}
+
+// 搜索时自动展开全部分组：否则命中项可能被折叠状态隐藏，反而更难找。
+watch(query, (q) => {
+  if (q.trim()) expandAllServers()
+})
+
+// ---- 名称内联编辑 ----
+function startEditName() {
+  form.name = key.value?.name ?? ''
+  editingName.value = true
+}
+
+// 提交名称：空白回退为原名称（不改动即不脏），非空则进入 form 等待「保存」统一提交。
+function commitName() {
+  const next = form.name.trim()
+  form.name = next || (key.value?.name ?? '')
+  editingName.value = false
+}
 
 // toolGranted 判断工具是否落在该 key 的白名单（支持精确、前缀通配与 *）。
 function toolGranted(name: string): boolean {
@@ -608,6 +676,7 @@ function parseArg(raw: string): unknown {
 
 function serialize() {
   return JSON.stringify({
+    name: form.name.trim(),
     qps: qpsEffective(),
     burst: form.burst,
     window_seconds: windowEffective(),
@@ -653,6 +722,7 @@ async function load() {
     tools.value = allTools
     servers.value = allServers
     Object.assign(form, {
+      name: loadedKey.name,
       qps: loadedKey.qps,
       burst: loadedKey.burst,
       windowSeconds: loadedKey.window_seconds ?? 0,
@@ -675,6 +745,11 @@ async function load() {
 
 async function save() {
   if (!key.value) return
+  const name = form.name.trim()
+  if (!name) {
+    message.warning(t('access.nameRequired'))
+    return
+  }
   saving.value = true
   try {
     const payload: ToolGrant[] = grants.value.map((grant) => ({
@@ -683,12 +758,14 @@ async function save() {
       default_args: Object.fromEntries(grant.defargs.filter((item) => item.k).map((item) => [item.k, parseArg(item.v)])),
     }))
     key.value = await updateKey(key.value.id, {
+      name,
       qps: qpsEffective(),
       burst: form.burst,
       window_seconds: windowEffective(),
       enabled: form.enabled,
       grants: payload,
     })
+    form.name = key.value.name
     baseline = serialize()
     message.success(t('access.savedOk'))
   } catch (e) {
@@ -827,6 +904,24 @@ onMounted(load)
 .ph-eyebrow-var { font-size: 11px; color: var(--mc-ink-2); }
 .ph-titleline { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .ph-name { margin: 0; font-size: 22px; font-weight: 650; line-height: 1.25; color: var(--mc-ink); letter-spacing: 0.01em; }
+.ph-name-input { width: 320px; max-width: 100%; }
+.ph-name-input :deep(input) { font-size: 20px; font-weight: 650; color: var(--mc-ink); }
+.ph-rename {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--mc-ink-3);
+  cursor: pointer;
+  font-size: 13px;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.ph-rename:hover { color: var(--mc-accent); background: var(--mc-accent-soft); }
 .ph-sub { margin: 0; font-size: 12.5px; color: var(--mc-ink-2); }
 
 .ph-side { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
@@ -951,6 +1046,9 @@ onMounted(load)
   font-size: 11px;
   color: var(--mc-ink-2);
 }
+.pane-head-acts { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+.pane-mini { padding: 0 6px; height: 22px; font-size: 11px; color: var(--mc-ink-3); }
+.pane-mini:hover { color: var(--mc-accent); }
 
 /* 状态点 */
 .sdot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; display: inline-block; }
@@ -970,10 +1068,29 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 4px 6px;
+  width: 100%;
+  padding: 5px 6px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease;
 }
+.sg-head:hover { background: rgba(59, 130, 246, 0.07); }
+.sg-chev {
+  flex: 0 0 auto;
+  display: inline-flex;
+  font-size: 10px;
+  color: var(--mc-ink-3);
+  transform: rotate(-90deg);
+  transition: transform 0.18s ease, color 0.14s ease;
+}
+.sg-chev.open { transform: rotate(0deg); color: var(--mc-accent); }
 .sg-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--mc-ink); }
-.sg-count { font-size: 10.5px; color: var(--mc-ink-3); background: rgba(148,163,184,.08); border-radius: 8px; padding: 0 6px; line-height: 16px; }
+.sg-granted { flex: 0 0 auto; font-size: 10.5px; color: var(--mc-ink-3); background: rgba(148,163,184,.08); border-radius: 8px; padding: 0 6px; line-height: 16px; }
+.sg-body { display: flex; flex-direction: column; }
 
 .ctool {
   display: flex;

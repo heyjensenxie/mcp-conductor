@@ -215,9 +215,10 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 | --- | --- |
 | `GET/POST /api/servers` | 列表 / 注册（注册建逻辑 Server + seed 实例并发现 Tools；返回含 `instances`） |
 | `GET /api/servers/{id}` | 详情（含 `instances`） |
-| `PATCH /api/servers/{id}` | 更新逻辑字段（description；name/endpoint/transport 不可改） |
+| `PATCH /api/servers/{id}` | 更新：`description` 更新逻辑 Server，`endpoint/transport/args` 更新主实例 `instances[0]`（name 不可改；其余实例走实例接口） |
 | `PATCH /api/servers/{id}/toggle` | 启用 / 禁用（禁用即摘除整个 Server） |
 | `DELETE /api/servers/{id}` | 删除（级联删实例/Tools/凭证） |
+| `POST /api/servers/test-connection` | **保存前测试连接**（无副作用）：用草稿 `{server_id?,name,endpoint,transport,args,headers}` 执行一次 MCP initialize 握手；不创建 Server/实例、不刷新 Tools、不更新健康、不保存临时 Header。带 `server_id` 时自动加载该 Server 已保存凭据，`headers` 中的同名临时头覆盖已保存头 |
 | `POST /api/servers/{id}/test` | 测试连接（拨主实例）并重新发现 Tools |
 | `POST /api/servers/{id}/rediscover/plan` | 预演重新发现：只读比对并返回将新增/变更/删除的工具清单（不落库） |
 | `GET/POST /api/servers/{id}/instances` | 实例列表 / 新增实例（endpoint/transport；stdio 加 `args` 启动参数） |
@@ -231,7 +232,8 @@ streamable HTTP 无状态模式（`GET` 返回 405 以引导客户端走纯 POST
 | `GET/PATCH/DELETE /api/keys/{id}` · `POST /api/keys/{id}/rotate` | Key 详情 · 更新（白名单/配额/启停）· 删除 · 密钥轮换（新明文仅本响应一次） |
 | `POST /api/keys/{id}/invoke` | **按该 Key 身份试调用**（`{gateway_tool,arguments}`）：后台用已存 Key 跑完整数据面验证白名单授权；不写 metrics/调用日志、不经 per-key 限流。未授权/禁用 → 403 |
 | `GET /api/metrics` | 指标快照（p50/p95/p99、成功率）；`?scope=server` 按 Server、`?scope=instance&server_id=` 按某 Server 实例聚合 |
-| `GET /api/metrics/trend` | 真时序趋势（分钟桶，已持久化、跨重启可回溯）：`?scope=tool\|server\|instance`（instance 须带 `server_id`）；`?minutes=` 默认 30、上限保留天数；`?dim_key=` 单维聚焦 |
+| `GET /api/metrics/window` | **窗口聚合（看板统计）**：`?minutes=`（默认 30，上限 43200；控制台提供 30 分钟 ~ 7 天档位）、`?server_id=`、`?top_tools=`、`?top_ips=`、`?bucket_minutes=`。服务端一次范围扫描返回计数/成功率/平均延迟（精确）+ 分位（固定桶直方图近似）+ `by_server/by_tool/by_client_ip/by_status/by_minute`；长窗口自动降采样（3 天=10 分钟/桶、7 天=30 分钟/桶，点数 ≤ 500）。成本与窗口内行数成正比、与表总量无关 |
+| `GET /api/metrics/trend` | 真时序趋势（分钟桶，已持久化、跨重启可回溯）：`?scope=tool\|server\|instance`（instance 须带 `server_id`）；`?minutes=` 默认 30、上限保留天数；`?dim_key=` 单维聚焦；长窗口自动降采样（`bucket_minutes` 返回实际桶宽） |
 | `GET /api/logs` | 调用日志分页（`page/page_size`，上限 200；`?server_id=&instance_id=&q=&status=&from=&to=` 筛选；行带 `has_args` 标记是否可回放） |
 | `GET /api/logs/{id}` | 调用日志详情（含已捕获入参 `request_args`，供回放弹窗） |
 | `POST /api/logs/{id}/replay` | **Traffic Replay**（`{timeout_ms?}`）：把该调用捕获入参重发到其命中的上游实例（直连、诊断不写 metrics/调用日志）；is_error 以 200 返回，结构失败 4xx/5xx |

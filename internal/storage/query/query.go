@@ -22,6 +22,8 @@ type Paging struct {
 // ServerQuery 是 Server 列表的查询条件。
 type ServerQuery struct {
 	Paging
+	// SkipTotal 表示调用方只需要当前返回行，不需要匹配总数。
+	SkipTotal bool
 	// Q 对 name 做模糊匹配（LIKE）。
 	Q string
 	// Enabled 三态筛选（nil 表示不过滤）。
@@ -34,6 +36,8 @@ type ServerQuery struct {
 // 原 ListToolsByServer 的按 Server 过滤语义（/api/servers/{id}/tools 复用）。
 type ToolQuery struct {
 	Paging
+	// SkipTotal 表示调用方只需要当前返回行，不需要匹配总数。
+	SkipTotal bool
 	// Q 对 gateway_name 或 original_name 做模糊匹配。
 	Q string
 	// ServerID 为空表示不过滤。
@@ -71,6 +75,9 @@ type CredentialQuery struct {
 // TrafficQuery 是调用日志列表的查询条件。
 type TrafficQuery struct {
 	Paging
+	// SkipTotal 表示调用方只消费当前页，不需要匹配总数。日志流水表增长较快，
+	// 此时存储实现应跳过额外的 COUNT(*) 查询并把 total 返回为 0。
+	SkipTotal bool
 	// Q 对 tool / client / request_id / client_ip 做模糊匹配。
 	Q string
 	// ServerID 为空表示不过滤。注意流量行 server_id 可空，等值过滤不命中空行。
@@ -98,4 +105,23 @@ type TrendQuery struct {
 	DimKey   string
 	From     int64
 	To       int64
+}
+
+// TrafficWindowQuery 是调用日志的**窗口聚合**条件（不返回行，只返回统计）。
+// 供看板/观测按时间窗口读取服务端聚合结果：计数与均值精确、分位延迟由固定桶
+// 直方图近似、分组按调用量降序截断（TopTools/TopIPs），成本与窗口行数成正比、
+// 与表总量无关（走 ts 索引范围扫描）。
+type TrafficWindowQuery struct {
+	// From / To 为闭区间时间过滤（对写入时间 ts，UTC 语义）；零值表示该端不设界。
+	From time.Time
+	To   time.Time
+	// ServerID 非空时只聚合该 Server 的调用（Server 详情/看板过滤）。
+	ServerID string
+	// TopTools / TopIPs > 0 时分别限制 by_tool / by_client_ip 的返回条数
+	// （按调用量降序）；<=0 表示不截断（仍受存储实现的硬上限约束）。
+	TopTools int
+	TopIPs   int
+	// TopMinutes > 0 时只返回窗口内最近的 TopMinutes 个分钟桶（长窗口图表降采样用）；
+	// <=0 表示返回窗口内全部分钟桶。
+	TopMinutes int
 }

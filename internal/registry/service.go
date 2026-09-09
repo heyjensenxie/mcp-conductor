@@ -69,6 +69,8 @@ type Service struct {
 	stores     Stores
 	discoverer ToolDiscoverer
 	prober     InstanceProber // nil 表示"实例测试"不可用（未装配）
+	// draftProber 是"保存前测试连接"的草稿探针（无副作用）；nil 表示不可用。
+	draftProber DraftInstanceProber
 }
 
 // NewService 创建 Registry 服务。
@@ -77,8 +79,12 @@ func NewService(stores Stores, discoverer ToolDiscoverer) *Service {
 }
 
 // WithProber 装配实例健康探针（通常为同一个 mcpclient.Adapter）。
+// 若该探针同时实现 DraftInstanceProber，则一并装配草稿拨测能力。
 func (s *Service) WithProber(prober InstanceProber) *Service {
 	s.prober = prober
+	if draft, ok := prober.(DraftInstanceProber); ok {
+		s.draftProber = draft
+	}
 	return s
 }
 
@@ -213,25 +219,65 @@ func (s *Service) DeleteServer(ctx context.Context, id string) error {
 	return nil
 }
 
-// UpdateServerPatch 是逻辑 Server 可编辑字段（name 不可改：改名会重建对外工具
-// 命名空间，涉及删除/重发现，当前版本不在线支持；endpoint/transport 属于实例，
-// 请编辑实例）。
+// UpdateServerPatch 是逻辑 Server 的可编辑字段。Name 是展示用名称（对外稳定标识是
+// Server ID，改名不涉及工具命名空间重建，工具对外名来自上游原名）；Endpoint/
+// Transport/Args 描述的是**主实例**（最早创建的那个），用于控制台"新增/编辑同一套
+// 表单"——其余实例仍通过实例管理接口单独维护。
 type UpdateServerPatch struct {
-	Description *string `json:"description,omitempty"`
+	Name        *string   `json:"name,omitempty"`
+	Description *string   `json:"description,omitempty"`
+	Endpoint    *string   `json:"endpoint,omitempty"`
+	Transport   *string   `json:"transport,omitempty"`
+	Args        *[]string `json:"args,omitempty"`
 }
 
-// UpdateServer 按补丁更新逻辑 Server 的可编辑字段；name/enabled/health 不受影响。
+// UpdateServer 按补丁更新逻辑 Server 的可编辑字段；enabled/health 不受影响。
+// 若补丁含主实例字段（endpoint/transport/args），一并更新主实例：复用
+// UpdateInstance 的校验与健康复位语义（配置变更后旧健康结论失效）。
 func (s *Service) UpdateServer(ctx context.Context, id string, patch UpdateServerPatch) (*model.Server, error) {
 	server, err := s.stores.GetServer(ctx, id)
 	if err != nil {
 		return nil, errs.Wrap(errs.CodeNotFound, err, "读取 Server 失败")
 	}
+	changed := false
+	if patch.Name != nil {
+		name := strings.TrimSpace(*patch.Name)
+		if name == "" {
+			return nil, errs.New(errs.CodeInvalidArgument, "server.name 不能为空")
+		}
+		if server.Name != name {
+			server.Name, changed = name, true
+		}
+	}
 	if patch.Description != nil {
 		server.Description = strings.TrimSpace(*patch.Description)
+		changed = true
 	}
-	server.UpdatedAt = model.Now()
-	if err := s.stores.UpdateServer(ctx, server); err != nil {
-		return nil, errs.Wrap(errs.CodeInternal, err, "更新 Server 失败")
+	if changed {
+		server.UpdatedAt = model.Now()
+		if err := s.stores.UpdateServer(ctx, server); err != nil {
+			return nil, errs.Wrap(errs.CodeInternal, err, "更新 Server 失败")
+		}
+	}
+	if patch.Endpoint != nil || patch.Transport != nil || patch.Args != nil {
+		instances, err := s.stores.ListInstancesByServer(ctx, id)
+		if err != nil {
+			return nil, errs.Wrap(errs.CodeInternal, err, "读取实例失败")
+		}
+		if len(instances) == 0 {
+			return nil, errs.New(errs.CodeInvalidArgument, "Server 没有可更新的主实例")
+		}
+		if _, err := s.UpdateInstance(ctx, id, instances[0].ID, UpdateInstancePatch{
+			Endpoint:  patch.Endpoint,
+			Transport: patch.Transport,
+			Args:      patch.Args,
+		}); err != nil {
+			return nil, err
+		}
+		// 主实例健康/聚合可能已被复位，重新读取以返回一致状态。
+		if server, err = s.stores.GetServer(ctx, id); err != nil {
+			return nil, errs.Wrap(errs.CodeInternal, err, "读取 Server 失败")
+		}
 	}
 	return server, nil
 }

@@ -152,6 +152,29 @@ func TestControlLogsFilter(t *testing.T) {
 	}
 }
 
+// TestControlLogsCanSkipTotal 验证仪表盘等只消费当前页样本的场景可显式跳过
+// total 统计，避免对高增长 traffic_log 额外执行 COUNT(*)。
+func TestControlLogsCanSkipTotal(t *testing.T) {
+	store := memory.New()
+	ctrl := NewControl(nil, store, nil, nil)
+	if err := store.AppendTraffic(context.Background(), model.TrafficSample{RequestID: "req-dashboard", Status: "success", Timestamp: model.T(time.Now().UTC())}); err != nil {
+		t.Fatalf("AppendTraffic: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	ctrl.handleLogs(rec, httptest.NewRequest(http.MethodGet, "/api/logs?page_size=200&include_total=false", nil))
+	var logs struct {
+		Items []model.TrafficSample `json:"items"`
+		Total int                   `json:"total"`
+	}
+	if err := json.Unmarshal(decodeEnvelope(t, rec).Data, &logs); err != nil {
+		t.Fatalf("解析 logs 响应失败: %v", err)
+	}
+	if len(logs.Items) != 1 || logs.Total != 0 {
+		t.Fatalf("跳过 total 后应返回样本且 total=0，得到 items=%d total=%d", len(logs.Items), logs.Total)
+	}
+}
+
 // TestControlListParamValidation 覆盖非法分页/筛选参数 → 400 invalid_argument。
 func TestControlListParamValidation(t *testing.T) {
 	store := memory.New()
@@ -176,7 +199,7 @@ func TestControlListParamValidation(t *testing.T) {
 	}
 
 	// status/from 等 logs 专属参数校验走 /api/logs。
-	for _, qs := range []string{"status=bogus", "from=notatime", "page_size=999"} {
+	for _, qs := range []string{"status=bogus", "from=notatime", "page_size=999", "include_total=maybe"} {
 		rec := httptest.NewRecorder()
 		ctrl.handleLogs(rec, httptest.NewRequest(http.MethodGet, "/api/logs?"+qs, nil))
 		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_argument") {

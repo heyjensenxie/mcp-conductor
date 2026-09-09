@@ -2,8 +2,11 @@ package mysql
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/heyjensenxie/mcp-conductor/internal/model"
 	"github.com/heyjensenxie/mcp-conductor/internal/storage/query"
@@ -79,9 +82,13 @@ func (s *Store) QueryServers(ctx context.Context, q query.ServerQuery) ([]model.
 		cond = append(cond, "health_status = ?")
 		args = append(args, q.HealthStatus)
 	}
-	total, err := s.countRows(ctx, "servers", cond, args)
-	if err != nil {
-		return nil, 0, fmt.Errorf("count servers: %w", err)
+	total := 0
+	if !q.SkipTotal {
+		var err error
+		total, err = s.countRows(ctx, "servers", cond, args)
+		if err != nil {
+			return nil, 0, fmt.Errorf("count servers: %w", err)
+		}
 	}
 
 	sql := "SELECT " + serverColumns + " FROM servers"
@@ -126,9 +133,13 @@ func (s *Store) QueryTools(ctx context.Context, q query.ToolQuery) ([]model.Tool
 		cond = append(cond, "enabled = ?")
 		args = append(args, *q.Enabled)
 	}
-	total, err := s.countRows(ctx, "tools", cond, args)
-	if err != nil {
-		return nil, 0, fmt.Errorf("count tools: %w", err)
+	total := 0
+	if !q.SkipTotal {
+		var err error
+		total, err = s.countRows(ctx, "tools", cond, args)
+		if err != nil {
+			return nil, 0, fmt.Errorf("count tools: %w", err)
+		}
 	}
 
 	sql := "SELECT " + toolColumns + " FROM tools"
@@ -340,6 +351,214 @@ func (s *Store) loadKeyGrants(ctx context.Context, keys []model.AccessKey) error
 	return rows.Err()
 }
 
+// ---- 窗口聚合（看板/观测的服务端统计）----
+//
+// 设计：不把窗口内的原始行搬到应用层，而是让 MySQL 一次范围扫描完成聚合
+// （走 idx_traffic_ts），返回的只有计数、均值与固定桶直方图；分组按调用量降序
+// 截断。因此响应体积与 CPU 只与“窗口内行数 + 维度数”相关，与表总量无关。
+
+// latencyCumulativeExprs 返回延迟直方图的**累积**计数表达式（ms <= bound 的行数），
+// 与 model.LatencyBoundsMS 一一对应；扫描后再转换为分桶计数。
+var latencyCumulativeExprs = sync.OnceValue(func() string {
+	parts := make([]string, 0, len(model.LatencyBoundsMS))
+	for _, bound := range model.LatencyBoundsMS {
+		parts = append(parts, fmt.Sprintf("SUM(CASE WHEN latency_ms <= %d THEN 1 ELSE 0 END)", bound))
+	}
+	return strings.Join(parts, ", ")
+})
+
+// windowAggColumns 是窗口聚合的公共投影（计数/成功数/延迟和 + 直方图累积计数）。
+func windowAggColumns() string {
+	return "COUNT(*), COALESCE(SUM(status = 'success'), 0), COALESCE(SUM(latency_ms), 0), " + latencyCumulativeExprs()
+}
+
+// windowWhere 组装窗口 WHERE 谓词（ts 闭区间 + 可选 server_id）。
+// 无任何条件时返回 " WHERE 1=1"，使调用方可以安全地追加 " AND ..." 片段。
+func windowWhere(q query.TrafficWindowQuery) (string, []any) {
+	cond := make([]string, 0, 3)
+	args := make([]any, 0, 3)
+	if !q.From.IsZero() {
+		cond = append(cond, "ts >= ?")
+		args = append(args, fmtTimeUTC(q.From))
+	}
+	if !q.To.IsZero() {
+		cond = append(cond, "ts <= ?")
+		args = append(args, fmtTimeUTC(q.To))
+	}
+	if q.ServerID != "" {
+		cond = append(cond, "server_id = ?")
+		args = append(args, q.ServerID)
+	}
+	if len(cond) == 0 {
+		return " WHERE 1=1", args
+	}
+	return " WHERE " + strings.Join(cond, " AND "), args
+}
+
+// scanWindowAgg 读取一行 (totals, success, sum_ms, 直方图累积计数...) 并转换为
+// LatencyStats（累积 → 分桶）。
+func scanWindowAgg(rows *sql.Rows, prefix ...any) (int64, int64, model.LatencyStats, error) {
+	var totals, success, sumMS int64
+	cumulative := make([]int64, len(model.LatencyBoundsMS))
+	dest := make([]any, 0, len(prefix)+3+len(cumulative))
+	dest = append(dest, prefix...)
+	dest = append(dest, &totals, &success, &sumMS)
+	for i := range cumulative {
+		dest = append(dest, &cumulative[i])
+	}
+	if err := rows.Scan(dest...); err != nil {
+		return 0, 0, model.LatencyStats{}, err
+	}
+	return totals, success, latencyStatsFromCumulative(totals, sumMS, cumulative), nil
+}
+
+// latencyStatsFromCumulative 把累积计数转换为分桶直方图（最后一个桶为溢出桶）。
+func latencyStatsFromCumulative(total, sumMS int64, cumulative []int64) model.LatencyStats {
+	stats := model.LatencyStats{Count: total, SumMS: sumMS}
+	prev := int64(0)
+	for i := range model.LatencyBoundsMS {
+		stats.Buckets[i] = cumulative[i] - prev
+		prev = cumulative[i]
+	}
+	stats.Buckets[len(model.LatencyBoundsMS)] = total - prev
+	return stats
+}
+
+// QueryTrafficWindow 在窗口内做服务端聚合（计数/均值精确、分位由直方图近似）。
+// 每个分组维度各一条 GROUP BY 查询，全部命中 idx_traffic_ts 范围扫描。
+func (s *Store) QueryTrafficWindow(ctx context.Context, q query.TrafficWindowQuery) (model.TrafficWindowStats, error) {
+	var out model.TrafficWindowStats
+	where, args := windowWhere(q)
+
+	// 1) 整体。
+	row := s.db.QueryRowContext(ctx,
+		"SELECT "+windowAggColumns()+" FROM traffic_log"+where, args...)
+	var totals, success, sumMS int64
+	cumulative := make([]int64, len(model.LatencyBoundsMS))
+	dest := []any{&totals, &success, &sumMS}
+	for i := range cumulative {
+		dest = append(dest, &cumulative[i])
+	}
+	if err := row.Scan(dest...); err != nil {
+		return model.TrafficWindowStats{}, fmt.Errorf("aggregate traffic window: %w", err)
+	}
+	out.Totals, out.Success = totals, success
+	out.Errors = totals - success
+	out.Latency = latencyStatsFromCumulative(totals, sumMS, cumulative)
+
+	// 2) 按 Server 分组（Server 数量有限，不截断）。
+	byServer, err := s.queryWindowGroups(ctx, "COALESCE(server_id,'')", where, args, 0, "")
+	if err != nil {
+		return model.TrafficWindowStats{}, err
+	}
+	out.ByServer = byServer
+
+	// 3) 按工具分组（按调用量降序截断，避免维度爆炸）。
+	byTool, err := s.queryWindowGroups(ctx, "tool", where, args, topCap(q.TopTools), " AND tool <> ''")
+	if err != nil {
+		return model.TrafficWindowStats{}, err
+	}
+	out.ByTool = byTool
+
+	// 4) 按来源 IP 分组（看板 TopN）。
+	byIP, err := s.queryWindowGroups(ctx, "client_ip", where, args, topCap(q.TopIPs), " AND COALESCE(client_ip,'') <> ''")
+	if err != nil {
+		return model.TrafficWindowStats{}, err
+	}
+	out.ByClientIP = byIP
+
+	// 5) 按状态分组（异常分类计数）。
+	statusSQL := "SELECT status, COUNT(*) FROM traffic_log" + where + " GROUP BY status ORDER BY COUNT(*) DESC"
+	statusRows, err := s.db.QueryContext(ctx, statusSQL, args...)
+	if err != nil {
+		return model.TrafficWindowStats{}, fmt.Errorf("aggregate traffic status: %w", err)
+	}
+	defer statusRows.Close()
+	for statusRows.Next() {
+		var item model.TrafficStatusCount
+		if err := statusRows.Scan(&item.Status, &item.Count); err != nil {
+			return model.TrafficWindowStats{}, fmt.Errorf("scan traffic status: %w", err)
+		}
+		out.ByStatus = append(out.ByStatus, item)
+	}
+	if err := statusRows.Err(); err != nil {
+		return model.TrafficWindowStats{}, err
+	}
+
+	// 6) 按分钟分组（延迟/成功率趋势；DATE_FORMAT 取 UTC 墙钟，避免会话时区影响）。
+	minuteSQL := "SELECT DATE_FORMAT(ts, '%Y%m%d%H%i'), " + windowAggColumns() +
+		" FROM traffic_log" + where + " GROUP BY 1 ORDER BY 1 ASC"
+	minuteRows, err := s.db.QueryContext(ctx, minuteSQL, args...)
+	if err != nil {
+		return model.TrafficWindowStats{}, fmt.Errorf("aggregate traffic minute: %w", err)
+	}
+	defer minuteRows.Close()
+	for minuteRows.Next() {
+		var raw string
+		mTotals, mSuccess, stats, err := scanWindowAgg(minuteRows, &raw)
+		if err != nil {
+			return model.TrafficWindowStats{}, fmt.Errorf("scan traffic minute: %w", err)
+		}
+		minute, err := time.ParseInLocation("200601021504", raw, time.UTC)
+		if err != nil {
+			return model.TrafficWindowStats{}, fmt.Errorf("解析分钟桶 %q 失败: %w", raw, err)
+		}
+		out.ByMinute = append(out.ByMinute, model.TrafficMinuteStats{
+			Minute: minute.Unix(), Totals: mTotals, Success: mSuccess,
+			Errors: mTotals - mSuccess, Latency: stats,
+		})
+	}
+	if err := minuteRows.Err(); err != nil {
+		return model.TrafficWindowStats{}, err
+	}
+	if q.TopMinutes > 0 && len(out.ByMinute) > q.TopMinutes {
+		out.ByMinute = out.ByMinute[len(out.ByMinute)-q.TopMinutes:]
+	}
+	return out, nil
+}
+
+// queryWindowGroups 执行一次 GROUP BY 聚合：keyExpr 为分组键表达式（固定常量，
+// 非用户输入），extraWhere 追加维度约束（如排除空值），limit>0 时按调用量降序截断。
+func (s *Store) queryWindowGroups(ctx context.Context, keyExpr, where string, args []any, limit int, extraWhere string) ([]model.TrafficGroupStats, error) {
+	sqlText := "SELECT " + keyExpr + ", " + windowAggColumns() + " FROM traffic_log" + where + extraWhere +
+		" GROUP BY 1 ORDER BY COUNT(*) DESC"
+	queryArgs := append([]any(nil), args...)
+	if limit > 0 {
+		sqlText += " LIMIT ?"
+		queryArgs = append(queryArgs, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, sqlText, queryArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate traffic by %s: %w", keyExpr, err)
+	}
+	defer rows.Close()
+
+	out := make([]model.TrafficGroupStats, 0)
+	for rows.Next() {
+		var key sql.NullString
+		totals, success, stats, err := scanWindowAgg(rows, &key)
+		if err != nil {
+			return nil, fmt.Errorf("scan traffic group %s: %w", keyExpr, err)
+		}
+		out = append(out, model.TrafficGroupStats{
+			Key: key.String, Totals: totals, Success: success,
+			Errors: totals - success, Latency: stats,
+		})
+	}
+	return out, rows.Err()
+}
+
+// topCap 归一化分组 TopN：<=0 用默认上限，超过上限按上限收敛。
+func topCap(n int) int {
+	if n <= 0 || n > trafficGroupCap {
+		return trafficGroupCap
+	}
+	return n
+}
+
+// trafficGroupCap 是 by_tool / by_client_ip 的默认与最大返回条数。
+const trafficGroupCap = 200
+
 // QueryTraffic 分页查询调用日志（按 id 倒序）。
 func (s *Store) QueryTraffic(ctx context.Context, q query.TrafficQuery) ([]model.TrafficSample, int, error) {
 	cond := make([]string, 0, 7)
@@ -373,9 +592,13 @@ func (s *Store) QueryTraffic(ctx context.Context, q query.TrafficQuery) ([]model
 		cond = append(cond, "ts <= ?")
 		args = append(args, fmtTimeUTC(q.To))
 	}
-	total, err := s.countRows(ctx, "traffic_log", cond, args)
-	if err != nil {
-		return nil, 0, fmt.Errorf("count traffic: %w", err)
+	total := 0
+	if !q.SkipTotal {
+		var err error
+		total, err = s.countRows(ctx, "traffic_log", cond, args)
+		if err != nil {
+			return nil, 0, fmt.Errorf("count traffic: %w", err)
+		}
 	}
 
 	sql := `SELECT ` + trafficListColumns + ` FROM traffic_log`

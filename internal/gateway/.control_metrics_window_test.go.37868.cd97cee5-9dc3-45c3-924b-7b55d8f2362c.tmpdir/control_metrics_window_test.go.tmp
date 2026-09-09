@@ -1,0 +1,130 @@
+package gateway
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/heyjensenxie/mcp-conductor/internal/model"
+	"github.com/heyjensenxie/mcp-conductor/internal/registry"
+	"github.com/heyjensenxie/mcp-conductor/internal/storage/memory"
+)
+
+// seedWindowTraffic 造一个窗口内的调用日志集合（含窗口外一条）供聚合端点测试。
+func seedWindowTraffic(t *testing.T, store *memory.Store) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	samples := []model.TrafficSample{
+		{RequestID: "r1", ServerID: "srv-1", Tool: "alpha.search", ClientIP: "10.0.0.1", Status: "success", LatencyMS: 10, Timestamp: model.T(now.Add(-2 * time.Minute))},
+		{RequestID: "r2", ServerID: "srv-1", Tool: "alpha.search", ClientIP: "10.0.0.1", Status: "success", LatencyMS: 30, Timestamp: model.T(now.Add(-90 * time.Second))},
+		{RequestID: "r3", ServerID: "srv-1", Tool: "alpha.detail", ClientIP: "10.0.0.2", Status: "upstream_error", LatencyMS: 400, Timestamp: model.T(now.Add(-60 * time.Second))},
+		{RequestID: "r4", ServerID: "srv-2", Tool: "beta.search", ClientIP: "10.0.0.2", Status: "timeout_error", LatencyMS: 3000, Timestamp: model.T(now.Add(-30 * time.Second))},
+		{RequestID: "old", ServerID: "srv-1", Tool: "alpha.search", ClientIP: "10.0.0.1", Status: "success", LatencyMS: 5, Timestamp: model.T(now.Add(-3 * time.Hour))},
+	}
+	for _, sample := range samples {
+		if err := store.AppendTraffic(ctx, sample); err != nil {
+			t.Fatalf("AppendTraffic: %v", err)
+		}
+	}
+}
+
+// TestControlMetricsWindowAggregates 验证 GET /api/metrics/window 返回服务端聚合：
+// 窗口内计数/成功率/均值精确、分组与状态/分钟桶齐全，且窗口外的行不计入。
+func TestControlMetricsWindowAggregates(t *testing.T) {
+	store := memory.New()
+	seedWindowTraffic(t, store)
+	ctrl := NewControl(registry.NewService(store, noopDiscoverer{}), store, nil, nil)
+
+	rec := httptest.NewRecorder()
+	ctrl.handleMetricsWindow(rec, httptest.NewRequest(http.MethodGet, "/api/metrics/window?minutes=30", nil))
+	e := decodeEnvelope(t, rec)
+
+	var got metricsWindowResponse
+	if err := json.Unmarshal(e.Data, &got); err != nil {
+		t.Fatalf("解析响应失败: %v / %s", err, e.Data)
+	}
+	if got.Minutes != 30 || got.Totals != 4 || got.Success != 2 || got.Errors != 2 {
+		t.Fatalf("窗口整体口径错误: %+v", got)
+	}
+	if got.SuccessRate != 0.5 {
+		t.Fatalf("成功率应为 0.5，得到 %v", got.SuccessRate)
+	}
+	if want := (10.0 + 30 + 400 + 3000) / 4; got.Avg != want {
+		t.Fatalf("平均延迟应为 %v，得到 %v", want, got.Avg)
+	}
+	if got.P50 == 0 || got.P95 == 0 || got.P99 == 0 {
+		t.Fatalf("分位延迟不应为 0: p50=%v p95=%v p99=%v", got.P50, got.P95, got.P99)
+	}
+	if len(got.ByServer) != 2 || got.ByServer[0].Key != "srv-1" || got.ByServer[0].Totals != 3 {
+		t.Fatalf("by_server 错误: %+v", got.ByServer)
+	}
+	if len(got.ByTool) != 3 || got.ByTool[0].Key != "alpha.search" || got.ByTool[0].Totals != 2 {
+		t.Fatalf("by_tool 错误: %+v", got.ByTool)
+	}
+	if len(got.ByClientIP) != 2 || len(got.ByStatus) != 3 {
+		t.Fatalf("by_client_ip/by_status 错误: %+v / %+v", got.ByClientIP, got.ByStatus)
+	}
+	if len(got.ByMinute) == 0 {
+		t.Fatal("应返回分钟桶")
+	}
+	// 窗口外（3 小时前）的行不应计入任何口径。
+	for _, group := range got.ByTool {
+		if group.Key == "alpha.search" && group.Totals > 2 {
+			t.Fatalf("窗口外样本被计入: %+v", group)
+		}
+	}
+}
+
+// TestControlMetricsWindowServerFilterAndValidation 验证 server_id 过滤与参数校验。
+func TestControlMetricsWindowServerFilterAndValidation(t *testing.T) {
+	store := memory.New()
+	seedWindowTraffic(t, store)
+	ctrl := NewControl(registry.NewService(store, noopDiscoverer{}), store, nil, nil)
+
+	rec := httptest.NewRecorder()
+	ctrl.handleMetricsWindow(rec, httptest.NewRequest(http.MethodGet, "/api/metrics/window?minutes=30&server_id=srv-2", nil))
+	e := decodeEnvelope(t, rec)
+	var got metricsWindowResponse
+	if err := json.Unmarshal(e.Data, &got); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if got.Totals != 1 || got.Errors != 1 || len(got.ByServer) != 1 || got.ByServer[0].Key != "srv-2" {
+		t.Fatalf("server_id 过滤错误: %+v", got)
+	}
+
+	for _, target := range []string{
+		"/api/metrics/window?minutes=0",
+		"/api/metrics/window?minutes=abc",
+		"/api/metrics/window?top_tools=-1",
+	} {
+		rec := httptest.NewRecorder()
+		ctrl.handleMetricsWindow(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s 应返回 400，得到 %d / %s", target, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestControlMetricsWindowEmpty 验证空窗口返回零值而非报错（看板空态）。
+func TestControlMetricsWindowEmpty(t *testing.T) {
+	store := memory.New()
+	ctrl := NewControl(registry.NewService(store, noopDiscoverer{}), store, nil, nil)
+
+	rec := httptest.NewRecorder()
+	ctrl.handleMetricsWindow(rec, httptest.NewRequest(http.MethodGet, "/api/metrics/window", nil))
+	e := decodeEnvelope(t, rec)
+	var got metricsWindowResponse
+	if err := json.Unmarshal(e.Data, &got); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if got.Totals != 0 || got.SuccessRate != 0 || got.P95 != 0 || len(got.ByTool) != 0 {
+		t.Fatalf("空窗口应返回零值: %+v", got)
+	}
+	if got.Minutes != metricsWindowDefaultMinutes {
+		t.Fatalf("缺省窗口应为 %d，得到 %d", metricsWindowDefaultMinutes, got.Minutes)
+	}
+}

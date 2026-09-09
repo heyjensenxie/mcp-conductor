@@ -18,6 +18,19 @@ import (
 // keyword 读取 q 参数并去首尾空白。
 func keyword(v url.Values) string { return strings.TrimSpace(v.Get("q")) }
 
+// skipTotal 解析 include_total=false。列表默认保留 total，只有明确声明不需要
+// 总数的轻量消费方（如仪表盘）才跳过 COUNT(*)。
+func skipTotal(v url.Values) (bool, error) {
+	if v.Get("include_total") == "" {
+		return false, nil
+	}
+	includeTotal, err := parseTriStateBool(v, "include_total")
+	if err != nil {
+		return false, err
+	}
+	return includeTotal != nil && !*includeTotal, nil
+}
+
 // bindServerQuery 绑定 Server 列表查询。
 func bindServerQuery(r *http.Request) (query.ServerQuery, error) {
 	v := r.URL.Query()
@@ -29,10 +42,15 @@ func bindServerQuery(r *http.Request) (query.ServerQuery, error) {
 	if err != nil {
 		return query.ServerQuery{}, err
 	}
+	skipTotal, err := skipTotal(v)
+	if err != nil {
+		return query.ServerQuery{}, err
+	}
 	out := query.ServerQuery{
-		Paging:  query.Paging{Page: page, PageSize: pageSize},
-		Q:       keyword(v),
-		Enabled: enabled,
+		Paging:    query.Paging{Page: page, PageSize: pageSize},
+		SkipTotal: skipTotal,
+		Q:         keyword(v),
+		Enabled:   enabled,
 	}
 	if hs := strings.TrimSpace(v.Get("health_status")); hs != "" {
 		if err := validHealthStatus(hs); err != nil {
@@ -54,11 +72,16 @@ func bindToolQuery(r *http.Request) (query.ToolQuery, error) {
 	if err != nil {
 		return query.ToolQuery{}, err
 	}
+	skipTotal, err := skipTotal(v)
+	if err != nil {
+		return query.ToolQuery{}, err
+	}
 	return query.ToolQuery{
-		Paging:   query.Paging{Page: page, PageSize: pageSize},
-		Q:        keyword(v),
-		ServerID: strings.TrimSpace(v.Get("server_id")),
-		Enabled:  enabled,
+		Paging:    query.Paging{Page: page, PageSize: pageSize},
+		SkipTotal: skipTotal,
+		Q:         keyword(v),
+		ServerID:  strings.TrimSpace(v.Get("server_id")),
+		Enabled:   enabled,
 	}, nil
 }
 
@@ -146,6 +169,11 @@ func bindTrafficQuery(r *http.Request) (query.TrafficQuery, error) {
 		InstanceID: strings.TrimSpace(v.Get("instance_id")),
 		ClientIP:   strings.TrimSpace(v.Get("client_ip")),
 	}
+	skipTotal, err := skipTotal(v)
+	if err != nil {
+		return query.TrafficQuery{}, err
+	}
+	out.SkipTotal = skipTotal
 	if status := strings.TrimSpace(v.Get("status")); status != "" {
 		if err := validTrafficStatus(status); err != nil {
 			return query.TrafficQuery{}, err

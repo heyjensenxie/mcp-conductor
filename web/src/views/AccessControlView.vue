@@ -32,7 +32,7 @@
               </a-tooltip>
             </template>
             <template v-else-if="column.key === 'tools_count'"><a-tag color="blue">{{ record.grants?.length ?? 0 }} {{ t('access.grantsUnit') }}</a-tag></template>
-            <template v-else-if="column.key === 'actions'"><a-space><a-button type="link" @click="openDetail(record.id)">{{ t('access.openWorkspace') }}</a-button><a-button type="link" danger @click="requestDelete(record)">{{ t('common.delete') }}</a-button></a-space></template>
+            <template v-else-if="column.key === 'actions'"><a-space><a-button type="link" @click="openDetail(record.id)">{{ t('access.openWorkspace') }}</a-button><a-button type="link" @click="requestRename(record)">{{ t('access.renameName') }}</a-button><a-button type="link" danger @click="requestDelete(record)">{{ t('common.delete') }}</a-button></a-space></template>
           </template>
         </a-table>
 
@@ -44,6 +44,12 @@
         <p class="form-hint">{{ t('access.qpsFieldHint') }}</p>
         <a-form-item :label="t('access.windowLabel')"><a-input-number v-model:value="createForm.window_seconds" :disabled="createForm.unlimited" :min="0" :max="3600" :precision="0" :style="{ width: '100%' }" :placeholder="t('access.windowPlaceholder')" /></a-form-item>
         <a-form-item :label="t('access.qpsUnlimited')"><a-checkbox v-model:checked="createForm.unlimited" /></a-form-item>
+      </a-form>
+    </a-modal>
+    <a-modal v-model:open="renameVisible" :title="t('access.renameTitle')" :ok-text="t('common.save')" :confirm-loading="renaming" @ok="submitRename">
+      <a-form :label-col="{ span: 6 }" :wrapper-col="{ span: 18 }">
+        <a-form-item :label="t('access.name')" required><a-input v-model:value="renameForm.name" :placeholder="t('access.namePlaceholder')" @press-enter="submitRename" /></a-form-item>
+        <p class="form-hint rename-hint">{{ t('access.renameHint') }}</p>
       </a-form>
     </a-modal>
     <a-modal v-model:open="secretVisible" :title="t('access.secret')" :footer="null" width="560px">
@@ -70,7 +76,7 @@ import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { CopyOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons-vue'
-import { createKey, deleteKey, getAuthStatus, getRuntimeConfig, listKeys } from '@/api'
+import { createKey, deleteKey, getAuthStatus, getRuntimeConfig, listKeys, updateKey } from '@/api'
 import DeleteConfirmModal from '@/components/DeleteConfirmModal.vue'
 import type { AccessKey } from '@/types'
 
@@ -98,6 +104,11 @@ const deleting = ref(false)
 const createdSecret = ref('')
 const createdKeyID = ref('')
 const createForm = reactive({ name: '', subject: '', qps: 0, burst: 0, window_seconds: 0, unlimited: false })
+// 改名：name 是展示名，subject/id 才是稳定标识，改名不影响授权与密钥。
+const renameVisible = ref(false)
+const renaming = ref(false)
+const renameTarget = ref<AccessKey | null>(null)
+const renameForm = reactive({ name: '' })
 // 滑动窗口（秒）来自运行期配置；获取失败回退默认 60（1 分钟）。
 const winSec = ref(60)
 
@@ -107,7 +118,7 @@ const keyColumns = computed<any[]>(() => [
   { title: t('access.qps').split(' ')[0], key: 'quota', width: 180 },
   { title: t('access.toolsCount'), key: 'tools_count', width: 105 },
   { title: t('access.enabled'), key: 'enabled', width: 105 },
-  { title: t('access.actions'), key: 'actions', width: 190 },
+  { title: t('access.actions'), key: 'actions', width: 250 },
 ])
 
 function openCreate() { Object.assign(createForm, { name: '', subject: '', qps: 0, burst: 0, window_seconds: 0, unlimited: false }); createVisible.value = true }
@@ -168,6 +179,33 @@ async function submitCreate() {
   } catch (e) { message.error(String(e)) } finally { creating.value = false }
 }
 function requestDelete(key: AccessKey) { deleteTarget.value = key; deleteVisible.value = true }
+
+// 改名：只提交 name，不动配额/授权/密钥；成功后就地更新当前页，避免整页重取。
+function requestRename(key: AccessKey) {
+  renameTarget.value = key
+  renameForm.name = key.name
+  renameVisible.value = true
+}
+async function submitRename() {
+  const target = renameTarget.value
+  if (!target) return
+  const name = renameForm.name.trim()
+  if (!name) { message.warning(t('access.nameRequired')); return }
+  if (name === target.name) { renameVisible.value = false; return }
+  renaming.value = true
+  try {
+    const updated = await updateKey(target.id, { name })
+    const i = keys.value.findIndex((item) => item.id === target.id)
+    if (i >= 0) keys.value[i] = updated
+    renameVisible.value = false
+    renameTarget.value = null
+    message.success(t('access.renamedOk'))
+  } catch (e) {
+    message.error(String(e))
+  } finally {
+    renaming.value = false
+  }
+}
 async function confirmDelete() {
   const key = deleteTarget.value
   if (!key) return
@@ -219,6 +257,7 @@ onMounted(async () => {
 .mb { margin-bottom: 16px; }
 .quota-default { font-size: 12px; color: var(--mc-ink-3); }
 .form-hint { margin: -2px 0 10px 0; padding-left: 33.3333%; font-size: 12px; color: var(--mc-ink-3); line-height: 1.5; }
+.rename-hint { margin-bottom: 0; }
 .filters { margin: 0 0 16px; }
 .secret-row { display: flex; }
 .configure-btn { margin-top: 18px; }
